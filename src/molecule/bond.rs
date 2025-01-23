@@ -123,20 +123,15 @@ impl BondTarget {
     pub fn target(&self) -> usize {
         self.target
     }
+    pub fn set_target(&mut self, target: usize) {
+        self.target = target;
+    }
     pub fn order(&self) -> u8 {
-        match self.bond_order {
-            BondOrder::Single => 1,
-            BondOrder::Double => 2,
-            BondOrder::Triple => 3,
-            BondOrder::Quadruple => 4,
-            // TODO: Implement aromatic bond order
-            BondOrder::Aromatic => 1,
-            BondOrder::Coordinate => 1,
-        }
+        self.bond_order.order()
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub enum BondOrder {
     #[default]
     Single,
@@ -145,6 +140,8 @@ pub enum BondOrder {
     Aromatic,
     Quadruple,
     Coordinate,
+    Up,
+    Down,
 }
 
 impl BondOrder {
@@ -157,6 +154,8 @@ impl BondOrder {
             _ => Err(format!("Invalid bond order: {}", slice)),
         }
     }
+    // This is probably not the best way to do this, but it's a quick fix for the problem
+    // It is probably missleading, as people will expect the order to be 1, 2, 3, 4, etc.
     pub fn to_u8(&self) -> u8 {
         match self {
             BondOrder::Single => 119,
@@ -165,8 +164,23 @@ impl BondOrder {
             BondOrder::Aromatic => 122,
             BondOrder::Quadruple => 123,
             BondOrder::Coordinate => 124,
+            BondOrder::Up => 125,
+            BondOrder::Down => 126,
         }
-    }   
+    }
+    pub fn order(&self) -> u8 {
+        match self {
+            BondOrder::Single => 1,
+            BondOrder::Double => 2,
+            BondOrder::Triple => 3,
+            BondOrder::Quadruple => 4,
+            // TODO: Implement aromatic bond order
+            BondOrder::Aromatic => 1,
+            BondOrder::Coordinate => 1,
+            BondOrder::Up => 1,
+            BondOrder::Down => 1,
+        }
+    }
 }
 
 impl Display for BondOrder {
@@ -177,8 +191,10 @@ impl Display for BondOrder {
             BondOrder::Triple => write!(f, "#"),
             BondOrder::Aromatic => write!(f, ":"),
             BondOrder::Quadruple => write!(f, "$"),
-            // To be implemented
-            BondOrder::Coordinate => write!(f, ""),
+            // To be implemented correctly
+            BondOrder::Coordinate => write!(f, "->"),
+            BondOrder::Up => write!(f, "/"),
+            BondOrder::Down => write!(f, "\\"),
         }
     }
 }
@@ -188,4 +204,14 @@ pub struct Bond {
     pub atom1: usize,
     pub atom2: usize,
     pub bond_order: BondOrder,
+}
+
+impl Bond {
+    pub fn new(atom1: usize, atom2: usize, bond_order: BondOrder) -> Self {
+        Bond {
+            atom1,
+            atom2,
+            bond_order,
+        }
+    }
 }

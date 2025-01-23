@@ -1,11 +1,14 @@
 use crate::{
-    atom::Atom,
-    chirality::{ChiralClass, ChiralClassifier},
+    atom::{Atom, XYZParserError},
     consts::BOND_TOLERANCE,
-    molecule::base::Molecule,
-    molecule::bond::{BondAngle, BondOrder, BondTarget},
-    molecule::utils::{can_increase_bond, decrease_bond, reconstruct_path, update_degrees},
-    vector::Vector,
+    molecule::chirality::{ChiralClass, ChiralClassifier},
+    molecule::{
+        bond::{BondAngle, BondOrder, BondTarget},
+        traits::*,
+        utils::{decrease_bond, reconstruct_path, update_degrees},
+    },
+    prelude::*,
+    vector::Vector3D,
 };
 use chemistry_consts::ElementProperties;
 use itertools::Itertools;
@@ -15,22 +18,29 @@ use rayon::prelude::*;
 use tinyvec::ArrayVec;
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     default::Default,
     fs::File,
     io::{self, BufRead},
     path::Path,
 };
 
+impl ToSMILES for Molecule3D {}
+impl MoleculeChirality for Molecule3D {}
+impl MoleculeGraph for Molecule3D {}
+impl MoleculeExperimental for Molecule3D {}
+impl MoleculeAromaticity for Molecule3D {}
+impl Molecule for Molecule3D {}
+
 #[derive(Debug, Default, Clone)]
 pub struct Molecule3D {
     pub atomic_numbers: Vec<u8>,
-    pub atom_classes: Option<Vec<u8>>,
+    pub atom_classes: Option<Vec<usize>>,
     pub charges: Vec<i8>,
     pub chiral_classes: Option<Vec<ChiralClass>>,
     pub isotopes: Option<Vec<u16>>,
-    pub positions: Vec<Vector>,
-    pub radical_states: Vec<bool>,
+    pub positions: Vec<Vector3D>,
+    pub radical_states: Vec<u8>,
     pub atom_bonds: Vec<ArrayVec<[BondTarget; 10]>>,
 }
 
@@ -39,7 +49,7 @@ impl Molecule3D {
         &mut self.atom_bonds[atom_index]
     }
 
-    pub fn class_of_atom(&self, atom_index: usize) -> u8 {
+    pub fn class_of_atom(&self, atom_index: usize) -> usize {
         if let Some(classes) = self.atom_classes() {
             *classes.get(atom_index).unwrap_or(&0)
         } else {
@@ -70,22 +80,7 @@ impl Molecule3D {
     }
 
     pub fn is_atom_radical(&self, atom_index: usize) -> bool {
-        self.radical_states[atom_index]
-    }
-
-    pub fn add_atom(&mut self, atom: Atom) {
-        self.atomic_numbers.push(atom.atomic_number);
-        self.positions
-            .push(atom.position_vector.unwrap_or_default());
-        self.charges.push(atom.charge);
-        self.radical_states.push(atom.is_radical);
-        self.atom_bonds.push(atom.bonds);
-        self.isotopes
-            .get_or_insert_with(Vec::new)
-            .push(atom.isotope.unwrap_or_default());
-        self.chiral_classes
-            .get_or_insert_with(Vec::new)
-            .push(atom.chiral_class);
+        self.radical_states.get(atom_index).is_some_and(|&state| state > 0)
     }
 
     // This function returns a reference to outgoing bonds of an atom
@@ -101,23 +96,34 @@ impl Molecule3D {
     /// ```
     /// use molecules::molecule::{Molecule3D,Molecule};
     ///
-    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz");
-    /// assert_eq!(molecule.atomic_numbers.len(), 8);
+    /// let molecules = Molecule3D::from_xyz("tests/ethane.xyz").unwrap();
+    /// assert_eq!(molecules[0].atomic_numbers.len(), 8);
     /// ```
-    pub fn from_xyz<P: AsRef<Path>>(filepath: P) -> Molecule3D {
+    pub fn from_xyz<P: AsRef<Path>>(filepath: P) -> Result<Vec<Molecule3D>, XYZParserError> {
         let file = File::open(filepath).expect("Could not open file");
         let reader = io::BufReader::new(file);
-        let atoms = reader
-            .lines() // .skip(2) is possible here but could cause trouble for not much gain in malformatted files
-            .filter_map(|line| {
-                if let Ok(line) = line {
-                    Atom::from_xyz_line(&line).ok()
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<Atom>>();
-        Molecule3D::from_atoms(atoms)
+        let mut atoms = Vec::new();
+        let mut molecules = Vec::new();
+
+        for line in reader.lines().skip(2) {
+            let Ok(line) = line else {
+                return Err(XYZParserError::IOError);
+            };
+            if line.is_empty() && !atoms.is_empty() {
+                molecules.push(Molecule3D::from_atoms(&atoms));
+                atoms = Vec::new();
+                continue;
+            }
+            // It would be better to handle this but XYZs are often malformed and the first lines are invalid
+            let Ok(atom) = Atom::from_xyz_line(&line) else {
+                continue;
+            };
+            atoms.push(atom)
+        } // .skip(2) is possible here but could cause trouble for not much gain in malformatted files
+        if !atoms.is_empty() {
+            molecules.push(Molecule3D::from_atoms(&atoms));
+        }
+        Ok(molecules)
     }
 
     pub fn build_tree(&self) -> KdTree<f64, 3> {
@@ -278,11 +284,11 @@ impl Molecule3D {
     /// let atom1 = Atom::new(6).with_position((0.0, 0.0, 0.0));
     /// let atom2 = Atom::new(6).with_position((1.0, 0.0, 0.0));
     /// let atom3 = Atom::new(6).with_position((2.0, 0.0, 0.0));
-    /// let molecule = Molecule3D::from_atoms(vec![atom1, atom2, atom3]);
-    /// assert_eq!(molecule.center(), Vector::new(1.0, 0.0, 0.0));
+    /// let molecule = Molecule3D::from_atoms(&[atom1, atom2, atom3]);
+    /// assert_eq!(molecule.center(), Vector3D::new(1.0, 0.0, 0.0));
     /// ```
-    pub fn center(&self) -> Vector {
-        let mut sum = Vector::new(0.0, 0.0, 0.0);
+    pub fn center(&self) -> Vector3D {
+        let mut sum = Vector3D::new(0.0, 0.0, 0.0);
 
         for &position_vector in &self.positions {
             sum += position_vector;
@@ -292,7 +298,7 @@ impl Molecule3D {
         sum / count
     }
 
-    pub fn get_atom_position(&self, atom_index: usize) -> Option<Vector> {
+    pub fn get_atom_position(&self, atom_index: usize) -> Option<Vector3D> {
         self.positions.get(atom_index).copied()
     }
 
@@ -341,7 +347,7 @@ impl Molecule3D {
     /// ```
     /// use molecules::prelude::*;
     ///
-    /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let dihedrals = molecule.dihedrals();
     /// assert_eq!(dihedrals.len(), 9);
     ///
@@ -383,7 +389,7 @@ impl Molecule3D {
     ///
     /// ```
     /// use molecules::molecule::{Molecule3D,Molecule};
-    /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let dihedral_angle = molecule.dihedral_angle(&(0, 1, 2, 3));
     /// assert_eq!(dihedral_angle, Some(0.5807210503904102));
     /// ```
@@ -420,7 +426,7 @@ impl Molecule3D {
     /// # Example
     /// ```
     /// use molecules::molecule::{Molecule3D,Molecule};
-    /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let degrees = molecule.degrees();
     /// assert_eq!(degrees, vec![0, 0, 0, 0, 0, 0, 0, 0]);
     /// ```
@@ -454,6 +460,8 @@ impl Molecule3D {
             .iter()
             .map(|bond| match bond.bond_order() {
                 BondOrder::Single => 2,
+                BondOrder::Up => 2,
+                BondOrder::Down => 2,
                 BondOrder::Double => 4,
                 BondOrder::Triple => 6,
                 BondOrder::Quadruple => 8,
@@ -591,11 +599,11 @@ impl Molecule3D {
     /// ```
     /// use molecules::molecule::{Molecule3D,Molecule};
     ///
-    /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let atom_set = vec![0,1,2].into_iter().collect();
     ///
     /// let mut shortest_path = molecule.find_shortest_path_of_set(&atom_set).unwrap();
-    /// // HashSets are unordered, so we need to sort the path
+    /// // FxHashSets are unordered, so we need to sort the path
     /// if !(shortest_path[0] < shortest_path[shortest_path.len()-1]) {
     ///     shortest_path.reverse();
     /// }
@@ -638,7 +646,7 @@ impl Molecule3D {
     /// ```
     /// use molecules::molecule::{Molecule3D,Molecule};
     ///
-    /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let shortest_path = molecule.shortest_path(0,1).unwrap();
     /// assert_eq!(shortest_path, vec![0,1]);
     /// ```
@@ -667,135 +675,27 @@ impl Molecule3D {
         None
     }
 
-    fn find_minimum_cycle(&self, atom_set: &HashSet<usize>) -> Option<Vec<usize>> {
-        let mut minimum_cycle = None;
-        let mut minimum_cycle_length = usize::MAX;
-
-        for &atom1 in atom_set {
-            for &atom2 in atom_set {
-                if atom1 != atom2 {
-                    if let Some(cycle) = self.bfs_for_cycle(atom1, atom2) {
-                        let cycle_length = cycle.len();
-                        if cycle_length < minimum_cycle_length {
-                            minimum_cycle = Some(cycle);
-                            minimum_cycle_length = cycle_length;
-                        }
-                    }
-                }
-            }
-        }
-
-        minimum_cycle
-    }
-
-    fn bfs_for_cycle(&self, start: usize, end: usize) -> Option<Vec<usize>> {
-        let mut queue = VecDeque::new();
-        let mut visited = HashSet::new();
-        let mut parent = vec![None; self.atomic_numbers.len()];
-
-        queue.push_back(start);
-
-        while let Some(current_node) = queue.pop_front() {
-            if current_node == end {
-                return Some(reconstruct_path(current_node, &parent));
-            }
-
-            for &neighbor in &self.atom_bonds[current_node] {
-                if !visited.contains(&neighbor.target()) {
-                    parent[neighbor.target()] = Some(current_node);
-                    queue.push_back(neighbor.target());
-                    visited.insert(neighbor.target());
-                }
-            }
-        }
-        None
-    }
-
-    fn canonicalize(&self) -> IntMap<usize, usize> {
-        // Find the node with the highest class
-        let ec_classes = self.morgans_algorithm(None);
-        let start_node = ec_classes
-            .iter()
-            .enumerate()
-            .max_by_key(|&(_, class)| class)
-            .map(|(idx, _)| idx)
-            .unwrap();
-
-        // Initialize BFS structures
-        let mut queue = VecDeque::new();
-        queue.push_back(start_node);
-        let mut assigned = IntMap::default();
-        let mut assignment_order = 1;
-
-        // Perform BFS, ordering neighbors based on their classes
-        while let Some(current_node) = queue.pop_front() {
-            if let Some(bonds) = self.atom_bonds.get(current_node) {
-                // Extract necessary information about neighbors
-                let mut neighbors_info: Vec<(usize, u8, BondOrder)> = bonds
-                    .iter()
-                    .map(|bond| {
-                        let target = bond.target();
-                        let atomic_number = self.atomic_numbers[target];
-                        let bond_type = bond.bond_order();
-                        (target, atomic_number, bond_type)
-                    })
-                    .collect();
-
-                // Sort neighbors based on class, then atomic number, then bond type
-                neighbors_info.sort_by(
-                    |&(node_a, atomic_num_a, bond_type_a), &(node_b, atomic_num_b, bond_type_b)| {
-                        match ec_classes[node_a].cmp(&ec_classes[node_b]) {
-                            std::cmp::Ordering::Equal => match atomic_num_a.cmp(&atomic_num_b) {
-                                std::cmp::Ordering::Equal => bond_type_a.cmp(&bond_type_b),
-                                other => other,
-                            },
-                            other => other,
-                        }
-                    },
-                );
-
-                for &(neighbor, _, _) in &neighbors_info {
-                    if let std::collections::hash_map::Entry::Vacant(entry) =
-                        assigned.entry(neighbor)
-                    {
-                        entry.insert(assignment_order);
-                        assignment_order += 1;
-                        queue.push_back(neighbor);
-                    }
-                }
-            }
-        }
-
-        assigned
-    }
     // Molecule3D specific implementation
-    fn from_atoms_raw(atoms: Vec<Atom>) -> Self {
+    fn from_atoms_raw(atoms: &[Atom]) -> Self {
         let atomic_numbers = atoms.iter().map(|atom| atom.atomic_number).collect();
         let charges = atoms.iter().map(|atom| atom.charge).collect();
-        let radical_states = atoms.iter().map(|atom| atom.is_radical).collect();
+        let radical_states = atoms.iter().map(|atom| atom.radical_state).collect();
         let mut isotopes = None;
-        if atoms.iter().any(|atom| atom.isotope.is_some()) {
+        // Zero means "no isotope was written for this atom". Filling in the
+        // element's default instead made an unlabelled carbon indistinguishable
+        // from one written `[12C]`, which is why `to_smiles` could not emit
+        // isotopes at all; it also made an atom's stored isotope depend on
+        // whether some *other* atom in the molecule happened to carry one.
+        if atoms.iter().any(|atom| atom.isotope().is_some()) {
             isotopes = Some(
                 atoms
                     .iter()
-                    .map(|atom| {
-                        if atom.isotope.is_some() {
-                            atom.isotope().unwrap()
-                        } else {
-                            atom.atomic_number()
-                                .isotopes()
-                                .unwrap()
-                                .next()
-                                .unwrap()
-                                .mass
-                                .round() as u16
-                        }
-                    })
+                    .map(|atom| atom.isotope().unwrap_or(0))
                     .collect(),
             );
         }
         let atom_bonds = atoms.iter().map(|atom| atom.bonds().clone()).collect();
-        let positions: Vec<Vector> = atoms
+        let positions: Vec<Vector3D> = atoms
             .iter()
             .map(|atom| atom.position_vector.unwrap_or_default())
             .collect();
@@ -819,7 +719,7 @@ impl Molecule3D {
         }
     }
 
-    pub fn from_atoms_alternate_covalent_radii(atoms: Vec<Atom>, covalent_radii: &[f64]) -> Self {
+    pub fn from_atoms_alternate_covalent_radii(atoms: &[Atom], covalent_radii: &[f64]) -> Self {
         let mut molecule = Molecule3D::from_atoms_raw(atoms);
         molecule.identify_bonds_alternate_covalent_radii(covalent_radii, BOND_TOLERANCE);
         molecule
@@ -901,7 +801,7 @@ fn backtrack_bonding(molecule: &mut Molecule3D, degrees: &mut [i8]) -> bool {
             .filter(|bond| bond.bond_order == BondOrder::Double)
             .count();
 
-        if can_increase_bond(unsatisfied_atom_index, neighbor.target, degrees)
+        if Molecule3D::can_increase_bond(unsatisfied_atom_index, neighbor.target, degrees)
             && number_of_neighbor_atom_double_bonds == 0
         {
             increase_bonds(molecule, unsatisfied_atom_index, neighbor.target);
@@ -932,6 +832,8 @@ pub fn increase_bonds(molecule: &mut Molecule3D, atom_index: usize, neighbor_ind
 pub fn increase_bond(bond: &mut BondTarget) {
     match bond.bond_order {
         BondOrder::Single => bond.bond_order = BondOrder::Double,
+        BondOrder::Up => bond.bond_order = BondOrder::Double,
+        BondOrder::Down => bond.bond_order = BondOrder::Double,
         BondOrder::Double => bond.bond_order = BondOrder::Triple,
         // TODO handle this in the case of metals
         BondOrder::Triple => bond.bond_order = BondOrder::Quadruple,
@@ -970,7 +872,7 @@ pub fn relaxed_backtrack_bonding(molecule: &mut Molecule3D, degrees: &mut [i8]) 
             .filter(|bond| bond.bond_order == BondOrder::Double)
             .count();
 
-        if can_increase_bond(unsatisfied_atom_index, neighbor.target, degrees)
+        if Molecule3D::can_increase_bond(unsatisfied_atom_index, neighbor.target, degrees)
             && number_of_neighbor_atom_double_bonds == 0
         {
             increase_bonds(molecule, unsatisfied_atom_index, neighbor.target);
@@ -986,17 +888,47 @@ pub fn relaxed_backtrack_bonding(molecule: &mut Molecule3D, degrees: &mut [i8]) 
     false
 }
 
-impl Molecule for Molecule3D {
+impl MoleculeCore for Molecule3D {
+    /// `positions` is indexed directly all over this file, so it has to grow
+    /// and shrink with the atom count.
+    ///
+    /// An atom arriving without coordinates — a hydrogen worked out from the
+    /// valence model rather than read from the file — is placed on its
+    /// neighbour. That is not its geometry, but neither is the origin, and the
+    /// origin is worse: it drags the centroid, the bounding box and every
+    /// distance to an atom that is not there. Sitting on the parent makes the
+    /// bond length zero, which reads as "no geometry for this atom" instead of
+    /// inventing one somewhere else entirely.
+    fn push_atom_extras(&mut self, atom: &Atom) {
+        let position = atom.position_vector.unwrap_or_else(|| {
+            atom.bonds
+                .first()
+                .and_then(|bond| self.positions.get(bond.target()).copied())
+                .unwrap_or_default()
+        });
+        self.positions.push(position);
+    }
+
+    fn pop_atom_extras(&mut self) {
+        self.positions.pop();
+    }
+
+    fn remove_atom_extras(&mut self, atom_index: usize) {
+        if atom_index < self.positions.len() {
+            self.positions.remove(atom_index);
+        }
+    }
+
     fn atom_bonds(&self) -> &Vec<ArrayVec<[BondTarget; 10]>> {
         &self.atom_bonds
     }
     fn atom_bonds_mut(&mut self) -> &mut Vec<ArrayVec<[BondTarget; 10]>> {
         &mut self.atom_bonds
     }
-    fn atom_classes(&self) -> &Option<Vec<u8>> {
+    fn atom_classes(&self) -> &Option<Vec<usize>> {
         &self.atom_classes
     }
-    fn atom_classes_mut(&mut self) -> &mut Option<Vec<u8>> {
+    fn atom_classes_mut(&mut self) -> &mut Option<Vec<usize>> {
         &mut self.atom_classes
     }
     fn charges(&self) -> &[i8] {
@@ -1020,31 +952,41 @@ impl Molecule for Molecule3D {
         self.chiral_classes.as_mut()
     }
 
+    fn initialize_chiral_classes(&mut self) {
+        if !self.chiral_classes.is_some() {
+            self.chiral_classes = Some(vec![ChiralClass::None; self.len()]);
+        }
+    }
+
     fn isotopes(&self) -> Option<&Vec<u16>> {
         self.isotopes.as_ref()
     }
+    fn isotopes_mut(&mut self) -> &mut Option<Vec<u16>> {
+        &mut self.isotopes
+    }
 
-    fn radical_states(&self) -> &[bool] {
+    fn radical_states(&self) -> &[u8] {
         &self.radical_states
     }
 
-    fn radical_states_mut(&mut self) -> &mut Vec<bool> {
+    fn radical_states_mut(&mut self) -> &mut Vec<u8> {
         &mut self.radical_states
     }
 
     fn is_atom_radical(&self, atom_index: usize) -> bool {
-        self.radical_states[atom_index]
+        self.radical_states.get(atom_index).unwrap_or(&0) > &0
     }
-    fn set_atom_radical(&mut self, atom_index: usize, is_radical: bool) {
+
+    fn set_atom_radical_state(&mut self, atom_index: usize, radical_state: u8) {
         if atom_index < self.radical_states.len() {
-            self.radical_states[atom_index] = is_radical;
+            self.radical_states[atom_index] = radical_state;
         } else {
             println!("Atom index out of bounds, could not set radical state");
         }
     }
 
     // Molecule3D specific implementation
-    fn from_atoms(atoms: Vec<Atom>) -> Self {
+    fn from_atoms(atoms: &[Atom]) -> Self {
         let mut molecule = Molecule3D::from_atoms_raw(atoms);
         molecule.identify_bonds(BOND_TOLERANCE);
         molecule

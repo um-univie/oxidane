@@ -1,10 +1,8 @@
 use std::path::Path;
 
 use crate::{
-    atom::Atom,
-    molecule::bond::BondAngle,
-    molecule::{base::Molecule, molecule3d::Molecule3D},
-    vector::Vector,
+    atom::Atom, molecule::bond::BondAngle, molecule::molecule3d::Molecule3D, molecule::traits::*,
+    vector::Vector3D,
 };
 use chemistry_consts::ElementProperties;
 use std::fs::File;
@@ -22,8 +20,10 @@ impl MolecularSystem {
         MolecularSystem { molecules }
     }
     pub fn from_xyz<P: AsRef<Path>>(path: P) -> MolecularSystem {
-        let molecule = Molecule3D::from_xyz(&path);
-        MolecularSystem::new(vec![molecule])
+        let Ok(molecules) = Molecule3D::from_xyz(&path) else {
+            panic!("Could not parse XYZ file");
+        };
+        MolecularSystem::new(molecules)
     }
     pub fn from_pdb<P: AsRef<Path>>(path: P) -> MolecularSystem {
         let file = File::open(&path).expect("Could not open file");
@@ -50,7 +50,7 @@ impl MolecularSystem {
                             .par_iter()
                             .map(|line| extract_atom_pdb(line).expect("Could not parse Atom"))
                             .collect();
-                        Molecule3D::from_atoms(atoms)
+                        Molecule3D::from_atoms(&atoms)
                     })
                     .collect(),
             }
@@ -63,7 +63,7 @@ impl MolecularSystem {
                             .par_iter()
                             .map(|line| extract_atom_cif(line).expect("Could not parse Atom"))
                             .collect();
-                        Molecule3D::from_atoms(atoms)
+                        Molecule3D::from_atoms(&atoms)
                     })
                     .collect(),
             }
@@ -74,8 +74,8 @@ impl MolecularSystem {
         }
     }
 
-    pub fn center(&self) -> Vector {
-        let mut sum = Vector::new(0.0, 0.0, 0.0);
+    pub fn center(&self) -> Vector3D {
+        let mut sum = Vector3D::new(0.0, 0.0, 0.0);
         let mut count = 0.0;
         for molecule in &self.molecules {
             for &position in &molecule.positions {
@@ -131,7 +131,7 @@ impl MolecularSystem {
 ///
 /// ```
 /// use molecules::molecule::molecular_system::extract_atom_pdb;
-/// 
+///
 ///
 /// let line =  "ATOM   2073  CB  ALA B 128      11.390 -11.172  71.797  1.00 16.79           C";
 /// let atom = extract_atom_pdb(line).unwrap();
@@ -145,7 +145,7 @@ impl MolecularSystem {
 pub fn extract_atom_pdb(line: &str) -> Result<Atom, ParseFloatError> {
     // This is a very ugly function, but it is also very fast
     // TODO; Make this function more readable and robust
-    let position = Vector {
+    let position = Vector3D {
         x: line[31..=37].trim().parse::<f64>()?,
         y: line[38..=45].trim().parse::<f64>()?,
         z: line[46..=53].trim().parse::<f64>()?,
@@ -188,7 +188,7 @@ pub fn extract_atom_cif(line: &str) -> Result<Atom, ParseFloatError> {
         .atomic_number()
         .unwrap_or_else(|| panic!("Could not find atom with symbol {}", fields[2]));
 
-    let position = Vector {
+    let position = Vector3D {
         x: fields[10].parse::<f64>()?,
         y: fields[11].parse::<f64>()?,
         z: fields[12].parse::<f64>()?,

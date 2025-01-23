@@ -1,22 +1,46 @@
 use crate::{
-    chirality::ChiralClass,
     molecule::bond::{BondOrder, BondTarget},
-    vector::Vector,
+    molecule::chirality::ChiralClass,
+    vector::Vector3D,
 };
 use chemistry_consts::ElementProperties;
 use tinyvec::ArrayVec;
+
+/// Atomic number standing for the SMILES wildcard atom `*` — an atom whose
+/// element is deliberately left unspecified, as used for attachment points,
+/// polymer end caps and Markush-style fragments.
+///
+/// Zero is not a real element, which is exactly the point: it is the
+/// conventional encoding (RDKit uses it too), it sorts below every real
+/// element wherever atomic number is compared, and it has no valence, so no
+/// implicit hydrogens are ever added to it.
+pub const WILDCARD_ATOMIC_NUMBER: u8 = 0;
+
+/// The symbol a wildcard atom is written with.
+pub const WILDCARD_SYMBOL: &str = "*";
 
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Atom {
     pub atomic_number: u8,
     pub charge: i8,
-    pub is_radical: bool,
+    pub radical_state: u8,
+    pub explicit_hydrogens: usize,
     pub aromatic: bool,
     pub isotope: Option<u16>,
     pub chiral_class: ChiralClass,
-    pub atom_class: Option<u8>,
-    pub position_vector: Option<Vector>,
+    pub atom_class: Option<usize>,
+    pub position_vector: Option<Vector3D>,
+    pub partial_charge: Option<f64>,
     pub bonds: ArrayVec<[BondTarget; 10]>,
+    pub is_complex: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum XYZParserError {
+    IOError,
+    InvalidFloat(String),
+    InvalidAtom(String),
+    InvalidBond,
 }
 
 impl Atom {
@@ -37,7 +61,7 @@ impl Atom {
     }
 
     pub fn with_position(mut self, position: (f64, f64, f64)) -> Self {
-        self.position_vector = Some(Vector::new(position.0, position.1, position.2));
+        self.position_vector = Some(Vector3D::new(position.0, position.1, position.2));
         self
     }
 
@@ -51,25 +75,45 @@ impl Atom {
         self
     }
 
-    pub fn with_atom_class(mut self, atom_class: Option<u8>) -> Self {
+    pub fn with_atom_class(mut self, atom_class: Option<usize>) -> Self {
         self.atom_class = atom_class;
         self
     }
 
-    pub fn from_xyz_line(line: &str) -> Result<Atom, Box<dyn std::error::Error>> {
+    pub fn with_radical(mut self, radical_state: u8) -> Self {
+        self.radical_state = radical_state;
+        self
+    }
+
+    pub fn with_bonds(mut self, bonds: ArrayVec<[BondTarget; 10]>) -> Self {
+        self.bonds = bonds;
+        self
+    }
+
+    pub fn with_is_complex(mut self, is_complex: bool) -> Self {
+        self.is_complex = is_complex;
+        self
+    }
+
+    pub fn from_xyz_line(line: &str) -> Result<Atom, XYZParserError> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() == 4 {
             let atomic_number = parts[0]
-                .to_uppercase()
-                .as_str()
                 .atomic_number()
-                .ok_or("Could not find atomic number")?;
-            let x = parts[1].parse::<f64>()?;
-            let y = parts[2].parse::<f64>()?;
-            let z = parts[3].parse::<f64>()?;
+                .ok_or(XYZParserError::InvalidAtom(parts[0].to_string()))?;
+            let x = parts[1]
+                .parse::<f64>()
+                .map_err(|_| XYZParserError::InvalidFloat(String::from(parts[1])))?;
+            let y = parts[2]
+                .parse::<f64>()
+                .map_err(|_| XYZParserError::InvalidFloat(String::from(parts[2])))?;
+            let z = parts[3]
+                .parse::<f64>()
+                .map_err(|_| XYZParserError::InvalidFloat(String::from(parts[3])))?;
             Ok(Atom::new(atomic_number).with_position((x, y, z)))
         } else {
-            Err("Could not parse Line".into())
+            println!("Invalid XYZ line: {}", line);
+            Err(XYZParserError::InvalidAtom(line.to_string()))
         }
     }
 
@@ -78,18 +122,17 @@ impl Atom {
         if parts.len() < 4 {
             return Err("Invalid atom line".into());
         }
-        let position_vector = Some(Vector {
+        let position_vector = Some(Vector3D {
             x: parts[0].parse()?,
             y: parts[1].parse()?,
             z: parts[2].parse()?,
         });
+        let atomic_number = parts[3]
+            .atomic_number()
+            .ok_or("Could not find atomic number")?;
         Ok(Atom {
             position_vector,
-            atomic_number: parts[3]
-                .to_uppercase()
-                .as_str()
-                .atomic_number()
-                .ok_or("Could not find atomic number")?,
+            atomic_number,
             ..Default::default()
         })
     }
@@ -103,10 +146,18 @@ impl Atom {
     /// assert_eq!(atom.expected_valency(), Some(4));
     /// ```
     pub fn expected_valency(&self) -> Option<i8> {
-        // TODO: Implement for all elements
         self.atomic_number.valencies()?.next()
     }
 
+    /// Compares the electronegativity of two atoms based on the Pauling scale.
+    ///
+    /// # Examples
+    /// ```
+    /// use molecules::prelude::*;
+    /// let atom1 = Atom::new(6);
+    /// let atom2 = Atom::new(8);
+    /// assert!(atom1.cmp_electronegativity(&atom2) == std::cmp::Ordering::Less);
+    /// ```
     pub fn cmp_electronegativity(&self, other: &Self) -> std::cmp::Ordering {
         self.electronegativity().cmp(&other.electronegativity())
     }
@@ -138,11 +189,11 @@ impl Atom {
     }
 
     pub fn is_radical(&self) -> bool {
-        self.is_radical
+        self.radical_state > 0
     }
 
-    pub fn set_radical(&mut self, is_radical: bool) {
-        self.is_radical = is_radical;
+    pub fn set_radical(&mut self, radical_state: u8) {
+        self.radical_state = radical_state;
     }
 
     pub fn atomic_symbol(&self) -> Option<&str> {
@@ -159,6 +210,10 @@ impl Atom {
 
     pub fn monoisotopic_mass(&self) -> Option<f64> {
         self.atomic_number.monoisotopic_mass()
+    }
+
+    pub fn is_complex(&self) -> bool {
+        self.is_complex
     }
 
     /// Calculates the distance between two atoms.
@@ -244,11 +299,17 @@ impl Atom {
         // May need to be changed for elements with unknown valencies
         Some(actual_valency - expected_valency)
     }
-    pub fn actual_valency(&self) -> i8 {
+    /// The valence the atom's bonds alone account for.
+    ///
+    /// Distinct from [`Atom::actual_valency`], which also folds in the radical
+    /// state and `|charge|`. Mixing the two is what made the radical count and
+    /// the hydrogen count disagree: each was correcting for the charge in its
+    /// own way, once too often between them.
+    pub fn bond_valency(&self) -> i8 {
         self.bonds
             .iter()
             .map(|bond| match bond.bond_order() {
-                BondOrder::Single => 2,
+                BondOrder::Single | BondOrder::Up | BondOrder::Down => 2,
                 BondOrder::Double => 4,
                 BondOrder::Triple => 6,
                 BondOrder::Quadruple => 8,
@@ -257,7 +318,24 @@ impl Atom {
             })
             .sum::<i8>()
             / 2
-            + if self.is_radical { 1 } else { 0 }
+    }
+
+    pub fn actual_valency(&self) -> i8 {
+        self.bonds
+            .iter()
+            .map(|bond| match bond.bond_order() {
+                BondOrder::Single => 2,
+                BondOrder::Up => 2,
+                BondOrder::Down => 2,
+                BondOrder::Double => 4,
+                BondOrder::Triple => 6,
+                BondOrder::Quadruple => 8,
+                BondOrder::Aromatic => 3,
+                BondOrder::Coordinate => 2,
+            })
+            .sum::<i8>()
+            / 2
+            + self.radical_state as i8
             + self.charge.abs()
     }
 }

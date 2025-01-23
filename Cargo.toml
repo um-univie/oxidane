@@ -1,7 +1,7 @@
 [package]
 name = "molecules"
-version = "0.1.8"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 license = "MIT"
 description = "A library for working with molecules and molecular dynamics simulations"
 documentation = "https://docs.rs/molecules"
@@ -11,19 +11,26 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-chemistry_consts = {path = "../chemistry_consts"}
-itertools = "0.12.1"
-kiddo = "4.2.1"
-ndarray = "0.16.1"
+# Both, deliberately: cargo builds against the path locally so the two can be
+# worked on together, and falls back to the registry version when molecules is
+# published. A path-only dependency cannot be published at all.
+chemistry_consts = { version = "0.3", path = "../chemistry_consts" }
+itertools = "0.14.0"
+kiddo = "5.2.2"
+ndarray = "0.17.1"
 nohash-hasher = "0.2.0"
-petgraph = "0.6.5"
-rand = "0.8.5"
-rayon = "1.10.0"
-tinyvec = "1.8.0"
-walkdir = "2.5.0"
-canonizer = { path = "../canonizer" }
+petgraph = "0.8"
+rand = "0.9.2"
+rayon = "1.11.0"
+tinyvec = "1.10.0"
 bitvec = "1.0.1"
 bit-set = "0.8.0"
+rustc-hash = "2.1.1"
+graphcanon = {path="../nauty", package="canonaut"}
+rustfft = "6.4.1"
 
-[profile.test]
-inherits = "release"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

@@ -2,14 +2,16 @@ use crate::molecule::bond::BondOrder;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
+    parent: Option<usize>,
     index: usize,
     bond_type: BondOrder,
     children: Vec<Node>,
 }
 
 impl Node {
-    pub fn new(index: usize, bond_type: BondOrder) -> Self {
+    pub fn new(parent: Option<usize>, index: usize, bond_type: BondOrder) -> Self {
         Node {
+            parent,
             index,
             bond_type,
             children: Vec::new(),
@@ -30,5 +32,9 @@ impl Node {
 
     pub fn children(&self) -> &Vec<Node> {
         &self.children
+    }
+
+    pub fn parent(&self) -> Option<usize> {
+        self.parent
     }
 }

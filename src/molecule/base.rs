@@ -1,111 +1,64 @@
 use crate::{
-    atom::Atom,
-    chirality::ChiralClass,
+    atom::{self, Atom},
     molecular_formula::MolecularFormula,
     molecule::{
-        bond::{BondOrder, BondTarget},
-        node::Node,
-        utils::{is_hueckel_satisfied,can_increase_bond},
-        aromaticity::AromaticityType,
+        bond::{Bond, BondOrder, BondTarget},
+        chirality::{ChiralClass, ChiralType},
+        graph::{AtomLabel, AtomLabelImplicitHydrogens, Node},
+        traits::*,
+        utils::{is_hueckel_satisfied, order_tuple},
     },
 };
-use bitvec::vec::BitVec;
 use bit_set::BitSet;
+use bitvec::prelude::*;
 use chemistry_consts::ElementProperties;
+use itertools::CircularTupleWindows;
+use nohash_hasher::{IntMap, IntSet};
 use petgraph::{
     algo::subgraph_isomorphisms_iter,
     graph::{NodeIndex, UnGraph},
 };
-use tinyvec::{array_vec, ArrayVec};
+use rustc_hash::{FxHashMap, FxHashSet};
+use tinyvec::{ArrayVec, array_vec};
 
-use nohash_hasher::{IntMap, IntSet};
-use std::collections::{HashMap, HashSet};
-
-pub enum Chirality {
-    None,
-    CounterClockwise,
-    Clockwise,
+pub trait Molecule:
+    MoleculeCore + MoleculeExperimental + MoleculeAromaticity + MoleculeGraph
+{
 }
 
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq)]
-pub struct AtomLabelImplicitHydrogens {
-    atomic_number: u8,
-    charge: i8,
-    aromatic: bool,
-    isotope: Option<u16>,
-    chirality: ChiralClass,
-    implicit_hydrogens: u8,
-}
-
-impl AtomLabelImplicitHydrogens {
-    pub fn new(atomic_number: u8, charge: i8, aromatic: bool, isotope: Option<u16>, chirality: ChiralClass, implicit_hydrogens: u8) -> Self {
-        Self { atomic_number, charge, aromatic, isotope, chirality, implicit_hydrogens }
-    }
-}
-
-
-impl std::cmp::Eq for AtomLabelImplicitHydrogens {}
-
-impl std::cmp::PartialOrd for AtomLabelImplicitHydrogens {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for AtomLabelImplicitHydrogens {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.atomic_number, self.charge, self.aromatic, self.isotope, self.chirality, self.implicit_hydrogens).cmp(&(other.atomic_number, other.charge, other.aromatic, other.isotope, other.chirality, other.implicit_hydrogens))
-    }
-}
-
-#[derive(Debug, Clone, Copy, Hash, PartialEq)]
-pub struct AtomLabel {
-    atomic_number: u8, // This is also used for the bonds orders which are stored as u8, so we can use the same type for both
-    charge: i8,
-    aromatic: bool,
-    isotope: Option<u16>,
-    chirality: ChiralClass,
-}
-
-
-impl AtomLabel {
-    pub fn new(atomic_number: u8, charge: i8, aromatic: bool, isotope: Option<u16>, chirality: ChiralClass) -> Self {
-        Self { atomic_number, charge, aromatic, isotope, chirality }
-    }
-}
-
-impl std::cmp::Eq for AtomLabel {}
-
-
-impl std::cmp::PartialOrd for AtomLabel {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl std::cmp::Ord for AtomLabel {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.atomic_number, self.charge, self.aromatic,self.chirality, self.isotope).cmp(&(other.atomic_number, other.charge, self.aromatic, other.chirality, other.isotope))
-    }
-}
-
-
-pub trait Molecule {
+pub trait MoleculeCore {
     fn atom_bonds(&self) -> &Vec<ArrayVec<[BondTarget; 10]>>;
     fn atom_bonds_mut(&mut self) -> &mut Vec<ArrayVec<[BondTarget; 10]>>;
     fn atomic_numbers(&self) -> &[u8];
     fn atomic_numbers_mut(&mut self) -> &mut Vec<u8>;
     fn chiral_classes(&self) -> Option<&[ChiralClass]>;
     fn chiral_classes_mut(&mut self) -> Option<&mut Vec<ChiralClass>>;
+    fn initialize_chiral_classes(&mut self);
     fn charges(&self) -> &[i8];
     fn charges_mut(&mut self) -> &mut Vec<i8>;
     fn isotopes(&self) -> Option<&Vec<u16>>;
-    fn atom_classes(&self) -> &Option<Vec<u8>>;
-    fn atom_classes_mut(&mut self) -> &mut Option<Vec<u8>>;
-    fn from_atoms(atoms: Vec<Atom>) -> Self;
-    fn radical_states(&self) -> &[bool];
-    fn radical_states_mut(&mut self) -> &mut Vec<bool>;
+    fn isotopes_mut(&mut self) -> &mut Option<Vec<u16>>;
+    fn atom_classes(&self) -> &Option<Vec<usize>>;
+    fn atom_classes_mut(&mut self) -> &mut Option<Vec<usize>>;
+    fn from_atoms(atoms: &[Atom]) -> Self;
+    fn radical_states(&self) -> &[u8];
+    fn radical_states_mut(&mut self) -> &mut Vec<u8>;
+    /// Extends the per-atom vectors this representation carries beyond the ones
+    /// the trait knows about, so that [`MoleculeCore::add_atom`] keeps them in
+    /// step with the rest.
+    ///
+    /// `Molecule3D` indexes `positions` directly, and adding an atom without
+    /// this left it shorter than the atom count — reading an SDF that omits its
+    /// hydrogens and adding them gave twelve atoms and six positions, and the
+    /// next thing to ask for a distance panicked.
+    fn push_atom_extras(&mut self, _atom: &Atom) {}
+
+    /// The counterpart of [`MoleculeCore::push_atom_extras`] for the last atom.
+    fn pop_atom_extras(&mut self) {}
+
+    /// The counterpart of [`MoleculeCore::push_atom_extras`] for one atom.
+    fn remove_atom_extras(&mut self, _atom_index: usize) {}
+
     fn pop_atom(&mut self) {
         self.atomic_numbers_mut().pop();
         self.charges_mut().pop();
@@ -117,7 +70,47 @@ pub trait Molecule {
         if let Some(chirals) = self.chiral_classes_mut() {
             chirals.pop();
         }
+        if let Some(isotopes) = self.isotopes_mut() {
+            isotopes.pop();
+        }
+        self.pop_atom_extras();
     }
+
+    fn remove_atom(&mut self, atom_index: usize) {
+        // Remove the atom's data
+        self.atomic_numbers_mut().remove(atom_index);
+        self.charges_mut().remove(atom_index);
+        self.radical_states_mut().remove(atom_index);
+        self.atom_bonds_mut().remove(atom_index);
+        if let Some(classes) = self.atom_classes_mut() {
+            classes.remove(atom_index);
+        }
+        if let Some(chirals) = self.chiral_classes_mut() {
+            chirals.remove(atom_index);
+        }
+        if let Some(isotopes) = self.isotopes_mut() {
+            isotopes.remove(atom_index);
+        }
+        self.remove_atom_extras(atom_index);
+
+        // Update all remaining bonds
+        for current_atom_bonds in self.atom_bonds_mut() {
+            // Remove any bonds to the deleted atom
+            current_atom_bonds.retain(|bond| bond.target() != atom_index);
+
+            // Update indices of bonds that pointed to atoms after the deleted one
+            for bond in current_atom_bonds.iter_mut() {
+                if bond.target() > atom_index {
+                    bond.set_target(bond.target() - 1);
+                }
+            }
+        }
+    }
+
+    fn can_increase_bond(atom_index: usize, neighbor_index: usize, degrees: &[i8]) -> bool {
+        degrees[atom_index] < 0 && degrees[neighbor_index] < 0
+    }
+
     fn get_atomic_symbol(&self, atom_index: usize) -> Option<&str> {
         self.atomic_numbers().get(atom_index)?.atomic_symbol()
     }
@@ -125,12 +118,15 @@ pub trait Molecule {
     fn len(&self) -> usize {
         self.atomic_numbers().len()
     }
+
     fn is_empty(&self) -> bool {
         self.atomic_numbers().is_empty()
     }
 
     fn is_radical(&self) -> bool {
-        self.radical_states().iter().any(|&is_radical| is_radical)
+        self.radical_states()
+            .iter()
+            .any(|&radical_state| radical_state > 0)
     }
 
     /// This function returns the valency_delta of an atom
@@ -146,11 +142,90 @@ pub trait Molecule {
         Some(expected_valency - actual_valency)
     }
 
+    /// Checks if an atom has a plausible valency based on its element type, charge, and bonding.
+    ///
+    /// This function determines whether the actual valency of an atom is chemically reasonable
+    /// by comparing it with the expected valency for that element, while accounting for:
+    /// - Formal charges (which can modify acceptable valencies)
+    /// - Radical states (which can affect bonding capacity)
+    /// - Special cases for hypervalent elements (P, S) and transition metals
+    ///
+    /// # Arguments
+    /// * `atom_index` - The index of the atom to check
+    ///
+    /// # Returns
+    /// `true` if the atom's valency is plausible, `false` otherwise
+    ///
+    /// # Examples
+    /// ```
+    /// use molecules::prelude::*;
+    /// let molecule = MolecularGraph::from_smiles("C").unwrap();
+    /// let molecule = molecule.first().unwrap();
+    /// assert!(molecule.has_plausible_valency(0)); // Carbon with 4 bonds is plausible
+    ///
+    /// let molecule = MolecularGraph::from_smiles("C=O").unwrap();
+    /// let molecule = molecule.first().unwrap();
+    /// assert!(molecule.has_plausible_valency(1)); // Oxygen with 2 bonds is plausible
+    ///
+    /// let molecule = MolecularGraph::from_smiles("OS(=O)(=O)O").unwrap();
+    /// let molecule = molecule.first().unwrap();
+    /// assert!(molecule.has_plausible_valency(0)); // Sulfur can be hypervalent
+    /// ```
+    fn has_plausible_valency(&self, atom_index: usize) -> bool {
+        // Get the expected valency for this atom
+        let expected_valency = match self.expected_valency(atom_index) {
+            Some(val) => val,
+            None => return true, // If we don't know the expected valency, assume it's plausible
+        };
+
+        println!("expected_valency: {}", expected_valency);
+        // Get the actual valency
+        let actual_valency = self.actual_valency(atom_index);
+        println!("actual_valency: {}", actual_valency);
+        // Get the charge and radical state
+        let charge = self.get_atom_charge(atom_index);
+        println!("charge: {}", charge);
+        let is_radical = self.is_atom_radical(atom_index);
+        println!("is_radical: {}", is_radical);
+        // Calculate the valency delta (expected - actual)
+        let valency_delta = expected_valency - actual_valency;
+
+        // For most elements, the valency delta should be non-negative
+        // Exceptions are made for charged atoms and radicals
+        if valency_delta < 0 {
+            println!("valency_delta < 0");
+            // Atoms with positive charge can have higher valency
+            if charge > 0 && valency_delta + charge >= 0 {
+                return true;
+            }
+
+            // Radicals can have one less bond than expected
+            if is_radical && valency_delta + 1 >= 0 {
+                return true;
+            }
+
+            // Special cases for specific elements
+            let atomic_number = self.get_atomic_number(atom_index);
+            match atomic_number {
+                // Hypervalent elements like P, S can exceed their usual valency
+                15 => return valency_delta < -4, // Phosphorus, maximum valency is 7
+                16 => return valency_delta < -5, // Sulfur standard valency is 2, maximum valency is 6
+                // Transition metals often have variable valencies
+                21..=30 | 39..=48 | 57..=80 | 89..=112 => return true,
+                // Default case - valency should match expected
+                _ => return false,
+            }
+        }
+
+        // If valency_delta is non-negative, the valency is plausible
+        true
+    }
+
     fn get_atomic_number(&self, atom_index: usize) -> u8 {
         self.atomic_numbers()[atom_index]
     }
 
-    fn set_atom_class(&mut self, atom_index: usize, class: u8) {
+    fn set_atom_class(&mut self, atom_index: usize, class: usize) {
         if let Some(classes) = self.atom_classes_mut() {
             classes[atom_index] = class;
         } else {
@@ -174,8 +249,8 @@ pub trait Molecule {
     /// # Example
     ///
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
-    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// use molecules::prelude::*;
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     ///
     /// assert_eq!(molecule.cmp_electronegativities(0, 1), std::cmp::Ordering::Equal);
     /// ```
@@ -199,8 +274,8 @@ pub trait Molecule {
     /// # Example
     ///
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
-    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// use molecules::prelude::*;
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// assert_eq!(molecule.electronegativity(0), Some(254)); // Carbon's electronegativity
     /// assert_eq!(molecule.electronegativity(2), Some(220)); // Hydrogen's electronegativity
     /// ```
@@ -216,8 +291,8 @@ pub trait Molecule {
     /// # Example
     ///
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
-    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz");
+    /// use molecules::prelude::*;
+    /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// assert_eq!(molecule.get_oxidation_state(0), -3);
     ///
     /// ```
@@ -233,6 +308,7 @@ pub trait Molecule {
         }
         state
     }
+
     /// This function returns the number of bonded elements of a specific type in case of invalid atom index it returns 0 to keep the api simple
     fn number_of_bonded_element(&self, atom_index: usize, element: u8) -> usize {
         let Some(bonds) = self.get_atom_bonds(atom_index) else {
@@ -248,7 +324,7 @@ pub trait Molecule {
         self.atomic_numbers()[atom_index].valencies()?.next()
     }
 
-    /// This function returns the actual valency of an atom. In case of fractional valency it returns the rounded down value (e.g. fused aromatic systems are treated as aromatic) 
+    /// This function returns the actual valency of an atom. In case of fractional valency it returns the rounded down value (e.g. fused aromatic systems are treated as aromatic)
     ///
     /// # Arguments
     /// * 'atom_index' - The index of the atom
@@ -262,33 +338,73 @@ pub trait Molecule {
             .iter()
             .map(|bond| match bond.bond_order() {
                 BondOrder::Single => 2,
+                BondOrder::Up => 2,
+                BondOrder::Down => 2,
                 BondOrder::Double => 4,
                 BondOrder::Triple => 6,
                 BondOrder::Quadruple => 8,
                 BondOrder::Aromatic => 3,
                 BondOrder::Coordinate => 2,
             })
-            .sum::<i8>()
-            )
+            .sum::<i8>())
             / 2
     }
-    fn degree(&self, atom_index: usize) -> Option<i8> {
-        let expected_valency = self.expected_valency(atom_index)?;
+
+    /// This function returns the degree of an atom, which is the sum of the valency delta, the charge and the radical state
+    ///
+    /// # Arguments
+    /// * 'atom_index' - The index of the atom
+    ///
+    /// # Returns
+    /// The degree of the atom as an `i8`
+    ///
+    fn get_atom_degree(&self, atom_index: usize) -> Option<i8> {
         let actual_valency = self.actual_valency(atom_index);
         let charge = self.get_atom_charge(atom_index);
-        let radical = self.is_atom_radical(atom_index) as i8;
-        // May need to be changed for elements with unknown valencies
-        Some(actual_valency - expected_valency + charge.abs() + radical)
+        // Every unpaired electron takes up a bonding slot, so a diradical
+        // accounts for two. An absent entry means none; some sources leave the
+        // vector empty rather than filling it with zeros.
+        let radicals = self.radical_states().get(atom_index).copied().unwrap_or(0) as i8;
+        let atomic_number = self.atomic_numbers()[atom_index];
+        let effective = effective_valency(atomic_number, charge)?;
+        Some(actual_valency + radicals - effective)
     }
 
+    fn get_atom_isotope(&self, atom_index: usize) -> Option<u16> {
+        if atom_index >= self.len() {
+            return None;
+        }
+        let Some(isotope) = self.get_isotope(atom_index) else {
+            let atomic_number = self.atomic_numbers()[atom_index];
+            let isotope = atomic_number.most_abundant_isotope();
+            return isotope;
+        };
+        Some(isotope)
+    }
+
+    /// This function returns the degree of all atoms in the molecule
+    ///
+    /// # Arguments
+    /// * 'self' - The molecule
+    ///
+    /// # Returns
+    /// A vector of degrees for all atoms in the molecule as an `i8`
+    ///
     fn degrees(&self) -> Vec<i8> {
         self.atomic_numbers()
             .iter()
             .enumerate()
-            .map(|(index, _)| self.degree(index).unwrap_or(0))
+            .map(|(index, _)| self.get_atom_degree(index).unwrap_or(0))
             .collect()
     }
 
+    /// This function returns the monoisotopic mass of the molecule, based on the most common isotope of each element
+    ///
+    /// # Arguments
+    /// * 'self' - The molecule
+    ///
+    /// # Returns
+    /// The monoisotopic mass of the molecule as an `f64`
     fn monoisotopic_mass(&self) -> f64 {
         self.atomic_numbers()
             .iter()
@@ -296,35 +412,103 @@ pub trait Molecule {
             .sum::<f64>()
     }
 
+    /// This function returns the number of atoms in the molecule, which is the length of the atomic numbers vector
+    ///
+    /// # Arguments
+    /// * 'self' - The molecule
+    ///
+    /// # Returns
+    /// The number of atoms in the molecule as an `usize`
     fn number_of_atoms(&self) -> usize {
         self.atomic_numbers().len()
     }
 
+    /// This function returns the formal charge of the molecule, which is the sum of the charges of all atoms
+    ///
+    /// # Arguments
+    /// * 'self' - The molecule
+    ///
+    /// # Returns
+    /// The formal charge of the molecule as an `i32`
     fn formal_charge(&self) -> i32 {
         self.charges().iter().sum::<i8>() as i32
     }
 
+    /// This function returns a copy of the formal charge of an atom
+    ///
+    /// # Arguments
+    /// * 'atom_index' - The index of the atom
+    ///
+    /// # Returns
+    /// The charge of the atom as an `i8`
     fn get_atom_charge(&self, atom_index: usize) -> i8 {
         self.charges()[atom_index]
     }
 
+    /// This function returns a mutable reference to the formal charge of an atom
+    ///
+    /// # Arguments
+    /// * 'atom_index' - The index of the atom
+    ///
+    /// # Returns
+    /// The charge of the atom as an `i8`
     fn get_atom_charge_mut(&mut self, atom_index: usize) -> &mut i8 {
         &mut self.charges_mut()[atom_index]
     }
 
+    /// The isotope **explicitly stated** for an atom, if any.
+    ///
+    /// `None` means the SMILES (or file) left it unspecified, not that the
+    /// atom has no mass number — use [`MoleculeCore::get_atom_isotope`] for
+    /// the effective mass number, which falls back to the element's most
+    /// abundant isotope. The distinction is what lets `to_smiles` write
+    /// `[13C]` where it was asked for and plain `C` where it was not.
     fn get_isotope(&self, atom_index: usize) -> Option<u16> {
         self.isotopes()
             .and_then(|isotopes| isotopes.get(atom_index).copied())
+            .filter(|&isotope| isotope != 0)
     }
 
+    /// This function returns the chiral class of an atom, if one is specified
+    ///
+    /// # Arguments
+    /// * 'atom_index' - The index of the atom
+    ///
+    /// # Returns
+    /// The chiral class of the atom as an `Option<ChiralClass>`
     fn get_chiral_class(&self, atom_index: usize) -> ChiralClass {
         self.chiral_classes()
             .and_then(|chirals| chirals.get(atom_index).copied())
             .unwrap_or(ChiralClass::None)
     }
 
-    fn is_atom_radical(&self, atom_index: usize) -> bool;
-    fn set_atom_radical(&mut self, atom_index: usize, is_radical: bool);
+    /// This function returns whether an atom is radical, if no radical state is specified we assume the atom is not radical
+    ///
+    /// # Arguments
+    /// * 'atom_index' - The index of the atom
+    ///
+    /// # Returns
+    /// The radical state of the atom as a `bool`
+    fn is_atom_radical(&self, atom_index: usize) -> bool {
+        self.radical_states().get(atom_index).is_some_and(|&state| state > 0)
+    }
+
+    /// This function sets the radical state of an atom
+    ///
+    /// # Arguments
+    /// * 'atom_index' - The index of the atom
+    /// * 'is_radical' - The new radical state of the atom
+    ///
+    /// # Returns
+    /// The radical state of the atom as a `bool`
+    fn set_atom_radical_state(&mut self, atom_index: usize, radical_state: u8) {
+        if atom_index < self.radical_states().len() {
+            self.radical_states_mut()[atom_index] = radical_state;
+        } else {
+            println!("Atom index out of bounds, could not set radical state");
+        }
+    }
+
     fn set_atom_charge(&mut self, atom_index: usize, charge: i8) {
         if atom_index < self.charges().len() {
             self.charges_mut()[atom_index] = charge;
@@ -332,7 +516,7 @@ pub trait Molecule {
             println!("Atom index out of bounds, could not set charge");
         }
     }
-    fn get_atom_class(&self, atom_index: usize) -> u8 {
+    fn get_atom_class(&self, atom_index: usize) -> usize {
         let reference = self.atom_classes().as_ref();
         reference.map_or(0, |classes| classes[atom_index])
     }
@@ -369,156 +553,21 @@ pub trait Molecule {
             .collect()
     }
 
-    fn to_ungraph(&self) -> UnGraph<u8, BondOrder> {
-        let mut graph = UnGraph::<u8, BondOrder>::default();
-        let mut node_indices = IntMap::<usize, NodeIndex<u32>>::default();
-
-        for (index, &atomic_number) in self.atomic_numbers().iter().enumerate() {
-            let node_index = graph.add_node(atomic_number);
-            node_indices.insert(index, node_index);
-        }
-
-        for (index, bonds) in self.atom_bonds().iter().enumerate() {
-            for bond in bonds {
-                let source = node_indices[&index];
-                let target = node_indices[&bond.target()];
-                if source < target {
-                    graph.add_edge(source, target, bond.bond_order());
-                }
-            }
-        }
-        graph
-    }
-    /// Returns a standardized string label for an atom containing all relevant atomic information
-/// in a defined order: atomic_symbol, aromaticity, charge, hydrogens, etc.
-///
-/// # Arguments
-/// * `mol` - The molecule containing the atom
-/// * `atom_index` - The index of the atom to get the label for
-///
-/// # Returns
-/// A string containing all atom information in a standardized format
-///
-/// # Example
-/// ```
-/// use molecules::prelude::*;
-/// let mol = Molecule2D::from_smiles("[NH3+]").unwrap();
-/// let mol = mol.first().unwrap();
-/// assert_eq!(mol.get_atom_label(0), "N+1"); // Nitrogen, charge +1
-/// ```
-    fn get_atom_label(&self, atom_index: usize) -> AtomLabel {
-        let atomic_number = self.atomic_numbers()[atom_index];
-        // 2. Charge (c0 for neutral, c1 for +1, c-1 for -1, etc.)
-        let charge = self.get_atom_charge(atom_index);
-        let isotope = self.get_isotope(atom_index); 
-        let is_aromatic = self.is_atom_aromatic(atom_index);
-        let chirality = self.get_chiral_class(atom_index);
-
-        AtomLabel::new(atomic_number,charge,is_aromatic,isotope,chirality)
-
-    }
-
-    fn get_atom_label_with_hydrogens(&self, atom_index: usize) -> AtomLabelImplicitHydrogens {
-        let atomic_number = self.atomic_numbers()[atom_index];
-        let charge = self.get_atom_charge(atom_index);
-        let isotope = self.get_isotope(atom_index); 
-        let is_aromatic = self.is_atom_aromatic(atom_index);
-        let chirality = self.get_chiral_class(atom_index);
-        let implicit_hydrogens = self.number_of_bonded_element(atom_index,1);
-        AtomLabelImplicitHydrogens::new(atomic_number,charge,is_aromatic,isotope,chirality, implicit_hydrogens as u8)
-    }
-
-
-    fn to_ungraph_from_slice(&self, slice: &[usize]) -> UnGraph<AtomLabel, BondOrder> {
-        let mut graph = UnGraph::<AtomLabel, BondOrder>::default();
-        let mut node_indices = IntMap::<usize, NodeIndex<u32>>::default();
-
-        for &index in slice {
-            let node_index = graph.add_node(self.get_atom_label(index));
-            node_indices.insert(index, node_index);
-        }
-
-        for &index in slice {
-            let bonds = &self.atom_bonds()[index];
-            for bond in bonds {
-                let source = node_indices[&index];
-                let target = node_indices[&bond.target()];
-                if source < target && slice.contains(&bond.target()) {
-                    graph.add_edge(source, target, bond.bond_order());
-                }
-            }
-        }
-        graph
-    }
-
-    fn match_submolecule(&self, other: &Self) -> Option<Vec<IntMap<usize, usize>>> {
-        let mut self_components = self.get_components();
-        let mut other_components = other.get_components();
-        if self
-            .atomic_numbers()
-            .iter()
-            .zip(other.atomic_numbers())
-            .all(|(a, b)| a == b)
-            && self
-                .atom_bonds()
-                .iter()
-                .zip(other.atom_bonds())
-                .all(|(a, b)| a == b)
-            && self.len() == other.len()
-        {
-            return Some(vec![(0..self.number_of_atoms())
-                .map(|index| (index, index))
-                .collect()]);
-        }
-
-        self_components.retain(|component| component.len() > 1);
-        other_components.retain(|component| component.len() > 1);
-
-        for self_component in &mut self_components {
-            let graph1 = self.to_ungraph_from_slice(self_component);
-            let g_ref = &graph1;
-            for other_component in &mut other_components {
-                let graph2 = other.to_ungraph_from_slice(other_component);
-
-                let h_ref = &graph2;
-
-                if let Some(mappings) = subgraph_isomorphisms_iter(
-                    &h_ref,
-                    &g_ref,
-                    &mut |node1, node2| node1 == node2,
-                    &mut |edge1, edge2| edge1 == edge2,
-                ) {
-                    let mapping = mappings
-                        .map(|mapping| {
-                            mapping
-                                .into_iter()
-                                .zip(other_component.iter())
-                                .map(|(index, &other_component_index)| {
-                                    (self_component[index], other_component_index)
-                                })
-                                .collect::<IntMap<usize, usize>>()
-                        })
-                        .collect::<Vec<IntMap<usize, usize>>>();
-                    if mapping.is_empty() {
-                        continue;
-                    }
-                    return Some(mapping);
-                };
-            }
-        }
-        None
-    }
-    fn get_components(&self) -> Vec<Vec<usize>> {
-        let mut connected_components = vec![];
-        let mut visited_atoms = vec![false; self.atomic_numbers().len()];
-        let mut stack = Vec::with_capacity(self.atomic_numbers().len());
-        while let Some(index) = visited_atoms.iter().position(|&a| !a) {
-            let mut component = self.traverse_component(&mut stack, index, &mut visited_atoms);
-            component.sort();
-            connected_components.push(component);
-            stack.clear();
-        }
-        connected_components
+    fn get_chiral_type(&self, atom_index: usize) -> ChiralType {
+        let chiral_class = self.get_chiral_class(atom_index);
+        let chiral_type = match chiral_class {
+            ChiralClass::None => ChiralType::None,
+            ChiralClass::Clockwise => ChiralType::TH,
+            ChiralClass::Counterclockwise => ChiralType::TH,
+            ChiralClass::SP(_) => ChiralType::SP,
+            ChiralClass::TB(_) => ChiralType::TB,
+            ChiralClass::OH(_) => ChiralType::OH,
+            ChiralClass::AL(_) => ChiralType::AL,
+            ChiralClass::TH(_) => ChiralType::TH,
+            ChiralClass::CisTransClockwise => ChiralType::CisTrans,
+            ChiralClass::CisTransCounterclockwise => ChiralType::CisTrans,
+        };
+        chiral_type
     }
 
     fn get_atom_bonds(&self, atom_index: usize) -> Option<&[BondTarget]> {
@@ -526,37 +575,25 @@ pub trait Molecule {
             .get(atom_index)
             .map(|bonds| bonds.as_slice())
     }
-    fn traverse_component(
-        &self,
-        stack: &mut Vec<usize>,
-        start: usize,
-        visited_atoms: &mut [bool],
-    ) -> Vec<usize> {
-        let mut current_component = Vec::new();
-        stack.push(start);
-        visited_atoms[start] = true;
 
-        while let Some(index) = stack.pop() {
-            current_component.push(index);
-            let Some(bonds) = self.get_atom_bonds(index) else {
-                println!(
-                    "No bonds found for atom {}, this means an out of bounds access",
-                    index
-                );
-                continue;
-            };
-            for &bond in bonds {
-                let target = bond.target();
-                if !visited_atoms[target] {
-                    stack.push(target);
-                    visited_atoms[target] = true;
-                }
-            }
-        }
-
-        current_component
+    fn get_atom_bonds_mut(&mut self, atom_index: usize) -> Option<&mut [BondTarget]> {
+        self.atom_bonds_mut()
+            .get_mut(atom_index)
+            .map(|bonds| bonds.as_mut_slice())
     }
 
+    /// This function builds a smiles tree from the molecule
+    ///
+    /// # Arguments
+    /// * 'start_index' - The index of the atom to start the tree from
+    /// * 'bond_type' - The type of bond to start the tree from
+    /// * 'parent_index' - The index of the parent atom
+    /// * 'visited' - A vector of visited atoms
+    /// * 'ring_closures' - A vector of ring closures
+    /// * 'traversal_order' - A vector of the traversal order of the tree
+    ///
+    /// # Returns
+    /// The root of the smiles tree
     fn build_smiles_tree(
         &self,
         start_index: usize,
@@ -566,19 +603,27 @@ pub trait Molecule {
         ring_closures: &mut Vec<(usize, usize, BondOrder)>,
         traversal_order: &mut Vec<usize>,
     ) -> Node {
-        let mut root = Node::new(start_index, bond_type);
+        let mut root = Node::new(parent_index, start_index, bond_type);
         visited[start_index] = true;
-        traversal_order.push(start_index);  // Record traversal order
-        
+        traversal_order.push(start_index); // Record traversal order
+
         let mut bonds = self.atom_bonds()[start_index];
         bonds.sort_by_key(|bond| bond.target());
-        
+
+        // A hydrogen folds into its neighbour's `H` count and needs no node of
+        // its own — unless it carries an isotope, which can only be written as
+        // a separate atom (`O[2H]`). Checking whether the molecule has any
+        // isotopes at all first keeps the common case to one `Option` test.
+        let has_labelled_hydrogens = self.isotopes().is_some();
+
         for neighbor in bonds {
             if Some(neighbor.target()) == parent_index {
                 continue;
             }
 
-            if self.atomic_numbers()[neighbor.target()] == 1 {
+            if self.atomic_numbers()[neighbor.target()] == 1
+                && !(has_labelled_hydrogens && self.get_isotope(neighbor.target()).is_some())
+            {
                 continue;
             }
 
@@ -632,463 +677,177 @@ pub trait Molecule {
     /// Checks if the molecule has any stereochemistry
     ///
     /// # Returns
-    /// A boolean indicating whether the molecule has stereochemistry   
+    /// A boolean indicating whether the molecule has stereochemistry
     ///
     /// # Example
     /// ```
     /// use molecules::prelude::*;
-    /// let molecule = Molecule2D::from_smiles("C[C@H](N)O").unwrap();
+    /// let molecule = MolecularGraph::from_smiles("C[C@H](N)O").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// assert_eq!(molecule.has_stereochemistry(), true);
     /// ```
     fn has_stereochemistry(&self) -> bool {
-        self.chiral_classes().map_or(false, |classes| classes.iter().any(|class| class != &ChiralClass::None))
+        self.chiral_classes().map_or(false, |classes| {
+            classes.iter().any(|class| class != &ChiralClass::None)
+        })
     }
 
-    fn molecular_formula(&self) -> MolecularFormula {
+    fn molecular_formula(&self) -> MolecularFormula
+    where
+        Self: Molecule + Sized,
+    {
         MolecularFormula::from_molecule(self)
     }
 
-    /// Converts the molecule to an undirected graph where both atoms and bonds are represented as nodes
+    fn is_chiral(&self) -> bool {
+        self.chiral_classes().map_or(false, |classes| {
+            classes.iter().any(|class| class != &ChiralClass::None)
+        })
+    }
+
+    /// Gets the path of atoms in the order they would be visited during SMILES string generation
     ///
     /// # Returns
-    /// An undirected graph where:
-    /// - Atom nodes are labeled with their atomic symbol (e.g., "C", "N", "O")
-    /// - Bond nodes are labeled with the bond order (e.g., "-", "=", "#")
-    /// - Edges connect atoms to their bonds (no direct atom-to-atom connections)
+    /// A vector of atom indices in the order they are visited when generating a SMILES string
     ///
     /// # Example
     /// ```
     /// use molecules::prelude::*;
-    /// let molecules = Molecule2D::from_smiles("C=C").unwrap();
-    /// let molecule = molecules.first().unwrap();
-    /// let graph = molecule.to_ungraph_with_edge_nodes();
-    /// assert_eq!(graph.node_count(), 11); // 2 carbon atoms + 1 double bond
-    /// assert_eq!(graph.edge_count(), 10); // 2 edges connecting atoms to bond
+    /// let mol = MolecularGraph::from_smiles("CC(=O)C").unwrap()[0].clone();
+    /// let path = mol.get_smiles_path();
+    /// // Acetone's four heavy atoms, each once; hydrogens are not traversed.
+    /// assert_eq!(path.len(), 4);
+    /// let mut sorted = path.clone();
+    /// sorted.sort_unstable();
+    /// assert_eq!(sorted, vec![0, 1, 2, 3]);
     /// ```
-    fn to_ungraph_with_edge_nodes(&self) -> UnGraph<AtomLabel, ()> {
-        let mut graph = UnGraph::<AtomLabel, ()>::default();
-        let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
-        let mut bond_indices = HashMap::<(usize, usize), NodeIndex<u32>>::default();
-
-        // Add atom nodes
-        for (index, _) in self.atomic_numbers().iter().enumerate() {
-            let label = self.get_atom_label(index);
-            let node_index = graph.add_node(label);
-            atom_indices.insert(index, node_index);
+    fn get_smiles_path(&self) -> Vec<usize> {
+        let mut path = Vec::with_capacity(self.len());
+        let mut visited = vec![false; self.len()];
+        for i in 0..self.len() {
+            if self.atomic_numbers()[i] == 1 {
+                visited[i] = true;
+            }
         }
 
-        // Add bond nodes and connect them to atoms
-        for (index, bonds) in self.atom_bonds().iter().enumerate() {
+        // Start from each unvisited atom to handle disconnected components
+        for start in 0..self.len() {
+            if !visited[start] {
+                self.visit_atom_for_path(start, &mut visited, &mut path);
+            }
+        }
+
+        path
+    }
+
+    fn visit_atom_for_path(&self, current: usize, visited: &mut [bool], path: &mut Vec<usize>) {
+        visited[current] = true;
+        path.push(current);
+
+        // Get all bonds for current atom
+        if let Some(bonds) = self.get_atom_bonds(current) {
+            // Process each bond
             for bond in bonds {
                 let target = bond.target();
-                if index < target {
-                    let bond_order = bond.bond_order();
-                    let source_atom = atom_indices[&index];
-                    let target_atom = atom_indices[&target];
-                    if bond_order == BondOrder::Single || bond_order == BondOrder::Aromatic {
-                        graph.add_edge(source_atom, target_atom, ());
-                        continue;
-                    }
-                    // Only process each bond once
-                    // Create bond node
-                    let bond_label = AtomLabel::new(bond.bond_order().to_u8(), 0,false, None, ChiralClass::None);
-                    let bond_node = graph.add_node(bond_label);
-                    bond_indices.insert((index, target), bond_node);
 
-                    // Connect atoms to bond
-                    graph.add_edge(source_atom, bond_node, ());
-                    graph.add_edge(target_atom, bond_node, ());
+                if !visited[target] {
+                    // If target not visited, traverse it
+                    self.visit_atom_for_path(target, visited, path);
                 }
             }
         }
-
-        graph
     }
 
-    fn to_ungraph_with_edge_nodes_and_implicit_hydrogens(&self) -> UnGraph<AtomLabelImplicitHydrogens, ()> {
-        let mut graph = UnGraph::<AtomLabelImplicitHydrogens, ()>::default();
-        let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
-        let mut bond_indices = HashMap::<(usize, usize), NodeIndex<u32>>::default();
-
-        // Add atom nodes
-        for (index, _) in self.atomic_numbers().iter().enumerate() {
-            if self.atomic_numbers()[index] == 1 {
-                continue;
-            }
-            let label = self.get_atom_label_with_hydrogens(index);
-            let node_index = graph.add_node(label);
-            atom_indices.insert(index, node_index);
-        }
-
-        // Add bond nodes and connect them to atoms
-        for (index, bonds) in self.atom_bonds().iter().enumerate() {
-            for bond in bonds {
-                let target = bond.target();
-                if self.atomic_numbers()[index] == 1 || self.atomic_numbers()[target] == 1 {
-                    continue;
-                }
-                if index < target {
-                    let bond_order = bond.bond_order();
-                    let source_atom = atom_indices[&index];
-                    let target_atom = atom_indices[&target];
-                    if bond_order == BondOrder::Single || bond_order == BondOrder::Aromatic {
-                        graph.add_edge(source_atom, target_atom, ());
-                        continue;
-                    }
-                    // Only process each bond once
-                    // Create bond node
-                    let bond_label = AtomLabelImplicitHydrogens::new(bond.bond_order().to_u8(), 0, false, None, ChiralClass::None, 0);
-                    let bond_node = graph.add_node(bond_label);
-                    bond_indices.insert((index, target), bond_node);
-
-                    // Connect atoms to bond
-                    graph.add_edge(source_atom, bond_node, ());
-                    graph.add_edge(target_atom, bond_node, ());
-                }
-            }
-        }
-
-        graph
-    }
-
-
-    fn to_smiles(&self) -> String {
-        if self.atomic_numbers().is_empty() {
-            return String::new();
-        }
-        let mut smiles = String::new();
-        let components = self.get_components();
-
-        for component in components {
-            let rings = &mut Vec::new();
-            let mut visited = vec![false; self.atomic_numbers().len()];
-            // Track traversal order of atoms
-            let mut traversal_order = Vec::with_capacity(self.atomic_numbers().len());
-
-            let root_index = component.iter().filter(|&&x| self.atomic_numbers()[x] != 1).next().unwrap_or(&component[0]);
-
-            let root = self.build_smiles_tree(
-                component[0],
-                BondOrder::Single,
-                None,
-                &mut visited,
-                rings,
-                &mut traversal_order,
-            );
-
-            // Sort rings based on when their first atom was encountered in traversal
-            let mut ring_closures: IntMap<usize, Vec<(usize, BondOrder)>> = IntMap::default();
-            let mut ring_number = 1;
-            
-            // Process rings in order of first appearance in traversal
-            for &atom_idx in &traversal_order {
-                for (start, end, bond_order) in rings.iter() {
-                    if *start == atom_idx {
-                        ring_closures.entry(*start).or_default().push((ring_number, *bond_order));
-                        ring_closures.entry(*end).or_default().push((ring_number, *bond_order));
-                        ring_number += 1;
-                    }
-                }
-            }
-            //println!("Ring closures: {:?}", ring_closures);
-
-            if !smiles.is_empty() {
-                smiles.push('.');
-            }
-
-            smiles.push_str(&self.construct_smiles(&root, &ring_closures))
-        }
-        relabel_numbers(&smiles)
-    }
-
-    fn to_smiles_with_implicit_hydrogens(&self) -> String {
-        if self.atomic_numbers().is_empty() {
-            return String::new();
-        }
-        let mut smiles = String::new();
-        let components = self.get_components();
-
-        for component in components {
-            let rings = &mut Vec::new();
-            let mut visited = vec![false; self.atomic_numbers().len()];
-            // Track traversal order of atoms
-            let mut traversal_order = Vec::with_capacity(self.atomic_numbers().len());
-
-            let root_index = component.iter().filter(|&&x| self.atomic_numbers()[x] != 1).next().unwrap_or(&component[0]);
-
-
-            let root = self.build_smiles_tree(
-                *root_index,
-                BondOrder::Single,
-                None,
-                &mut visited,
-                rings,
-                &mut traversal_order,
-            );
-
-            // Sort rings based on when their first atom was encountered in traversal
-            let mut ring_closures: IntMap<usize, Vec<(usize, BondOrder)>> = IntMap::default();
-            let mut ring_number = 1;
-            
-            // Process rings in order of first appearance in traversal
-            for &atom_idx in &traversal_order {
-                for (start, end, bond_order) in rings.iter() {
-                    if *start == atom_idx {
-                        ring_closures.entry(*start).or_default().push((ring_number, *bond_order));
-                        ring_closures.entry(*end).or_default().push((ring_number, *bond_order));
-                        ring_number += 1;
-                    }
-                }
-            }
-            //println!("Ring closures: {:?}", ring_closures);
-
-            if !smiles.is_empty() {
-                smiles.push('.');
-            }
-
-            smiles.push_str(&self.construct_smiles(&root, &ring_closures))
-        }
-        relabel_numbers(&smiles)
-    }
-
-    /// Constructs the SMILES string recursively from the molecule's tree structure.
-    ///
-    /// # Arguments
-    ///
-    /// * `node` - The current node in the SMILES tree.
-    /// * `ring_closures` - A map of ring closures for the molecule.
-    ///
-    /// # Returns
-    ///
-    /// A `String` representing the SMILES notation of the molecule.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use molecules::molecule::{Molecule2D, Molecule};
-    ///
-    /// let molecule = Molecule2D::from_smiles("c1ccccc1").unwrap();
-    /// let molecule = molecule.first().unwrap();
-    /// let smiles = molecule.to_smiles();
-    /// assert_eq!(smiles, "c1ccccc1");
-    /// ```
-    fn construct_smiles(
-        &self,
-        node: &Node,
-        ring_closures: &IntMap<usize, Vec<(usize, BondOrder)>>,
-    ) -> String {
-        let mut smiles = String::new();
-
-        // Determine if the current bond is aromatic
-        let is_current_bond_aromatic = matches!(node.bond_type(), BondOrder::Aromatic);
-
-        // Add bond type symbol only if the bond is not aromatic
-        if !is_current_bond_aromatic {
-            match node.bond_type() {
-                BondOrder::Single => {}
-                BondOrder::Double => smiles.push('='),
-                BondOrder::Triple => smiles.push('#'),
-                BondOrder::Quadruple => smiles.push('$'),
-                BondOrder::Aromatic => smiles.push(':'),
-                BondOrder::Coordinate => {}
-            }
-        }
-
-        let charge = self.charges()[node.index()];
-        let number_of_hydrogens = self.number_of_bonded_element(node.index(), 1);
-        let atomic_number = self.atomic_numbers()[node.index()];
-        if atomic_number == 1 {
-
-        // Add children
-        if node.children().len() == 1 {
-            smiles.push_str(&self.construct_smiles(&node.children()[0], ring_closures));
-        } else {
-            let length = node.children().len();
-            for (index,child) in node.children().iter().enumerate() {
-                if length - 1 == index {
-                    // The terminal child does not need braces.
-                    smiles.push_str(&self.construct_smiles(child, ring_closures));
-                    continue;
-                }
-                smiles.push('(');
-                smiles.push_str(&self.construct_smiles(child, ring_closures));
-                smiles.push(')');
-            }
-        } return smiles;
-        }
-
-        // Get atomic symbol
-        let Some(atomic_symbol) = atomic_number.atomic_symbol() else {
-            return "".to_string();
-        };
-        let mut atomic_symbol = atomic_symbol.to_string();
-
-        // Check for aromaticity: if any bond of the atom is aromatic, make the symbol lowercase
-        let is_aromatic = self
-            .get_atom_bonds(node.index())
-            .unwrap()
-            .iter()
-            .any(|bond| bond.bond_order() == BondOrder::Aromatic);
-        if is_aromatic {
-            atomic_symbol = atomic_symbol.to_lowercase();
-        }
-
-        let is_charged = charge != 0;
-        let is_organic_subset = matches!(atomic_number, 6 | 7 | 8 | 9 | 15| 16 | 17 | 35 | 53);
-
-        let has_standard_hydrogens = match atomic_number {
-            6 => number_of_hydrogens <= 4,       // Carbon
-            7 => number_of_hydrogens <= 2,       // Nitrogen
-            8 => number_of_hydrogens <= 2,       // Oxygen
-            9 => number_of_hydrogens <= 1,       // Fluorine
-            15 => number_of_hydrogens <= 2,      // Phosphorus
-            16 => number_of_hydrogens <= 2,      // Sulfur
-            17 | 35 | 53 => number_of_hydrogens <= 1, // Chlorine/Bromine/Iodine
-            _ => false,
-        };
-
-        // Determine if we need square brackets
-        let needs_brackets = !(!is_charged && is_organic_subset && has_standard_hydrogens);
-        // Build atom string
-        if needs_brackets {
-            let hydrogen_str = match number_of_hydrogens {
-                0 => String::new(),
-                1 => "H".to_string(),
-                _ => format!("H{}", number_of_hydrogens),
-            };
-
-            let charge_string = match charge {
-                2.. => format!("+{}", charge.abs()),
-                ..=-2 => format!("-{}", charge.abs()),
-                1 => "+".to_string(),
-                -1 => "-".to_string(),
-                0 => String::new(),
-            };
-
-            smiles.push_str(&format!(
-                "[{}{}{}",
-                atomic_symbol, hydrogen_str, charge_string
-            ));
-            smiles.push(']');
-        } else {
-            smiles.push_str(&atomic_symbol);
-        }
-
-        // Add ring closures
-        if let Some(closures) = ring_closures.get(&node.index()) {
-            for closure in closures {
-                if closure.1 == BondOrder::Single || closure.1 == BondOrder::Aromatic {
-                    smiles.push_str(&format!("{}", closure.0));
-                } else {
-                    smiles.push_str(&format!("{}{}", closure.1, closure.0));
-                }
-            }
-        }
-
-        // Add children
-        if node.children().len() == 1 {
-            smiles.push_str(&self.construct_smiles(&node.children()[0], ring_closures));
-        } else {
-            let length = node.children().len();
-            for (index,child) in node.children().iter().enumerate() {
-                if length - 1 == index {
-                    // The terminal child does not need braces.
-                    smiles.push_str(&self.construct_smiles(child, ring_closures));
-                    continue;
-                }
-                smiles.push('(');
-                smiles.push_str(&self.construct_smiles(child, ring_closures));
-                smiles.push(')');
-            }
-        }
-
-        smiles
+    fn is_atom_chiral(&self, atom_index: usize) -> bool {
+        self.get_chiral_class(atom_index) != ChiralClass::None
     }
 
     fn is_atom_aromatic(&self, atom_index: usize) -> bool {
-        self.get_atom_bonds(atom_index).unwrap().iter().any(|bond| bond.bond_order() == BondOrder::Aromatic)
+        self.get_atom_bonds(atom_index)
+            .unwrap()
+            .iter()
+            .any(|bond| bond.bond_order() == BondOrder::Aromatic)
     }
 
-    /// This function returns the rings in the molecule
+    fn add_atom(&mut self, atom: Atom) {
+        let index = self.atomic_numbers().len();
+        // An isotope on the new atom has to be recorded even when the molecule
+        // was not carrying isotopes at all, which means backfilling the atoms
+        // already there with "natural abundance" first.
+        if atom.isotope.is_some() && self.isotopes().is_none() {
+            *self.isotopes_mut() = Some(vec![0; index]);
+        }
+        self.atomic_numbers_mut().push(atom.atomic_number);
+        for bond in &atom.bonds {
+            self.atom_bonds_mut()[bond.target()].push(BondTarget::single(index));
+        }
+        self.charges_mut().push(atom.charge);
+        self.radical_states_mut().push(atom.radical_state);
+        if self.chiral_classes().is_some() {
+            self.chiral_classes_mut().unwrap().push(atom.chiral_class);
+        }
+        if let Some(isotopes) = self.isotopes_mut() {
+            isotopes.push(atom.isotope.unwrap_or(0));
+        }
+        self.push_atom_extras(&atom);
+        self.atom_bonds_mut().push(atom.bonds);
+    }
+
+    fn add_bond(&mut self, source: usize, target: usize, bond_order: BondOrder) {
+        self.atom_bonds_mut()[source].push(BondTarget::new(target, bond_order));
+        self.atom_bonds_mut()[target].push(BondTarget::new(source, bond_order));
+    }
+
+    /// Adds hydrogens to the molecule based on the atom's degree which is defined as as the sum of the valency delta (expected - actual) and the absolute value of the charge and the radical state
     ///
     /// # Examples
-    /// use molecules::prelude::*;
-    /// let molecule = Molecule3D::from_smiles("C1CCCCC1CC2CCCCC2");
     ///
-    /// println!("{molecule.find_rings()}");
-    /// assert_eq!(molecule.find_rings(), vec![vec![0, 1, 2, 3, 4, 5],vec![6, 7, 8, 9, 10, 11]]);
-    fn find_rings(&self) -> Vec<Vec<usize>> {
-        let mut rings = Vec::new();
-        let mut visited = vec![false; self.atomic_numbers().len()];
-        let mut path = Vec::new();
-        let mut path_set = HashSet::new();
-
-        for start in 0..self.atomic_numbers().len() {
-            if !visited[start] {
-                self.dfs_find_rings(
-                    start,
-                    start,
-                    &mut visited,
-                    &mut path,
-                    &mut path_set,
-                    &mut rings,
-                );
-            }
-        }
-
-        rings
-    }
-
-    fn dfs_find_rings(
-        &self,
-        current: usize,
-        parent: usize,
-        visited: &mut Vec<bool>,
-        path: &mut Vec<usize>,
-        path_set: &mut HashSet<usize>,
-        rings: &mut Vec<Vec<usize>>,
-    ) {
-        visited[current] = true;
-        path.push(current);
-        path_set.insert(current);
-
-        for &BondTarget { target, .. } in &self.atom_bonds()[current] {
-            if !visited[target] {
-                self.dfs_find_rings(target, current, visited, path, path_set, rings);
-            } else if target != parent && path_set.contains(&target) {
-                // Found a cycle
-                let cycle_start = path.iter().position(|&x| x == target).unwrap();
-                let cycle = path[cycle_start..].to_vec();
-                rings.push(cycle);
-            }
-        }
-
-        path.pop();
-        path_set.remove(&current);
-    }
-
+    /// ```
+    /// use molecules::prelude::*;
+    /// let mut molecule = MolecularGraph::from_smiles_single("C").unwrap();
+    /// molecule.add_hydrogens();
+    /// assert_eq!(molecule.number_of_bonded_element(0, 1), 4);
+    /// ```
     fn add_hydrogens(&mut self) {
+        self.add_hydrogens_with_valences(&[]);
+    }
+
+    /// Adds hydrogens as [`MoleculeCore::add_hydrogens`] does, except for the
+    /// atoms `valences` gives an explicit total valence for.
+    ///
+    /// A MOL file can state an atom's valence outright, which is how it says
+    /// "this one takes no hydrogen" for something the valence model would
+    /// otherwise fill: RDKit writes 15, the format's spelling of zero valence,
+    /// on a bare potassium, and 3 on a germanium bonded to three ethyls.
+    /// Without this both came back with a hydrogen the file had ruled out.
+    /// An entry of `None`, or an index past the end, means "use the model".
+    fn add_hydrogens_with_valences(&mut self, valences: &[Option<u8>]) {
         let degrees = self.degrees();
         degrees.iter().enumerate().for_each(|(index, &degree)| {
-            let number_of_hydrogens = -degree;
             let atomic_number = self.atomic_numbers()[index];
-            (0..number_of_hydrogens).for_each(|_| {
-                self.charges_mut().push(0);
-                self.radical_states_mut().push(false)
-            });
 
             if atomic_number == 1 {
                 return;
             }
 
-            //println!("Adding {} hydrogens to atom {}", number_of_hydrogens, index);
+            let number_of_hydrogens = match valences.get(index).copied().flatten() {
+                // The stated valence counts the bonds already there, so what is
+                // left over is the hydrogen count. A file may state a valence
+                // the bonds already exceed, which leaves nothing to add rather
+                // than something to remove.
+                Some(valence) => (valence as i8 - self.actual_valency(index)).max(0),
+                None => -degree,
+            };
+
             for _ in 0..number_of_hydrogens {
                 let hydrogen_index = self.atomic_numbers().len();
-                self.atomic_numbers_mut().push(1);
-                self.atom_bonds_mut()
-                    .push(array_vec!([BondTarget;10] => BondTarget::single(index)));
-                self.atom_bonds_mut()[index].push(BondTarget::single(hydrogen_index));
+                let atom = Atom::new(1)
+                    .with_charge(0)
+                    .with_radical(0)
+                    .with_bonds(array_vec!([BondTarget;10] => BondTarget::single(index)))
+                    .with_chiral_class(ChiralClass::None);
+
+                self.add_atom(atom);
             }
         });
     }
@@ -1128,113 +887,6 @@ pub trait Molecule {
         self.atom_bonds_mut()[atom2][bond2].bond_order = new_order;
     }
 
-    /// Kekulizes the molecule by adding double bonds to aromatic atoms
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the molecule cannot be kekulized   
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use molecules::prelude::*;
-    /// let molecule = Molecule2D::from_smiles("c1ccccc1").unwrap();
-    /// let mut molecule = molecule.first().unwrap().clone();
-    /// molecule.kekulize().unwrap();
-    /// assert_eq!(molecule.to_smiles(), "C1=CC=CC=C1");
-    /// let molecule = Molecule2D::from_smiles("c1ccccn1").unwrap();
-    /// let mut molecule = molecule.first().unwrap().clone();
-    /// molecule.kekulize().unwrap();
-    /// assert_eq!(molecule.to_smiles(), "C1=CC=CC=N1");
-    /// ```
-    fn kekulize(&mut self) -> Result<(), String> {
-        let mut aromatic_atoms: BitVec<usize> = BitVec::repeat(false, self.atom_bonds().len());
-        let mut aromatic_rings: Vec<Vec<usize>> = Vec::new();
-        let mut visited = BitVec::repeat(false, self.atomic_numbers().len());
-
-        // Find aromatic atoms and rings
-        for (index, bonds) in self.atom_bonds().iter().enumerate() {
-            for bond in bonds {
-                if bond.bond_order() == BondOrder::Aromatic {
-                    aromatic_atoms.set(index, true);
-                    break;
-                }
-            }
-        }
-
-        // Early return if no aromatic atoms
-        if !aromatic_atoms.any() {
-            return Ok(());
-        }
-
-        // Find aromatic rings using DFS
-        let mut path = Vec::new();
-        let mut path_set = HashSet::new();
-
-        for start in 0..self.atomic_numbers().len() {
-            if aromatic_atoms[start] && !visited[start] {
-                self.dfs_find_aromatic_rings(
-                    start,
-                    start,
-                    &mut visited,
-                    &mut path,
-                    &mut path_set,
-                    &mut aromatic_rings,
-                    &aromatic_atoms,
-                );
-            }
-        }
-
-
-        // Validate rings follow Hückel's rule
-        //aromatic_rings.retain(|ring| self.is_valid_aromatic_cycle(ring));
-
-        let mut is_subset = Vec::new();
-        for outer_ring in &aromatic_rings {
-            for (index, inner_ring) in aromatic_rings.iter().enumerate() {
-                if inner_ring.len() < outer_ring.len() && inner_ring.iter().all(|atom_index| outer_ring.contains(atom_index)) {
-                    is_subset.push(index)
-                }
-            }
-        }
-
-        for index in is_subset {
-            aromatic_rings.remove(index);
-        }
-
-        // Convert aromatic bonds to alternating single/double bonds
-        for ring in &aromatic_rings {
-            let ring_len = ring.len();
-
-            // First convert all bonds to single bonds
-            for atom_index in ring {
-                let atom_bonds = self.get_atom_bonds(*atom_index).unwrap().to_vec();  
-                for bond in atom_bonds {
-                    if bond.bond_order() == BondOrder::Aromatic {
-                        self.change_bond_order(*atom_index, bond.target(), BondOrder::Single);
-                    }
-                }
-            }
-
-            let degrees = self.degrees();
-
-            // Then add double bonds in alternating pattern
-            let mut last_bond_was_double = false;
-            for i in 0..ring_len {
-                let atom1 = ring[i];
-                let atom2 = ring[(i + 1) % ring_len];
-                if can_increase_bond(atom1, atom2, &degrees) && !last_bond_was_double {
-                    self.change_bond_order(atom1, atom2, BondOrder::Double);
-                    last_bond_was_double = true;
-                } else {
-                    last_bond_was_double = false;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     fn can_kekulize_bond(
         &self,
         atom1_idx: usize,
@@ -1251,514 +903,6 @@ pub trait Molecule {
             .find(|bond| bond.target() == atom2)
             .map(|bond| bond.bond_order())
             .unwrap_or(BondOrder::Single)
-    }
-
-    fn dfs_find_aromatic_rings(
-        &self,
-        current: usize,
-        parent: usize,
-        visited: &mut BitVec<usize>,
-        path: &mut Vec<usize>,
-        path_set: &mut HashSet<usize>,
-        rings: &mut Vec<Vec<usize>>,
-        aromatic_atoms: &BitVec<usize>,
-    ) {
-        visited.set(current, true);
-        path.push(current);
-        path_set.insert(current);
-
-        for &bond in &self.atom_bonds()[current] {
-            let target = bond.target();
-            if !aromatic_atoms[target] {
-                continue;
-            }
-
-            if !visited[target] {
-                self.dfs_find_aromatic_rings(
-                    target,
-                    current,
-                    visited,
-                    path,
-                    path_set,
-                    rings,
-                    aromatic_atoms,
-                );
-            } else if target != parent && path_set.contains(&target) {
-                // Found aromatic cycle
-                let cycle_start = path.iter().position(|&x| x == target).unwrap();
-                let cycle = path[cycle_start..].to_vec();
-                if cycle.len() >= 5 {
-                    // Common aromatic ring sizes
-                    rings.push(cycle);
-                }
-            }
-        }
-
-        path.pop();
-        path_set.remove(&current);
-    }
-
-
-    fn dfs_find_potential_aromatic_cycles(
-        &self,
-        current: usize,
-        root: usize,
-        visited: &mut Vec<bool>,
-        current_path: &mut Vec<usize>,
-        cycles: &mut Vec<Vec<usize>>,
-        atoms_in_cycles: &mut IntSet<usize>,
-        last_bond: BondOrder,
-    ) {
-        visited[current] = true;
-        current_path.push(current);
-
-        for &bond in &self.atom_bonds()[current] {
-            let target = bond.target();
-
-            let is_last_bond_double = last_bond == BondOrder::Double;
-            let is_current_bond_double = bond.bond_order() == BondOrder::Double;
-
-            let number_of_bonds = self.atom_bonds()[current].len();
-
-            // Skip if this would create an invalid alternating pattern
-            if (is_current_bond_double && is_last_bond_double) || number_of_bonds > 3 {
-                continue;
-            }
-
-            // Found cycle back to root
-            if target == root && current_path.len() >= 3 {
-                // Only add cycle if it follows alternating pattern
-                if bond.bond_order() != last_bond {
-                    let cycle = current_path.clone();
-                    // Add all atoms in cycle to tracked set
-                    for &atom in &cycle {
-                        atoms_in_cycles.insert(atom);
-                    }
-                    cycles.push(cycle);
-                }
-                continue;
-            }
-
-            // Continue DFS if unvisited
-            if !visited[target] {
-                self.dfs_find_potential_aromatic_cycles(
-                    target,
-                    root,
-                    visited,
-                    current_path,
-                    cycles,
-                    atoms_in_cycles,
-                    bond.bond_order(),
-                );
-            }
-        }
-
-        current_path.pop();
-        visited[current] = false;
-    }
-
-    fn count_pi_electrons_in_cycle(&self, cycle: &[usize]) -> usize {
-        cycle
-            .iter()
-            .map(|&atom_idx| {
-                let atomic_number = self.atomic_numbers()[atom_idx];
-                let charge = self.get_atom_charge(atom_idx);
-                match atomic_number {
-                    7 => {
-                        // Nitrogen
-                        if charge == 0 {
-                            2 // Neutral N contributes 2 electrons
-                        } else if charge == 1 {
-                            1 // N+ contributes 1 electron
-                        } else {
-                            3 // N- contributes 3 electrons
-                        }
-                    }
-                    8 => 2,  // Oxygen contributes 2 electrons
-                    16 => 2, // Sulfur contributes 2 electrons
-                    15 => {
-                        // Phosphorus
-                        if charge == 0 {
-                            2
-                        } else {
-                            0
-                        }
-                    }
-                    6 => 1, // Carbon contributes 1 electron
-                    _ => 0, // Other atoms contribute 0 electrons
-                }
-            })
-            .sum()
-    }
-
-    fn is_valid_aromatic_cycle(&self, cycle: &[usize]) -> bool {
-        // Check cycle size (most common aromatic rings are 5 or 6 membered)
-        if cycle.len() < 5 {
-            return false;
-        }
-
-        // Count pi electrons
-        let pi_electrons = self.count_pi_electrons_in_cycle(cycle);
-
-        // Check Hückel's rule (4n + 2)
-        is_hueckel_satisfied(pi_electrons)
-    }
-
-    fn can_be_aromatic(&self, atom_idx: usize) -> bool {
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        match atomic_number {
-            6 => {
-                let valence = self.actual_valency(atom_idx);
-                valence <= 3 // C should have 3 or fewer bonds
-            }
-            7 => {
-                // Nitrogen
-                let valence = self.actual_valency(atom_idx);
-                valence <= 3 // N should have 3 or fewer bonds
-            }
-            8 => {
-                // Oxygen
-                let valence = self.actual_valency(atom_idx);
-                valence <= 2 // O should have 2 or fewer bonds
-            }
-            16 => {
-                // Sulfur
-                let valence = self.actual_valency(atom_idx);
-                valence <= 2 // S should have 2 or fewer bonds in aromatic systems
-            }
-            15 => {
-                // Phosphorus
-                let valence = self.actual_valency(atom_idx);
-                valence <= 3 // P should have 3 or fewer bonds
-            }
-            _ => false,
-        }
-    }
-
-    fn aromatize(&mut self) { 
-        let mut cycles: Vec<BitSet> = Vec::new();
-
-        let mut atoms_in_cycles = IntSet::default();
-
-        // First pass: Find all potential cycles
-        self.find_all_conjugated_cycles(&mut cycles, &mut atoms_in_cycles);
-
-        // Group and analyze systems
-        let mut fused_systems = self.group_fused_cycles(&cycles);
-
-        // Order based on size in descending order
-        fused_systems.sort_by(|a, b| b.len().cmp(&a.len()));
-
-
-        // Process each system
-        for system in fused_systems {
-            let aromaticity_type = self.determine_aromaticity_type(&system);
-            match aromaticity_type {
-                AromaticityType::Aromatic => self.aromatize_system(&system),
-                AromaticityType::MoebiusAromatic => (), //self.aromatize_moebius_system(&system),
-                AromaticityType::AntiAromatic => continue,
-                AromaticityType::Metallocenic => (), //self.aromatize_metallocenic_system(&system),
-                AromaticityType::NonAromatic => continue,
-            }
-        }
-    }
-
-    fn determine_aromaticity_type(&self, system: &BitSet) -> AromaticityType {
-        let pi_electrons = self.count_system_pi_electrons(system);
-        let has_metal_center = self.check_for_metal_center(system);
-        let is_moebius = self.check_moebius_topology(system);
-
-        match (pi_electrons, has_metal_center, is_moebius) {
-            (e, false, false) if is_hueckel_satisfied(e) => AromaticityType::Aromatic,
-            (e, false, true) if (e % 4 == 2) => AromaticityType::MoebiusAromatic,
-            (e, false, false) if e % 4 == 0 => AromaticityType::AntiAromatic,
-            (_, true, _) => AromaticityType::Metallocenic,
-            _ => AromaticityType::NonAromatic,
-        }
-    }
-
-    fn count_system_pi_electrons(&self, system: &BitSet) -> usize {
-        let mut total = 0;
-        let mut counted_atoms = IntSet::default();
-
-        for atom_idx in system.iter() {
-            if counted_atoms.insert(atom_idx) {
-                total += self.count_atom_pi_electrons_extended_within_system(atom_idx, system);
-            }
-        }
-
-        total
-    }
-
-    fn count_atom_pi_electrons_extended_within_system(&self, atom_idx: usize, system: &BitSet) -> usize {
-        let mut count = 0;
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        let charge = self.get_atom_charge(atom_idx);
-        let is_radical = self.is_atom_radical(atom_idx);
-
-        if self.is_atom_aromatic(atom_idx) {
-            return 1;
-        }
-
-        // Add bond contributions
-        for bond in self.get_atom_bonds(atom_idx).unwrap_or_default() {
-            if !system.contains(bond.target()) {
-                if bond.bond_order() == BondOrder::Double {
-                    return 0;
-                }
-                continue;
-            }
-            count += match bond.bond_order() {
-                BondOrder::Double => 2,
-                BondOrder::Aromatic => if atomic_number == 6 {1} else {0},
-                _ => 0,
-            };
-        }
-
-        count /= 2;
-
-        // Base pi electrons from atomic configuration, considering charge
-        count += match atomic_number {
-            6 if count == 0 => match charge {  // Carbon
-                0 => 0,
-                1 => 0,  // C+ has no free electrons
-                -1 => 2, // C- has two extra electrons
-                _ if charge > 1 => 0,
-
-                _ => 2,  // C2- or lower has two extra electrons
-            },
-            7 if count == 0 => match charge {  // Nitrogen
-                1 => 1,  // N+ has one free electron
-                0 => {
-                    if self.get_atom_bonds(atom_idx).unwrap_or_default().len() > 2 {
-                        2
-                    } else {
-                        1
-                    }
-                },  // Neutral N has two free electrons
-                -1 => 3, // N- has three free electrons
-                _ if charge > 1 => 0,
-                _ => 4,  // N2- or lower has four free electrons
-            },
-            8 | 16 => match charge {  // Oxygen, Sulfur
-                1 => 1,  // O+/S+ has one free electron
-                0 => 2,  // Neutral O/S has two free electrons
-                -1 => 3, // O-/S- has three free electrons
-                _ if charge > 1 => 0,
-                _ => 4,  // O2-/S2- or lower has four free electrons
-            },
-            15 => match charge {  // Phosphorus
-                1 => 0,  // P+ has no free electrons
-                0 => 2,  // Neutral P has two free electrons
-                -1 => 3, // P- has three free electrons
-                _ if charge > 1 => 0,
-                _ => 4,  // P2- or lower has four free electrons
-            },
-            _ => 0,
-        };
-
-        // Add radical contribution
-        if is_radical {
-            count += 1;
-        }
-
-        count
-    }
-
-    fn check_moebius_topology(&self, system: &BitSet) -> bool {
-        false // Placeholder
-    }
-
-    fn find_all_conjugated_cycles(&self, cycles: &mut Vec<BitSet>, atoms_in_cycles: &mut IntSet<usize>) {
-        let mut visited = vec![false; self.atomic_numbers().len()];
-        let mut path = Vec::new();
-        let mut path_set = HashSet::new();
-
-        for start in 0..self.atomic_numbers().len() {
-            if !atoms_in_cycles.contains(&start) && self.can_be_conjugated(start) {
-                self.dfs_find_conjugated_cycles(
-                    start,
-                    start,
-                    &mut visited,
-                    &mut path,
-                    &mut path_set,
-                    cycles,
-                    atoms_in_cycles,
-                );
-            }
-        }
-    }
-
-    fn dfs_find_conjugated_cycles(
-        &self,
-        current: usize,
-        parent: usize,
-        visited: &mut Vec<bool>,
-        path: &mut Vec<usize>,
-        path_set: &mut HashSet<usize>,
-        cycles: &mut Vec<BitSet>,
-        atoms_in_cycles: &mut IntSet<usize>,
-    ) {
-        visited[current] = true;
-        path.push(current);
-        path_set.insert(current);
-
-        for &bond in &self.atom_bonds()[current] {
-            let target = bond.target();
-            
-            // Skip parent and non-conjugated atoms
-            if target == parent || !self.can_be_conjugated(target) {
-                continue;
-            }
-
-            // Found a cycle
-            if path_set.contains(&target) {
-                if target == path[0] && path.len() >= 5 {
-                    // Valid cycle found (minimum size 5)
-                    let cycle = path.clone();
-                    if self.is_potentially_aromatic_cycle(&cycle) {
-                        let cycle_bitset = cycle_to_bitset(&cycle);
-                        if !cycles.contains(&cycle_bitset) {
-                            cycles.push(cycle_bitset);
-                        }
-
-                        for atom in path.iter() {
-                            atoms_in_cycles.insert(*atom);
-                        }
-                    }
-                }
-            } else if !visited[target] {
-                self.dfs_find_conjugated_cycles(
-                    target,
-                    current,
-                    visited,
-                    path,
-                    path_set,
-                    cycles,
-                    atoms_in_cycles,
-                );
-            }
-        }
-
-        path.pop();
-        path_set.remove(&current);
-        visited[current] = false;
-    }
-
-    fn is_valid_aromatic_system(&self, system: &BitSet) -> bool {
-        // Count total pi electrons for the system
-        let pi_electrons = system
-            .iter()
-            .map(|atom_idx| self.count_atom_pi_electrons_within_system(atom_idx, &system))
-            .sum();
-
-        // Check if the total system follows Hückel's rule
-        is_hueckel_satisfied(pi_electrons)
-    }
-
-    fn are_all_atoms_conjugated(&self, system: &BitSet) -> bool {
-        for atom_idx in system.iter() {
-            if !self.can_be_conjugated_within_system(atom_idx, system) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn aromatize_system(&mut self, system: &BitSet) {
-        // Get all bonds in the system
-        let mut system_bonds = Vec::new();
-        for atom_idx in system.iter() {
-            for &bond in &self.atom_bonds()[atom_idx] {
-                if system.contains(bond.target()) {
-
-                    system_bonds.push((atom_idx, bond.target()));
-                }
-            }
-        }
-
-        // Convert all bonds in the system to aromatic
-        for (atom1, atom2) in system_bonds {
-            if atom1 < atom2 {
-                self.change_bond_order(atom1, atom2, BondOrder::Aromatic);
-            }
-        }
-
-    }
-
-    fn count_atom_pi_electrons(&self, atom_idx: usize) -> usize {
-        // Count pi electrons from multiple bonds
-        let pi_electrons = self.atom_bonds()[atom_idx]
-            .iter()
-            .map(|bond| match bond.bond_order() {
-                BondOrder::Double => 1, // One pi electron per double bond
-                BondOrder::Triple => 2, // Two pi electrons per triple bond
-                _ => 0,
-            })
-            .sum();
-
-        // Add electrons from lone pairs for certain atoms
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        match atomic_number {
-            7 => {
-                // Nitrogen
-                if self.get_atom_charge(atom_idx) == 0 && pi_electrons == 0 {
-                    2 // Neutral N with no pi bonds contributes lone pair
-                } else {
-                    pi_electrons
-                }
-            }
-            8 | 16 => {
-                // Oxygen or Sulfur
-                if self.get_atom_charge(atom_idx) == 0 && pi_electrons == 0 {
-                    2 // Neutral O/S with no pi bonds contributes lone pair
-                } else {
-                    pi_electrons
-                }
-            }
-            _ => pi_electrons,
-        }
-    }
-
-
-    fn count_atom_pi_electrons_within_system(&self, atom_idx: usize, system: &BitSet) -> usize {
-        // Count pi electrons from multiple bonds
-        let pi_electrons = self.atom_bonds()[atom_idx]
-            .iter()
-            .map(|bond| 
-                if system.contains(bond.target()) {
-                    match bond.bond_order() {
-                        BondOrder::Double => 1, // One pi electron per double bond
-                        BondOrder::Triple => 2, // Two pi electrons per triple bond
-                        _ => 0,
-                    }
-                }else {
-                    0
-                }
-            )
-            .sum();
-
-        // Add electrons from lone pairs for certain atoms
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        match atomic_number {
-            7 => {
-                // Nitrogen
-                if self.get_atom_charge(atom_idx) == 0 && pi_electrons == 0 {
-                    2 // Neutral N with no pi bonds contributes lone pair
-                } else {
-                    pi_electrons
-                }
-            }
-            8 | 16 => {
-                // Oxygen or Sulfur
-                if self.get_atom_charge(atom_idx) == 0 && pi_electrons == 0 {
-                    2 // Neutral O/S with no pi bonds contributes lone pair
-                } else {
-                    pi_electrons
-                }
-            }
-            _ => pi_electrons,
-        }
     }
 
     fn check_for_metal_center(&self, system: &BitSet) -> bool {
@@ -1789,7 +933,7 @@ pub trait Molecule {
         //                 let atom1 = cycle[i];
         //                 let atom2 = cycle[(i + 1) % cycle.len()];
         //                 self.change_bond_order(atom1, atom2, BondOrder::Aromatic);
-                        
+
         //                 // Add coordinate bond from metal to ring atoms
         //                 if atom1 != metal_idx {
         //                     self.change_bond_order(metal_idx, atom1, BondOrder::Coordinate);
@@ -1800,144 +944,18 @@ pub trait Molecule {
         // }
     }
 
-    fn can_be_conjugated(&self, atom_idx: usize) -> bool {
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        let number_of_bonds = self.atom_bonds()[atom_idx].len();
-        let number_of_double_or_triple_bonds = self.atom_bonds()[atom_idx].iter().filter(|bond| bond.bond_order() == BondOrder::Double || bond.bond_order() == BondOrder::Triple).count();
-
-        if number_of_double_or_triple_bonds > 1 {
-            return false;
-        }
-        
-        match atomic_number {
-            6 => {
-
-                let number_of_aromatic_bonds = self.atom_bonds()[atom_idx].iter().filter(|bond| bond.bond_order() == BondOrder::Aromatic).count();
-                let charge = self.get_atom_charge(atom_idx);
-                number_of_bonds <= 3 && (number_of_double_or_triple_bonds == 1 || number_of_aromatic_bonds > 1 || charge != 0) }, // Carbon
-            7 => number_of_bonds <= 4, // Nitrogen
-            8 => number_of_bonds <= 2, // Oxygen
-            15 => number_of_bonds <= 3, // Phosphorus
-            16 => number_of_bonds <= 2, // Sulfur
-            21..=30 | 39..=48 | 57..=80 | 89..=112 => true, // Transition metals
-            _ => false,
-        }
-    }
-
-    fn can_be_conjugated_within_system(&self, atom_idx: usize, system: &BitSet) -> bool {
-        if self.get_atom_bonds(atom_idx).unwrap_or_default().iter().any(|bond| bond.bond_order() == BondOrder::Aromatic) {
-            return true;
-        }
-
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        let number_of_bonds = self.atom_bonds()[atom_idx].len();
-        let number_of_double_or_triple_bonds = self.atom_bonds()[atom_idx].iter().filter(|bond| bond.bond_order() == BondOrder::Double || bond.bond_order() == BondOrder::Triple).count();
-        if number_of_double_or_triple_bonds > 1 {
-            return false;
-        }
-        
-        match atomic_number {
-            6 => {
-                let number_of_double_or_triple_bonds_within_system = self.atom_bonds()[atom_idx].iter().filter(|bond| system.contains(bond.target()) && (bond.bond_order() == BondOrder::Double || bond.bond_order() == BondOrder::Triple) ).count();
-                let has_exocyclic_double_bond = self.atom_bonds()[atom_idx].iter().any(|bond| !system.contains(bond.target()) && bond.bond_order() == BondOrder::Double);
-                //let is_bonded_to_exocyclic_more_electronegative_atom_via_double_bond = self.atom_bonds()[atom_idx].iter().filter(|bond| !system.contains(bond.target())).any(|bond| (self.cmp_electronegativities(atom_idx, bond.target()) == std::cmp::Ordering::Less) && bond.bond_order() == BondOrder::Double);
-                number_of_bonds <= 3 && (
-                 number_of_double_or_triple_bonds == 1 &&
-                 number_of_double_or_triple_bonds_within_system == 1
-                 ||
-                 has_exocyclic_double_bond
-                 // is_bonded_to_exocyclic_more_electronegative_atom_via_double_bond
-                )
-                 
-                 }, // Carbon
-            7 => number_of_bonds <= 4, // Nitrogen
-            8 => number_of_bonds <= 2, // Oxygen
-            15 => number_of_bonds <= 3, // Phosphorus
-            16 => number_of_bonds <= 2, // Sulfur
-            21..=30 | 39..=48 | 57..=80 | 89..=112 => true, // Transition metals
-            _ => false,
-        }
-    }
-
     fn number_of_bond_order(&self, atom_idx: usize, bond_order: BondOrder) -> usize {
-        self.atom_bonds()[atom_idx].iter().filter(|bond| bond.bond_order() == bond_order).count()
-    }
-
-    fn is_potentially_aromatic_cycle(&self, cycle: &[usize]) -> bool {
-        cycle.len() > 4
-    }
-
-
-    fn count_cycle_pi_electrons(&self, cycle: &[usize]) -> usize {
-        let mut total = 0;
-        
-        // Count electrons from atoms
-        for &atom_idx in cycle {
-            total += self.count_atom_pi_electrons_extended_within_system(atom_idx, &cycle_to_bitset(cycle));
-        }
-
-        total
-    }
-
-
-    /// Checks if two cycles share any atoms
-    /// 
-    /// # Arguments
-    /// * `cycle1_bits` - BitSet representation of first cycle
-    /// * `cycle2_bits` - BitSet representation of second cycle
-    /// 
-    /// # Returns
-    /// true if the cycles share any atoms
-    fn cycles_share_atoms(cycle1_bits: &BitSet, cycle2_bits: &BitSet) -> bool {
-        cycle1_bits.intersection(cycle2_bits).next().is_some()
-    }
-
-    /// Groups cycles into fused systems using BitSet operations
-    fn group_fused_cycles(&self, cycles: &[BitSet]) -> Vec<BitSet> {
-        let mut fused_systems = Vec::new();
-        let mut used = vec![false; cycles.len()];
-
-        for (i, _) in cycles.iter().enumerate() {
-            if used[i] {
-                continue;
-            }
-
-            let mut current_system = cycles[i].clone();
-            used[i] = true;
-
-            let mut changed = true;
-            while changed {
-                changed = false;
-                for (j, _) in cycles.iter().enumerate() {
-                    if used[j] {
-                        continue;
-                    }
-
-                    // Check if cycle j shares atoms with current system
-                    if Self::cycles_share_atoms(&current_system, &cycles[j]) {
-                        // Union of bits
-                        current_system.union_with(&cycles[j]);
-                        used[j] = true;
-                        changed = true;
-                    }
-                }
-            }
-
-            if self.is_rdkit_aromatic_system(&current_system) && !fused_systems.contains(&current_system) && !cycles.contains(&current_system) {
-                fused_systems.push(current_system);
-            }
-        }
-
-        fused_systems.extend_from_slice(&cycles);
-
-        fused_systems
+        self.atom_bonds()[atom_idx]
+            .iter()
+            .filter(|bond| bond.bond_order() == bond_order)
+            .count()
     }
 
     /// Gets the union of atoms in a set of cycles
-    /// 
+    ///
     /// # Arguments
     /// * `cycles` - Vector of cycles to get the union of
-    /// 
+    ///
     /// # Returns
     /// A BitSet representing all atoms present in any of the cycles
     fn get_system_atoms(&self, cycles: &[Vec<usize>]) -> BitSet {
@@ -1950,56 +968,9 @@ pub trait Molecule {
         system_atoms
     }
 
-    /// Performs a simple aromatization following RDKit's model
-    ///
-    /// # Examples
-    /// ```
-    /// use molecules::prelude::*;
-    /// let mut mol = Molecule2D::from_smiles("c1ccccc1").unwrap();
-    /// let mut mol = &mut mol[0];
-    /// mol.simple_aromatization();
-    /// assert!(mol.get_aromatic_atoms().len() == 6);
-    /// ```
-    fn simple_aromatization(&mut self) {
-        let mut cycles = Vec::new();
-        let mut atoms_in_cycles = IntSet::default();
-        
-        // Find all potential cycles
-        self.find_all_conjugated_cycles(&mut cycles, &mut atoms_in_cycles);
-        self.find_and_add_subcycles(&mut cycles, &mut atoms_in_cycles);
-        
-        // Group cycles into fused systems
-        let mut fused_systems = self.group_fused_cycles(&cycles);
-        fused_systems.sort_by(|a, b| b.len().cmp(&a.len()));
-        let mut aromatic_systems: Vec<BitSet> = Vec::new();
-
-
-        for system in fused_systems {
-            if aromatic_systems.iter().any(|s| s.is_superset(&system)) {
-                continue;
-            }
-            self.aromatize_system(&system);
-            aromatic_systems.push(system);
-        }
-
-        self.add_aromatic_bonds();
-    }
-
-    fn is_rdkit_aromatic_system(&self, system: &BitSet) -> bool {
-        for atom_idx in system.iter() {
-            if !self.can_be_conjugated_within_system(atom_idx, system) {
-                return false;
-            }
-        }
-
-
-        let pi_electrons = self.count_system_pi_electrons(system);
-        is_hueckel_satisfied(pi_electrons)
-    }
-
     fn is_electronegative(&self, atom_idx: usize) -> bool {
         let atomic_number = self.atomic_numbers()[atom_idx];
-        matches!(atomic_number, 7 | 8 | 9 | 17 | 35 | 53)  // N, O, F, Cl, Br, I
+        matches!(atomic_number, 7 | 8 | 9 | 17 | 35 | 53) // N, O, F, Cl, Br, I
     }
 
     fn is_amine_nitrogen(&self, atom_idx: usize) -> bool {
@@ -2010,170 +981,9 @@ pub trait Molecule {
     }
 
     fn has_double_bonds(&self, atom_idx: usize) -> bool {
-        self.atom_bonds()[atom_idx].iter().any(|bond| bond.bond_order() == BondOrder::Double)
-    }
-
-    /// Finds all subcycles within a given cycle and adds them to the cycles list
-    /// 
-    /// # Arguments
-    /// * `cycles` - Vector of BitSets representing cycles to check for subcycles
-    /// * `atoms_in_cycles` - Set of atoms that are part of any cycle
-    /// 
-    /// # Returns
-    /// A new vector containing all original cycles plus any valid subcycles found
-    fn find_and_add_subcycles(&self, cycles: &mut Vec<BitSet>, atoms_in_cycles: &mut IntSet<usize>) {
-        let mut subcycles = Vec::new();
-
-        // For each cycle, try to find subcycles by removing one atom at a time
-        for cycle in cycles.clone() {
-            let cycle_vec: Vec<_> = cycle.iter().collect();
-            if cycle_vec.len() <= 5 {
-                continue; // Skip cycles that are too small to contain subcycles
-            }
-
-            // Try removing each atom to find potential subcycles
-            for skip_atom in cycle_vec.iter() {
-                let mut visited = vec![false; self.atomic_numbers().len()];
-                let mut path = Vec::new();
-                let mut path_set = HashSet::new();
-
-                // Start DFS from each remaining atom in the cycle
-                for &start in cycle_vec.iter().filter(|&&atom| atom != *skip_atom) {
-                    if visited[start] {
-                        continue;
-                    }
-
-                    self.dfs_find_subcycles(
-                        start,
-                        start,
-                        *skip_atom,
-                        &cycle,
-                        &mut visited,
-                        &mut path,
-                        &mut path_set,
-                        &mut subcycles,
-                        atoms_in_cycles,
-                    );
-                }
-            }
-        }
-
-        // Add valid subcycles to the result
-        for subcycle in subcycles {
-            if !cycles.contains(&subcycle) && self.is_potentially_aromatic_cycle(&subcycle.iter().collect::<Vec<_>>()) {
-                cycles.push(subcycle);
-            }
-        }
-    }
-
-    /// Helper function for DFS subcycle finding
-    fn dfs_find_subcycles(
-        &self,
-        current: usize,
-        parent: usize,
-        skip_atom: usize,
-        original_cycle: &BitSet,
-        visited: &mut Vec<bool>,
-        path: &mut Vec<usize>,
-        path_set: &mut HashSet<usize>,
-        subcycles: &mut Vec<BitSet>,
-        atoms_in_cycles: &mut IntSet<usize>,
-    ) {
-        visited[current] = true;
-        path.push(current);
-        path_set.insert(current);
-
-        for &bond in &self.atom_bonds()[current] {
-            let target = bond.target();
-            
-            // Skip the atom we're excluding and atoms not in the original cycle
-            if target == skip_atom || !original_cycle.contains(target) {
-                continue;
-            }
-
-            // Found a cycle
-            if path_set.contains(&target) {
-                if target == path[0] && path.len() >= 5 {
-                    let subcycle = cycle_to_bitset(path);
-                    if !subcycles.contains(&subcycle) {
-                        subcycles.push(subcycle);
-                        for atom in path.clone() {
-                            atoms_in_cycles.insert(atom);
-                        }
-                    }
-                }
-            } else if !visited[target] {
-                self.dfs_find_subcycles(
-                    target,
-                    current,
-                    skip_atom,
-                    original_cycle,
-                    visited,
-                    path,
-                    path_set,
-                    subcycles,
-                    atoms_in_cycles,
-                );
-            }
-        }
-
-        path.pop();
-        path_set.remove(&current);
-        visited[current] = false;
-    }
-    
-    /// Searches for aromatic cycles within the molecule.
-    ///
-    /// An aromatic cycle is defined as a ring where all participating bonds are aromatic.
-    ///
-    /// # Returns
-    ///
-    /// A vector of aromatic cycles, each represented as a vector of atom indices.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use molecules::prelude::*;
-    /// 
-    /// // Benzene molecule with a single aromatic cycle
-    /// let molecules = Molecule2D::from_smiles("c1ccccc1").unwrap();
-    /// let molecule = molecules.first().unwrap();
-    /// let cycles = molecule.find_aromatic_cycles();
-    /// assert_eq!(cycles.len(), 1);
-    /// assert_eq!(cycles[0], vec![0, 1, 2, 3, 4, 5]);
-    /// 
-    /// // Naphthalene with two aromatic cycles
-    /// let molecules = Molecule2D::from_smiles("c1ccc2ccccc2c1").unwrap();
-    /// let molecule = molecules.first().unwrap();
-    /// let cycles = molecule.find_aromatic_cycles();
-    /// assert_eq!(cycles.len(), 2);
-    /// assert!(cycles.contains(&vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
-    /// 
-    /// // Cyclohexane with no aromatic cycles
-    /// let molecules = Molecule2D::from_smiles("C1CCCCCC1").unwrap();
-    /// let molecule = molecules.first().unwrap();
-    /// let cycles = molecule.find_aromatic_cycles();
-    /// assert_eq!(cycles.len(), 0);
-    /// ```
-    fn find_aromatic_cycles(&self) -> Vec<Vec<usize>> {
-        self.find_rings().into_iter().filter(|ring| {
-            // Check if all consecutive bonds in the ring are aromatic
-            let all_aromatic = ring.windows(2).all(|w| {
-                let atom1 = w[0];
-                let atom2 = w[1];
-                self.atom_bonds()[atom1].iter().any(|bond| 
-                    bond.target() == atom2 && bond.bond_order() == BondOrder::Aromatic
-                )
-            }) && {
-                // Ensure the bond closing the ring is aromatic
-                let last_atom = ring.last().unwrap();
-                let first_atom = ring[0];
-                self.atom_bonds()[*last_atom].iter().any(|bond| 
-                    bond.target() == first_atom && bond.bond_order() == BondOrder::Aromatic
-                )
-            };
-            all_aromatic
-        }).collect()
+        self.atom_bonds()[atom_idx]
+            .iter()
+            .any(|bond| bond.bond_order() == BondOrder::Double)
     }
 
     fn add_aromatic_bonds(&mut self) {
@@ -2182,7 +992,9 @@ pub trait Molecule {
             if !is_atom_aromatic {
                 continue;
             }
+
             let bonds = self.get_atom_bonds(atom_idx).unwrap_or_default().to_vec();
+
             for neighbor_idx in bonds {
                 let is_neighbor_aromatic = self.is_atom_aromatic(neighbor_idx.target());
                 if !is_neighbor_aromatic || neighbor_idx.bond_order() == BondOrder::Aromatic {
@@ -2193,212 +1005,547 @@ pub trait Molecule {
         }
     }
 
-    /// Fixes any valence inconsistencies in the molecule.
-    ///
-    /// This function ensures that each atom adheres to its expected valency by adjusting
-    /// charges and bond orders as necessary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if valency cannot be satisfied for any atom.
-    fn fix_valence_inconsistencies(&mut self) -> Result<(), String> {
-        // Vector to hold all bond changes to be made
-        let mut bond_changes: Vec<(usize, usize, BondOrder)> = Vec::new();
-        // Vector to hold charge adjustments (atom_index, charge_change)
-        let mut charge_changes: Vec<(usize, i8)> = Vec::new();
-
-        // Iterate over all atoms to identify valence issues
+    fn get_all_bonds(&self) -> Vec<Bond> {
+        let mut bonds = Vec::new();
         for atom_index in 0..self.len() {
-            let expected_valency = match self.expected_valency(atom_index) {
-                Some(val) => val,
-                None => continue, // Skip atoms with undefined valency
+            let Some(atom_bonds) = self.get_atom_bonds(atom_index) else {
+                continue;
             };
-            let actual_valency = self.actual_valency(atom_index);
-            let charge = self.get_atom_charge(atom_index);
 
-            if actual_valency > expected_valency {
-                // Valency exceeded: need to reduce valency by converting single bonds to double bonds
-                let excess = actual_valency - expected_valency;
-                let mut bonds_to_modify = 0;
-
-                for bond in self.atom_bonds()[atom_index].iter() {
-                    if bond.bond_order == BondOrder::Single && bonds_to_modify < excess {
-                        bond_changes.push((bond.target(), atom_index, BondOrder::Double));
-                        bonds_to_modify += 1;
-                    }
-                    if bonds_to_modify >= excess {
-                        break;
-                    }
-                }
-
-                if bonds_to_modify < excess {
-                    return Err(format!(
-                        "Cannot fix valency for atom {}: expected {}, got {}",
-                        atom_index, expected_valency, actual_valency
-                    ));
-                }
-            } else if actual_valency < expected_valency {
-                // Valency deficit: need to increase valency by converting single bonds to double bonds
-                let deficit = expected_valency - actual_valency;
-                let mut bonds_to_modify = 0;
-
-                for bond in self.atom_bonds()[atom_index].iter() {
-                    if bond.bond_order == BondOrder::Single && bonds_to_modify < deficit {
-                        bond_changes.push((bond.target(), atom_index, BondOrder::Double));
-                        bonds_to_modify += 1;
-                    }
-                    if bonds_to_modify >= deficit {
-                        break;
-                    }
-                }
-
-                if bonds_to_modify < deficit {
-                    // If unable to fix valency by bond modifications, adjust charge
-                    charge_changes.push((atom_index, -(deficit as i8)));
+            for bond in atom_bonds {
+                if atom_index < bond.target() {
+                    bonds.push(Bond::new(atom_index, bond.target(), bond.bond_order()));
                 }
             }
         }
-
-        // Apply all bond changes
-        for (atom1, atom2, new_order) in bond_changes {
-            self.change_bond_order(atom1, atom2, new_order);
-        }
-
-        // Apply all charge adjustments
-        for (atom_index, charge_change) in charge_changes {
-            self.set_atom_charge(atom_index, self.get_atom_charge(atom_index) + charge_change);
-        }
-
-        Ok(())
+        bonds
     }
 
-    /// Sanitizes the molecule by removing invalid aromatic rings and correcting inconsistencies.
+    fn get_all_heavy_atom_bonds(&self) -> Vec<Bond> {
+        let mut bonds = Vec::new();
+        for atom_index in 0..self.len() {
+            if self.get_atomic_number(atom_index) == 1 {
+                continue;
+            }
+            let Some(atom_bonds) = self.get_atom_bonds(atom_index) else {
+                continue;
+            };
+
+            for bond in atom_bonds {
+                if atom_index < bond.target() && self.get_atomic_number(bond.target()) != 1 {
+                    bonds.push(Bond::new(atom_index, bond.target(), bond.bond_order()));
+                }
+            }
+        }
+        bonds
+    }
+
+    /// Computes the fundamental cycles of the molecule using a spanning tree approach.
     ///
-    /// This function performs the following steps:
-    /// 1. Identifies all aromatic rings in the molecule.
-    /// 2. Validates each aromatic ring against Hückel's rule and other aromaticity criteria.
-    /// 3. Removes aromaticity from rings that do not satisfy aromaticity requirements.
-    /// 4. Fixes any valence inconsistencies resulting from the removal.
+    /// # Returns
+    /// A vector of cycles, where each cycle is represented as a BitSet.
     ///
-    /// # Examples
-    ///
+    /// # Example
     /// ```
     /// use molecules::prelude::*;
-    ///
-    /// // Example with a valid aromatic ring
-    /// let mut benzene = Molecule2D::from_smiles("c1ccccc1").unwrap().first().unwrap().clone();
-    /// benzene.sanitize_mol().unwrap();
-    /// assert_eq!(benzene.find_aromatic_cycles().len(), 1);
-    ///
-    /// // Example with an invalid aromatic ring
-    /// let mut invalid_ring = Molecule2D::from_smiles("c1ccccc1C").unwrap().first().unwrap().clone();
-    /// // Manually corrupt the aromaticity
-    /// invalid_ring.change_bond_order(0, 1, BondOrder::Single);
-    /// invalid_ring.sanitize_mol().unwrap();
-    /// assert_eq!(invalid_ring.find_aromatic_cycles().len(), 0);
+    /// let molecule = MolecularGraph::from_smiles("C1CC1").unwrap();
+    /// let molecule = molecule.first().unwrap();
+    /// let cycles = molecule.compute_fundamental_cycles();
+    /// assert_eq!(cycles.len(), 1); // One fundamental cycle for cyclopropane
     /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the molecule cannot be sanitized due to internal inconsistencies.
-    /// 
-    
-    fn sanitize_mol(&mut self) -> Result<(), String> {
-        // Step 1: Find all aromatic cycles
-        let aromatic_cycles = self.find_aromatic_cycles();
+    fn compute_fundamental_cycles(&self) -> FxHashSet<BitSet> {
+        #[derive(Debug, Clone)]
+        struct TreeNode {
+            parent: Option<usize>,
+        }
 
-        // Step 2: Validate each aromatic ring
-        let mut invalid_cycles = Vec::new();
-        for cycle in aromatic_cycles {
-            if !self.is_valid_aromatic_cycle(&cycle) {
-                invalid_cycles.push(cycle);
+        let num_atoms = self.len();
+        let mut fundamental_cycles = FxHashSet::default();
+
+        // Early return for molecules too small to have cycles
+        if num_atoms < 3 {
+            return fundamental_cycles;
+        }
+
+        // Initialize tree nodes with capacity
+        let mut tree = Vec::with_capacity(num_atoms);
+        for _ in 0..num_atoms {
+            tree.push(TreeNode { parent: None });
+        }
+
+        // Pre-allocate data structures
+        let mut remaining_bonds = self.get_edges();
+        let mut node_stack = Vec::with_capacity(num_atoms);
+        node_stack.push(0);
+
+        // Pre-allocate paths for reuse
+        let mut cycle = Vec::with_capacity(num_atoms);
+        let mut other_path = Vec::with_capacity(num_atoms);
+
+        // Process nodes until stack is empty
+        while let Some(current_node) = node_stack.pop() {
+            let mut i = 0;
+            while i < remaining_bonds.len() {
+                let (atom1, atom2) = remaining_bonds[i];
+
+                // More efficient node matching
+                let other_node = if atom1 == current_node {
+                    atom2
+                } else if atom2 == current_node {
+                    atom1
+                } else {
+                    i += 1;
+                    continue;
+                };
+
+                // Check if other node is already in tree
+                if tree[other_node].parent.is_some() {
+                    // Found a fundamental cycle
+                    cycle.clear();
+                    other_path.clear();
+
+                    // Trace paths to root more efficiently
+                    let mut node = current_node;
+                    while let Some(parent) = tree[node].parent {
+                        cycle.push(node);
+                        node = parent;
+                    }
+                    cycle.push(node);
+
+                    let mut node = other_node;
+                    while let Some(parent) = tree[node].parent {
+                        other_path.push(node);
+                        node = parent;
+                    }
+                    other_path.push(node);
+
+                    // Find common ancestor more efficiently
+                    let mut common_ancestor = None;
+                    for (i, &n1) in cycle.iter().enumerate() {
+                        if let Some(j) = other_path.iter().position(|&n2| n1 == n2) {
+                            common_ancestor = Some((i, j));
+                            break;
+                        }
+                    }
+
+                    if let Some((i, j)) = common_ancestor {
+                        // Construct fundamental cycle more efficiently
+                        let mut fundamental_cycle = BitSet::with_capacity(num_atoms);
+                        for &atom in &cycle[..=i] {
+                            fundamental_cycle.insert(atom);
+                        }
+                        for &atom in other_path[..j].iter().rev() {
+                            fundamental_cycle.insert(atom);
+                        }
+
+                        // Only add if it's a new unique cycle
+                        if !fundamental_cycles.contains(&fundamental_cycle) {
+                            fundamental_cycles.insert(fundamental_cycle);
+                        }
+                    }
+                } else {
+                    // Add other node to tree
+                    tree[other_node].parent = Some(current_node);
+                    node_stack.push(other_node);
+                }
+
+                // Remove processed bond
+                remaining_bonds.swap_remove(i);
             }
         }
 
-        // Step 3: Remove aromaticity from invalid cycles
-        for cycle in invalid_cycles {
-            for window in cycle.windows(2) {
-                let atom1 = window[0];
-                let atom2 = window[1];
-                self.change_bond_order(atom1, atom2, BondOrder::Single);
-            }
-            // Close the ring by setting the bond between the last and first atom to single
-            let last_atom = cycle.last().unwrap();
-            let first_atom = cycle[0];
-            self.change_bond_order(*last_atom, first_atom, BondOrder::Single);
-        }
-
-        // Step 4: Fix valence inconsistencies
-        //self.fix_valence_inconsistencies()?;
-
-        Ok(())
+        fundamental_cycles
     }
 
+    /// Converts a fundamental cycle BitSet to a Vec of atom indices
+    ///
+    /// # Arguments
+    /// * `cycle` - BitSet representing a cycle
+    ///
+    /// # Returns
+    /// A Vec<usize> containing the atom indices in order
+    fn fundamental_cycle_to_vec(&self, cycle: &BitSet) -> Vec<usize> {
+        let mut atoms = cycle.iter().collect::<Vec<_>>();
 
-}
+        // Sort atoms based on connectivity to ensure proper order
+        let mut ordered = Vec::with_capacity(atoms.len());
+        ordered.push(atoms.remove(0));
 
+        while !atoms.is_empty() {
+            let current = *ordered.last().unwrap();
+            let next_idx = atoms.iter().position(|&atom| {
+                self.atom_bonds()[current]
+                    .iter()
+                    .any(|bond| bond.target() == atom)
+            });
 
-fn relabel_numbers(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut number_map = HashMap::new();
-    let mut next_number = 1;
-    let mut chars = input.chars().peekable();
+            if let Some(idx) = next_idx {
+                ordered.push(atoms.remove(idx));
+            } else {
+                // If no connected atom found, add the first remaining atom
+                // This handles disconnected components
+                ordered.push(atoms.remove(0));
+            }
+        }
 
-    while let Some(c) = chars.next() {
-        if c == '%' {
-            // Handle multi-digit numbers
-            let mut number = String::new();
-            while let Some(&next_char) = chars.peek() {
-                if next_char.is_ascii_digit() {
-                    number.push(chars.next().unwrap());
-                } else {
-                    break;
+        ordered
+    }
+
+    /// Enumerates possible cycles by combining fundamental cycles that share at least two atoms.
+    ///
+    /// This is a simplified approach that combines cycles when they share at least two atoms
+    /// and are not identical. This avoids the computational complexity of checking all possible
+    /// combinations while still finding most relevant cycles.
+    ///
+    /// # Returns
+    /// A vector of BitSets, where each BitSet represents a unique cycle.
+    ///
+    /// # Example
+    /// ```
+    /// use molecules::prelude::*;
+    /// let molecule = MolecularGraph::from_smiles("c1ccc2ccccc2c1").unwrap(); // naphthalene
+    /// let molecule = molecule.first().unwrap();
+    /// let cycles = molecule.enumerate_possible_cycles();
+    /// println!("{:?}", molecule.compute_fundamental_cycles());
+    /// println!("{:?}", cycles);
+    /// assert!(cycles.len() >= 3); // Should find at least 3 cycles (2 6-membered rings + 10-membered perimeter)
+    /// ```
+    fn enumerate_possible_cycles(&self) -> Vec<BitSet> {
+        let fundamental_cycles = self.compute_fundamental_cycles();
+        println!(
+            "Number of fundamental cycles: {:?}",
+            fundamental_cycles.len()
+        );
+        if fundamental_cycles.len() < 2 {
+            return fundamental_cycles.into_iter().collect();
+        }
+
+        let mut all_cycles = fundamental_cycles;
+        let mut cycles_vec: Vec<BitSet> = all_cycles.iter().cloned().collect();
+        let mut i = 0;
+        while i < cycles_vec.len() {
+            let mut j = 0;
+            while j < cycles_vec.len() {
+                // Find intersection of cycles
+                let shared_atoms = cycles_vec[i].intersection(&cycles_vec[j]);
+
+                // If cycles share at least 2 atoms and aren't identical
+                if shared_atoms.into_iter().sum::<usize>() >= 2 {
+                    // Create new cycle by the union of the two cycles
+                    let new_cycle = cycles_vec[i].union(&cycles_vec[j]).collect::<BitSet>();
+
+                    // Only add if it forms a valid cycle and isn't already present
+                    if !all_cycles.contains(&new_cycle) {
+                        all_cycles.insert(new_cycle.clone());
+                        cycles_vec.push(new_cycle);
+                    }
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+
+        cycles_vec.into_iter().collect()
+    }
+
+    /// Validates if a set of atoms forms a valid cycle by checking connectivity
+    /// and ensuring each atom has exactly two connections within the cycle.
+    fn is_valid_cycle(&self, cycle: &BitSet) -> bool {
+        if cycle.len() < 3 {
+            return false;
+        }
+
+        // Check if all atoms in the cycle have exactly two connections within the cycle
+        let mut visited = BitSet::new();
+        let mut stack = Vec::new();
+
+        // Start with any atom in the cycle
+        if let Some(start) = cycle.iter().next() {
+            stack.push(start);
+            visited.insert(start);
+
+            while let Some(current) = stack.pop() {
+                let mut connections_in_cycle = 0;
+
+                // Check all bonds of the current atom
+                for bond in &self.atom_bonds()[current] {
+                    let target = bond.target();
+                    if cycle.contains(target) {
+                        connections_in_cycle += 1;
+                        if !visited.contains(target) {
+                            visited.insert(target);
+                            stack.push(target);
+                        }
+                    }
+                }
+
+                // Each atom in a valid cycle must have exactly two connections within the cycle
+                if connections_in_cycle != 2 {
+                    return false;
                 }
             }
-            
-            // Map the number if we haven't seen it before
-            let mapped = number_map
-                .entry(number.clone())
-                .or_insert_with(|| {
-                    let current = next_number;
-                    next_number += 1;
-                    current.to_string()
-                });
-            
-            result.push('%');
-            result.push_str(mapped);
-        } else if c.is_ascii_digit() {
-            // Handle single digit numbers
-            let number = c.to_string();
-            let mapped = number_map
-                .entry(number)
-                .or_insert_with(|| {
-                    let current = next_number;
-                    next_number += 1;
-                    current.to_string()
-                });
-            
-            result.push_str(mapped);
+
+            // All atoms must be visited and form a single connected component
+            visited.len() == cycle.len()
         } else {
-            result.push(c);
+            false
         }
     }
-    
-    result
+
+    fn remove_tautomeric_hydrogens(&mut self, tautomers: &mut [bool]) -> Vec<usize> {
+        let mut hydrogens_to_remove = Vec::new();
+        for (atom_index, &is_tautomeric) in tautomers.iter().enumerate() {
+            if is_tautomeric {
+                let bond_count = self.atom_bonds()[atom_index].len();
+                let expected_valency = self.expected_valency(atom_index).unwrap_or(0);
+                if bond_count + 1 > expected_valency as usize {
+                    let bonds = self.get_atom_bonds(atom_index).unwrap_or_default();
+                    for bond in bonds.iter() {
+                        if self.get_atomic_number(bond.target()) == 1 {
+                            hydrogens_to_remove.push(bond.target());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        for hydrogen_index in hydrogens_to_remove.iter() {
+            self.remove_atom(*hydrogen_index);
+        }
+        hydrogens_to_remove
+    }
+
+    fn find_tautomers(&self) -> Vec<bool> {
+        let mut is_tautomeric = vec![false; self.len()];
+        let mut stack = Vec::new();
+        let mut visited = vec![false; self.len()];
+
+        // Find all oxygen atoms as starting points
+        let oxygens = self
+            .atomic_numbers()
+            .iter()
+            .enumerate()
+            .filter(|&(_, atomic_number)| *atomic_number == 8)
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+
+        // Process each oxygen atom as a potential start of a tautomeric path
+        for &start_oxygen in &oxygens {
+            // Reset visited for each new oxygen starting point
+            visited.fill(false);
+
+            // Mark hydrogens as visited since they can't be part of conjugated system
+            for (atom_index, &atomic_number) in self.atomic_numbers().iter().enumerate() {
+                if atomic_number == 1 {
+                    visited[atom_index] = true;
+                }
+            }
+
+            // Initialize search from this oxygen
+            stack.push((start_oxygen, Vec::new(), None, 0));
+            visited[start_oxygen] = true;
+
+            while let Some((current, current_path, last_bond_order, path_length)) = stack.pop() {
+                let bonds = self.atom_bonds()[current].clone();
+
+                // Check if there are any unvisited double bonds
+                let has_unvisited_double_bonds = bonds
+                    .iter()
+                    .any(|bond| !visited[bond.target()] && bond.bond_order() == BondOrder::Double);
+
+                // If we have a valid path and no unvisited double bonds that could lead to longer paths
+                if !has_unvisited_double_bonds && last_bond_order.is_some() {
+                    // Mark the entire path as tautomeric
+                    is_tautomeric[start_oxygen] = true;
+                    for &(atom, _, _) in &current_path {
+                        is_tautomeric[atom] = true;
+                    }
+                    is_tautomeric[current] = true;
+                }
+
+                for bond in bonds {
+                    let target = bond.target();
+
+                    if visited[target] {
+                        continue;
+                    }
+
+                    let is_valid_continuation = match last_bond_order {
+                        None => true,
+                        Some(BondOrder::Single) => bond.bond_order() == BondOrder::Double,
+                        Some(BondOrder::Double) => bond.bond_order() == BondOrder::Single,
+                        _ => false,
+                    };
+
+                    if is_valid_continuation {
+                        let mut new_path = current_path.clone();
+                        new_path.push((current, target, bond.bond_order()));
+
+                        stack.push((target, new_path, Some(bond.bond_order()), path_length + 1));
+                        visited[target] = true;
+                    }
+                }
+            }
+        }
+
+        is_tautomeric
+    }
+
+    /// The atoms and bonds that lie on a ring.
+    ///
+    /// A bond is on a ring exactly when it is not a *bridge* — when removing
+    /// it would not disconnect its two ends — and an atom is on a ring when it
+    /// carries such a bond. That equivalence is what makes this exact for
+    /// fused and bridged systems, where enumerating cycles is not: the
+    /// previous implementation collected a depth-first cycle basis and only
+    /// recognised a cycle when the back edge pointed at an atom still on the
+    /// current path, so naphthalene lost its two fusion carbons and
+    /// bicyclo[2.2.2]octane was reported as having no ring atoms at all.
+    ///
+    /// This is Tarjan's bridge-finding, iterative so that a large fused
+    /// system cannot overflow the stack, and keyed on *edges* rather than
+    /// parent atoms so that a doubled bond between the same pair of atoms is
+    /// still recognised as a ring.
+    fn find_cyclic_bonds_and_atoms(&self) -> (BitSet, FxHashSet<(usize, usize)>) {
+        let atom_count = self.len();
+        let mut cyclic_atoms = BitSet::new();
+        let mut cyclic_bonds = FxHashSet::default();
+        if atom_count == 0 {
+            return (cyclic_atoms, cyclic_bonds);
+        }
+
+        // Each bond once, with an identity, plus adjacency that names it.
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); atom_count];
+        for atom in 0..atom_count {
+            let Some(bonds) = self.get_atom_bonds(atom) else {
+                continue;
+            };
+            for bond in bonds {
+                let target = bond.target();
+                if atom < target && target < atom_count {
+                    let edge_id = edges.len();
+                    edges.push((atom, target));
+                    adjacency[atom].push((target, edge_id));
+                    adjacency[target].push((atom, edge_id));
+                }
+            }
+        }
+
+        let mut discovery = vec![usize::MAX; atom_count];
+        let mut low = vec![usize::MAX; atom_count];
+        let mut is_bridge = vec![false; edges.len()];
+        let mut timer = 0usize;
+        // (atom, the edge it was entered by, index of the next neighbour)
+        let mut stack: Vec<(usize, usize, usize)> = Vec::new();
+
+        for start in 0..atom_count {
+            if discovery[start] != usize::MAX {
+                continue;
+            }
+            discovery[start] = timer;
+            low[start] = timer;
+            timer += 1;
+            stack.push((start, usize::MAX, 0));
+
+            while let Some(&(atom, entered_by, cursor)) = stack.last() {
+                if cursor < adjacency[atom].len() {
+                    if let Some(top) = stack.last_mut() {
+                        top.2 += 1;
+                    }
+                    let (neighbour, edge_id) = adjacency[atom][cursor];
+                    // Step over the edge we arrived on, but only that one: a
+                    // second, parallel bond back to the same atom is a ring.
+                    if edge_id == entered_by {
+                        continue;
+                    }
+                    if discovery[neighbour] == usize::MAX {
+                        discovery[neighbour] = timer;
+                        low[neighbour] = timer;
+                        timer += 1;
+                        stack.push((neighbour, edge_id, 0));
+                    } else {
+                        low[atom] = low[atom].min(discovery[neighbour]);
+                    }
+                } else {
+                    stack.pop();
+                    if let Some(&(parent, _, _)) = stack.last() {
+                        low[parent] = low[parent].min(low[atom]);
+                        // Nothing below `atom` reaches back past `parent`, so
+                        // the edge between them is the only connection.
+                        if low[atom] > discovery[parent] {
+                            is_bridge[entered_by] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (edge_id, &(first, second)) in edges.iter().enumerate() {
+            if !is_bridge[edge_id] {
+                cyclic_bonds.insert(order_tuple(first, second));
+                cyclic_atoms.insert(first);
+                cyclic_atoms.insert(second);
+            }
+        }
+
+        (cyclic_atoms, cyclic_bonds)
+    }
+
+    fn determine_ring_systems(
+        &self,
+        atoms_in_rings: &BitSet,
+        bonds_in_ring: &FxHashSet<(usize, usize)>,
+    ) -> (Vec<Option<usize>>, usize) {
+        let mut counter = 0;
+        let mut ring_assignments = vec![None; self.len()];
+
+        for atom_index in 0..self.len() {
+            if atoms_in_rings.contains(atom_index) && ring_assignments[atom_index].is_none() {
+                ring_assignments[atom_index] = Some(counter);
+                self.traverse_ringsystem(
+                    atom_index,
+                    &mut ring_assignments,
+                    &mut counter,
+                    bonds_in_ring,
+                );
+                counter += 1;
+            }
+        }
+        (ring_assignments, counter)
+    }
+
+    fn traverse_ringsystem(
+        &self,
+        atom_index: usize,
+        ring_assignments: &mut [Option<usize>],
+        counter: &mut usize,
+        bonds_in_ring: &FxHashSet<(usize, usize)>,
+    ) {
+        let bonds = self.get_atom_bonds(atom_index).unwrap_or_default();
+        for bond in bonds {
+            if bonds_in_ring.contains(&(atom_index, bond.target()))
+                && ring_assignments[atom_index].is_none()
+            {
+                ring_assignments[bond.target()] = Some(*counter);
+                self.traverse_ringsystem(atom_index, ring_assignments, counter, bonds_in_ring);
+            }
+        }
+    }
 }
 
 // Converts a cycle (represented as a Vec<usize>) to a BitSet for efficient comparison
-/// 
+///
 /// # Arguments
 /// * `cycle` - Vector of atom indices representing a cycle
-/// 
+///
 /// # Returns
 /// A BitSet where each set bit represents the presence of an atom in the cycle
-/// 
+///
 /// # Example
 /// ```
 /// use molecules::molecule::base::cycle_to_bitset;
-/// 
+///
 /// let cycle = vec![0, 2, 4];
 /// let bitset = cycle_to_bitset(&cycle);
 /// assert_eq!(bitset.len(), 3);
@@ -2415,11 +1562,56 @@ pub fn cycle_to_bitset(cycle: &[usize]) -> BitSet {
 }
 
 /// Converts a list of cycles to a vector of BitSets for efficient comparison
-/// 
+///
 /// # Returns
 /// A vector of BitSets, each representing a cycle in the molecule
+/// How a formal charge changes the number of bonds an element forms.
+///
+/// A charge is not simply "one bond fewer": which way it goes depends on where
+/// the element sits in the periodic table, because the charge either spends an
+/// electron from a lone pair or fills an empty orbital.
+///
+/// - Nitrogen and beyond have lone pairs to spend, so a positive charge buys a
+///   bond and a negative one costs it: ammonium is tetravalent, the amide
+///   anion divalent, hydroxide monovalent.
+/// - Boron's group has an empty orbital instead, so the signs reverse:
+///   borohydride is tetravalent.
+/// - Carbon's group has neither, so either sign costs a bond — the
+///   carbocation and the carbanion are both trivalent.
+/// - Anything else, metals in particular, forms no bonds to satisfy here; a
+///   naive `+ charge` would turn `[Na+]` into `[NaH2+]`.
+///
+/// Using `charge.abs()` for everything gets the anions right and every cation
+/// wrong, which is what this replaced.
+#[inline]
+pub(crate) fn charge_valency_shift(atomic_number: u8, charge: i8) -> i8 {
+    // The overwhelmingly common case, and the answer is zero for every branch
+    // below, so it is worth not reaching them.
+    if charge == 0 {
+        return 0;
+    }
+    match atomic_number {
+        // B, Al, Ga, In, Tl
+        5 | 13 | 31 | 49 | 81 => -charge,
+        // C, Si, Ge, Sn, Pb
+        6 | 14 | 32 | 50 | 82 => -charge.abs(),
+        // N, P, As, Sb, Bi
+        7 | 15 | 33 | 51 | 83 => charge,
+        // O, S, Se, Te, Po
+        8 | 16 | 34 | 52 | 84 => charge,
+        // F, Cl, Br, I, At
+        9 | 17 | 35 | 53 | 85 => charge,
+        _ => -charge.abs(),
+    }
+}
+
+/// The number of bonds an atom of this element and charge is expected to form.
+#[inline]
+pub(crate) fn effective_valency(atomic_number: u8, charge: i8) -> Option<i8> {
+    use chemistry_consts::ElementProperties;
+    Some(atomic_number.valencies()?.next()? + charge_valency_shift(atomic_number, charge))
+}
+
 pub fn cycles_to_bitsets(cycles: &[Vec<usize>]) -> Vec<BitSet> {
-    cycles.iter()
-        .map(|cycle| cycle_to_bitset(cycle))
-        .collect()
+    cycles.iter().map(|cycle| cycle_to_bitset(cycle)).collect()
 }

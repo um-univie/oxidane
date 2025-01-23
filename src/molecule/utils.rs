@@ -1,9 +1,13 @@
 use crate::molecule::bond::{BondOrder, BondTarget};
 use nohash_hasher::IntMap;
+use rustc_hash::FxHashSet;
 
+/// A faster alternative to HashSet<(usize,usize)> using a flat array with bit packing
 pub fn decrease_bond(bond: &mut BondTarget) {
     match bond.bond_order {
         BondOrder::Single => panic!("Cannot decrease bond beyond single bond"),
+        BondOrder::Up => panic!("Cannot decrease single bond"),
+        BondOrder::Down => panic!("Cannot decrease single bond"),
         BondOrder::Double => bond.bond_order = BondOrder::Single,
         BondOrder::Triple => bond.bond_order = BondOrder::Double,
         BondOrder::Quadruple => bond.bond_order = BondOrder::Triple,
@@ -12,6 +16,13 @@ pub fn decrease_bond(bond: &mut BondTarget) {
     }
 }
 
+pub fn order_tuple(index1: usize, index2: usize) -> (usize, usize) {
+    if index1 < index2 {
+        (index1, index2)
+    } else {
+        (index2, index1)
+    }
+}
 pub fn update_degrees(
     degrees: &mut [i8],
     atom_index: usize,
@@ -26,7 +37,7 @@ pub fn update_degrees(
 pub fn reconstruct_path(mut current_node: usize, parents: &[Option<usize>]) -> Vec<usize> {
     let mut path = Vec::new();
 
-    while let Some(parent_atom) = parents[current_node] {
+    while let Some(parent_atom) = parents[current_node] {   
         path.push(current_node);
         current_node = parent_atom;
     }
@@ -34,10 +45,6 @@ pub fn reconstruct_path(mut current_node: usize, parents: &[Option<usize>]) -> V
 
     path.reverse();
     path
-}
-
-pub fn can_increase_bond(atom_index: usize, neighbor_index: usize, degrees: &[i8]) -> bool {
-    degrees[atom_index] < 0 && degrees[neighbor_index] < 0
 }
 
 /// Renames ring numbers in a SMILES string to ensure they are sequential and conform to SMILES standards.
@@ -73,6 +80,18 @@ pub fn rename_ring_numbers_in_place(smiles: &mut String) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks wether or not the hueckel rule is is_hueckel_satisfied
+///
+///
+/// # Examples
+///
+/// ```
+///
+/// use molecules::molecule::utils::is_hueckel_satisfied;
+///
+/// assert!(is_hueckel_satisfied(6));
+/// assert!(is_hueckel_satisfied(10))
+/// ````
 pub fn is_hueckel_satisfied(number_of_pi_electrons: usize) -> bool {
-    number_of_pi_electrons % 4 == 2
+    number_of_pi_electrons & 3 == 2
 }

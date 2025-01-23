@@ -1,13 +1,14 @@
+#![allow(warnings)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 pub mod atom;
-pub mod chirality;
 pub mod consts;
 pub mod graph_algorithms;
-pub mod graphs;
 pub mod io;
-pub mod kekulize;
 pub mod molecular_formula;
 pub mod molecule;
 pub mod prelude;
-mod sdf;
 mod tests;
 pub mod vector;
+

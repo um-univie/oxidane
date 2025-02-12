@@ -21,6 +21,7 @@ impl MoleculeExperimental for MolecularGraph {}
 impl MoleculeAromaticity for MolecularGraph {}
 impl MoleculeGraph for MolecularGraph {}
 impl Molecule for MolecularGraph {}
+impl Embed3D for MolecularGraph {}
 
 /// Error types for molecule splitting operations
 #[derive(Debug, Clone, PartialEq)]

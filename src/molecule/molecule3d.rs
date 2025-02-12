@@ -31,6 +31,7 @@ impl MoleculeGraph for Molecule3D {}
 impl MoleculeExperimental for Molecule3D {}
 impl MoleculeAromaticity for Molecule3D {}
 impl Molecule for Molecule3D {}
+impl Embed3D for Molecule3D {}
 
 #[derive(Debug, Default, Clone)]
 pub struct Molecule3D {

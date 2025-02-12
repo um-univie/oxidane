@@ -3,6 +3,7 @@ pub mod base;
 pub mod bond;
 pub mod chirality;
 pub mod cip;
+pub mod embed;
 pub mod experimental;
 pub mod graph;
 pub mod molecular_graph;

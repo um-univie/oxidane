@@ -8,6 +8,7 @@ pub mod experimental;
 pub mod graph;
 pub mod molecular_graph;
 pub mod molecular_system;
+pub mod reaction;
 pub mod molecule3d;
 pub mod traits;
 pub mod utils;

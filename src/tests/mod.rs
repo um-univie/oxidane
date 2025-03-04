@@ -3,6 +3,7 @@ mod cip_tests;
 mod embed_tests;
 mod mces_tests;
 mod mcsplit_tests;
+mod reaction_tests;
 mod sdf_tests;
 mod smarts_tests;
 mod smiles_tests;

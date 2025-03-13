@@ -1,5 +1,6 @@
 mod cxsmarts;
 mod dot;
+mod gml;
 mod molfile;
 mod sdf;
 mod smiles;
@@ -7,6 +8,7 @@ mod subgraph_matching;
 
 pub use cxsmarts::*;
 pub use dot::*;
+pub use gml::*;
 pub use molfile::*;
 pub use sdf::*;
 pub use smiles::*;

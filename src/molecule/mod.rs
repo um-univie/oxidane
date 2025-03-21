@@ -2,6 +2,8 @@ pub mod aromaticity;
 pub mod base;
 pub mod bond;
 pub mod chirality;
+pub mod descriptors;
+pub mod draw;
 pub mod cip;
 pub mod embed;
 pub mod experimental;

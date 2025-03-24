@@ -1336,15 +1336,21 @@ mod tests {
         );
     }
     //
-    /// Stress test over `tests/smiles_tree_permutations.txt`: 100k molecules,
-    /// each with ~20 RDKit-verified-equivalent SMILES writings. Every writing
-    /// on a line must canonicalize identically to the line's first writing.
+    /// Stress test over `tests/smiles_tree_permutations.txt`: one molecule per
+    /// line, each with ~85 RDKit-verified-equivalent SMILES writings. Every
+    /// writing on a line must canonicalize identically to the line's first.
     ///
-    /// The file is 425MB and this takes ~90s in `--release` (much longer in
-    /// debug), so it is `#[ignore]`d; run it explicitly with `./test.sh` or
+    /// The checked-in corpus is 1000 molecules (4MB, ~85k comparisons). It is
+    /// deliberately a sample: the full 100k-molecule corpus this was developed
+    /// against is 425MB, which is four times what GitHub will accept in a
+    /// single file and forty times what crates.io will take for a whole
+    /// package. Drop a larger file in at the same path to run against it.
+    ///
+    /// `#[ignore]`d even at 1000 molecules, since it is a benchmark rather
+    /// than a regression test; run it with `./test.sh` or
     /// `cargo test --release <name> -- --ignored --nocapture`.
     ///
-    /// As of 2026-07-13 this corpus has exactly 2 known-failing writings out
+    /// As of 2026-07-13 the full 100k corpus has exactly 2 known-failing writings out
     /// of ~8.4M comparisons (down from 10: the fused polycyclic aromatic
     /// sulfonium mismatches were fixed - see `handle_sulfur_aromaticity`'s
     /// tricoordinate-sulfonium electron count and `find_aromatic_cycles`'s

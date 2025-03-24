@@ -4,7 +4,7 @@ C1=CC=CN=C1, c1cccnc1           # Pyridine
 C1=CC=NC=C1, c1ccncc1           # Pyridine
 O1C=CC=C1, o1cccc1              # Furan
 S1C=CC=C1, s1cccc1              # Thiophene
-N1C=CC=C1, n1cccc1              # Pyrrole
+N1C=CC=C1, [nH]1cccc1              # Pyrrole
 
 # Fused systems
 C1=CC=C2C=CC=CC2=C1, c1ccc2ccccc2c1     # Naphthalene

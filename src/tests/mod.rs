@@ -1,3 +1,5 @@
+mod canonization_stress_tests;
+mod chiral_canonization_tests;
 mod chirality_tests;
 mod cip_tests;
 mod embed_tests;

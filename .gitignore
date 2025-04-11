@@ -1,3 +1,4 @@
 target/
 src/test_io.sh
 git_pusher.sh
+__pycache__/

@@ -10,13 +10,7 @@ Determines connectivity automatically based on the molecular coordinates when pa
 
 To-Do:
 Implement parsing of planned additional formats:
-    InChi
-    mol
-    sdf
-    pdb
-Remove Openbabel in favor of a pure Rust canonicalisation algorithm.
-
-
-    
-
-
+InChi
+mol
+sdf
+pdb

@@ -247,7 +247,7 @@ impl MolecularGraph {
     /// once — an intermolecular reaction, say — needs them in one graph first.
     ///
     /// ```rust
-    /// # use molecules::prelude::*;
+    /// # use oxidane::prelude::*;
     /// let methanol = MolecularGraph::from_smiles_single("CO").unwrap();
     /// let ammonia = MolecularGraph::from_smiles_single("N").unwrap();
     /// let both = MolecularGraph::combine(&[&methanol, &ammonia]);
@@ -285,8 +285,8 @@ impl MolecularGraph {
     /// perceived after parsing — see [`SmilesParseOptions`].
     ///
     /// ```rust
-    /// # use molecules::prelude::*;
-    /// use molecules::io::SmilesParseOptions;
+    /// # use oxidane::prelude::*;
+    /// use oxidane::io::SmilesParseOptions;
     ///
     /// // Kekulé benzene. By default the ring is perceived as aromatic, so it
     /// // answers the same questions as `c1ccccc1`.
@@ -369,7 +369,7 @@ impl MolecularGraph {
     /// # Examples
     ///
     /// ```rust
-    /// # use molecules::prelude::*;
+    /// # use oxidane::prelude::*;
     /// // Ethanol and ammonia in one graph, split back apart. The groups have
     /// // to be whole connected pieces: splitting through a bond is an error.
     /// let methanol = MolecularGraph::from_smiles_single("CO").unwrap();

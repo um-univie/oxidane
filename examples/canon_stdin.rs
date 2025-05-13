@@ -1,6 +1,6 @@
 //! Reads one SMILES per line from stdin, prints the canonical form (or
 //! `ERROR: <msg>`) per line. Used as an oracle-comparison driver against RDKit.
-use molecules::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+use oxidane::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
 use std::io::{self, BufRead, Write};
 
 fn main() {

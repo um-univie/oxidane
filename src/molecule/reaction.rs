@@ -34,8 +34,8 @@
 //! # Example
 //!
 //! ```rust
-//! # use molecules::prelude::*;
-//! use molecules::molecule::reaction::ReactionSmarts;
+//! # use oxidane::prelude::*;
+//! use oxidane::molecule::reaction::ReactionSmarts;
 //!
 //! // Oxidise a primary alcohol to an aldehyde.
 //! let reaction = ReactionSmarts::parse("[C:1]-[O:2]>>[C:1]=[O:2]").unwrap();

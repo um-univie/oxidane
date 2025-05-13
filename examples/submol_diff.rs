@@ -1,6 +1,6 @@
 //! Differential structure-substructure check against RDKit.
 //! Reads `pattern<TAB>target<TAB>count` from `notes/submol_oracle.py`.
-use molecules::prelude::*;
+use oxidane::prelude::*;
 use std::io::BufRead;
 
 fn main() {

@@ -3,8 +3,8 @@
 //! Reads `smarts<TAB>target<TAB>count` (see `notes/smarts_oracle.py`, which
 //! makes hydrogens explicit so both sides count the same graph) and reports
 //! every disagreement.
-use molecules::io::find_cxsmarts_matches;
-use molecules::prelude::*;
+use oxidane::io::find_cxsmarts_matches;
+use oxidane::prelude::*;
 use std::io::BufRead;
 
 fn main() {

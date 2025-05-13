@@ -12,8 +12,8 @@ pub trait MolecularDescriptors: MoleculeCore {
     ///
     /// # Examples
     /// ```
-    /// use molecules::molecule::MolecularGraph;
-    /// use molecules::molecule::descriptors::MolecularDescriptors;
+    /// use oxidane::molecule::MolecularGraph;
+    /// use oxidane::molecule::descriptors::MolecularDescriptors;
     /// let molecule = MolecularGraph::from_smiles_single("CCO").unwrap();
     /// // Ethanol C2H6O; hydrogens are explicit atoms in the parsed graph
     /// assert!((molecule.molecular_weight() - 46.07).abs() < 0.05);

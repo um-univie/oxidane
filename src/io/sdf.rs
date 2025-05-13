@@ -368,8 +368,8 @@ impl Molecule3D {
     ///
     /// ```
     /// use std::path::Path;
-    /// use molecules::prelude::Molecule3D;
-    /// use molecules::io::ToSMILES;
+    /// use oxidane::prelude::Molecule3D;
+    /// use oxidane::io::ToSMILES;
     ///
     /// let sdf_path = Path::new("tests/pentene.sdf");
     /// let molecules = Molecule3D::from_sdf(sdf_path).unwrap();

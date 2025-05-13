@@ -1,8 +1,8 @@
-# PowerShell script to install molecules binary
+# PowerShell script to install oxidane binary
 
 # Configuration
-$BinaryName = "molecules"
-$GithubRepo = "um-univie/molecules"
+$BinaryName = "oxidane"
+$GithubRepo = "um-univie/oxidane"
 $InstallDir = "$env:LOCALAPPDATA\Programs\$BinaryName"
 
 # Parse arguments

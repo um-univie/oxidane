@@ -8,7 +8,7 @@ use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub};
 /// # Example
 ///
 /// ```
-/// use molecules::vector::Vector3D;
+/// use oxidane::vector::Vector3D;
 ///
 /// let v1 = Vector3D::new(1.0, 2.0, 3.0);
 /// let v2 = Vector3D::new(4.0, 5.0, 6.0);
@@ -59,7 +59,7 @@ impl Mul<Vector3D> for Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 2.0, 3.0);
     /// let v2 = Vector3D::new(4.0, 5.0, 6.0);
@@ -135,7 +135,7 @@ impl Default for Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::default();
     /// println!("Vector: {:?}", v);
@@ -175,7 +175,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// const V: Vector3D = Vector3D::new_const(1.0, 2.0, 3.0);
     /// assert_eq!((V.x, V.y, V.z), (1.0, 2.0, 3.0));
@@ -192,7 +192,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let array = [1.0, 2.0, 3.0];
     /// let v = Vector3D::from_vec(&array);
@@ -214,7 +214,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::new(1.0, 2.0, 3.0);
     /// assert_eq!((v.x, v.y, v.z), (1.0, 2.0, 3.0));
@@ -250,7 +250,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 1.0, 1.0);
     /// let v2 = Vector3D::new(1.0, 1.0, -1.0);
@@ -274,7 +274,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     ///     let v = Vector3D::new(1.0, 1.0, 1.0);
     ///     println!("Vector: {:?}", v.length());
@@ -294,7 +294,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::new(3.0, 4.0, 0.0);
     /// assert_eq!(v.magnitude(), 5.0);
@@ -315,7 +315,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::new(1.0, 2.0, 2.0);
     /// assert_eq!(v.squared_length(), 9.0);
@@ -338,7 +338,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 0.0, 0.0);
     /// let v2 = Vector3D::new(2.0, 0.0, 0.0);
@@ -361,7 +361,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 2.0, 3.0);
     /// let v2 = Vector3D::new(4.0, 5.0, 6.0);
@@ -380,7 +380,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 2.0, 3.0);
     /// let v2 = Vector3D::new(4.0, 5.0, 6.0);
@@ -395,7 +395,7 @@ impl Vector3D {
     /// # Example
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     /// let v1 = Vector3D::new(1.0, 2.0, 3.0);
     /// let v2 = Vector3D::new(4.0, 5.0, 6.0);
     /// assert_eq!(v1.distance_squared(&v2),27.0);
@@ -412,7 +412,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::random_unit_vector();
     /// println!("Vector: {:?}", v);
@@ -439,7 +439,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let vec1 = Vector3D::unit_x();
     /// let vec2 = Vector3D::unit_y();
@@ -457,7 +457,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let vec_a = Vector3D::new(1.0, 0.0, 0.0);
     /// let vec_b = Vector3D::new(0.0, 1.0, 0.0);
@@ -482,7 +482,7 @@ impl Vector3D {
     /// # Example
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let vec1 = Vector3D::new(1.0,2.0,3.0);
     /// assert_eq!(vec1.normalize().length().ceil(),1.0)
@@ -499,7 +499,7 @@ impl Vector3D {
     ///
     /// # Example
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let start_point = Vector3D::new(1.0,0.0,0.0);
     /// let middle_point = Vector3D::new(0.0,0.0,0.0);
@@ -519,7 +519,7 @@ impl Vector3D {
     ///
     /// # Example
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let start_point = Vector3D::new(1.0,0.0,0.0);
     /// let middle_point = Vector3D::new(0.0,1.0,0.0);
@@ -563,7 +563,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 0.0, 0.0);
     /// let v2 = Vector3D::new(-1.0, 0.0, 0.0);
@@ -598,7 +598,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(3.0, 4.0, 0.0);
     /// let v2 = Vector3D::new(5.0, 0.0, 0.0);
@@ -624,7 +624,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::new(1.0, 0.0, 0.0);
     /// let rotated = v.rotate_around_axis(&Vector3D::new(0.0, 0.0, 1.0), std::f64::consts::PI / 2.0);
@@ -708,7 +708,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(1.0, 2.0, 3.0);
     /// let v2 = Vector3D::new(2.0, 3.0, 4.0);
@@ -736,7 +736,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::new(1.0, -1.0, 0.0);
     /// let normal = Vector3D::new(0.0, 1.0, 0.0);
@@ -761,7 +761,7 @@ impl Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v1 = Vector3D::new(0.0, 0.0, 0.0);
     /// let v2 = Vector3D::new(10.0, 10.0, 10.0);
@@ -786,7 +786,7 @@ impl Neg for Vector3D {
     /// # Examples
     ///
     /// ```
-    /// use molecules::vector::Vector3D;
+    /// use oxidane::vector::Vector3D;
     ///
     /// let v = Vector3D::new(1.0, -2.0, 3.0);
     /// let negated = -v;

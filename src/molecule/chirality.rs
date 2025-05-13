@@ -18,7 +18,7 @@ pub trait MoleculeChirality: MoleculeCore {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let mut mol = MolecularGraph::from_smiles_single("F/C=C/F").unwrap();
     /// assert_eq!(mol.to_smiles(), "F/C=C/F"); // trans-difluoroethene
     /// ```
@@ -1428,8 +1428,8 @@ impl ChiralClassifier for Molecule3D {
 ///
 /// # Examples
 /// ```
-/// use molecules::prelude::*;
-/// use molecules::molecule::chirality::{ChiralClass, update_chirality_after_relabeling_in_place};
+/// use oxidane::prelude::*;
+/// use oxidane::molecule::chirality::{ChiralClass, update_chirality_after_relabeling_in_place};
 ///
 /// // Test tetrahedral chirality
 /// let mut mol = MolecularGraph::from_smiles_single("N[C@](Br)(O)C").unwrap();

@@ -18,8 +18,8 @@
 //! # Example
 //!
 //! ```
-//! use molecules::prelude::*;
-//! use molecules::graph_algorithms::mces::find_maximum_common_edge_subgraph;
+//! use oxidane::prelude::*;
+//! use oxidane::graph_algorithms::mces::find_maximum_common_edge_subgraph;
 //!
 //! let ethanol = MolecularGraph::from_smiles("CCO").unwrap().remove(0);
 //! let propanol = MolecularGraph::from_smiles("CCCO").unwrap().remove(0);

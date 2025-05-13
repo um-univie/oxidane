@@ -1,18 +1,23 @@
 [package]
-name = "molecules"
+name = "oxidane"
 version = "0.2.0"
 edition = "2024"
 license = "MIT"
-description = "A library for working with molecules and molecular dynamics simulations"
-documentation = "https://docs.rs/molecules"
-repository = "https://github.com/um-univie/molecules"
+description = "Cheminformatics toolkit: SMILES, SMARTS, SDF, stereochemistry, canonization, maximum common subgraph and 3D embedding"
+documentation = "https://docs.rs/oxidane"
+repository = "https://github.com/um-univie/oxidane"
 readme = "README.md"
+keywords = ["chemistry", "cheminformatics", "smiles", "molecule", "smarts"]
+categories = ["science", "parser-implementations", "data-structures"]
+# The permutation corpus is a benchmark input, not something a dependent needs
+# to download. Everything else under tests/ is read by doctests and stays.
+exclude = ["tests/smiles_tree_permutations.txt", "notes/", "*.svg"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 # Both, deliberately: cargo builds against the path locally so the two can be
-# worked on together, and falls back to the registry version when molecules is
+# worked on together, and falls back to the registry version when oxidane is
 # published. A path-only dependency cannot be published at all.
 chemistry_consts = { version = "0.3", path = "../chemistry_consts" }
 itertools = "0.14.0"

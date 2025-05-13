@@ -21,7 +21,7 @@ impl<T: Molecule> ToGml for T {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let gml = molecule.to_gml();
     /// assert!(gml.contains("graph"));

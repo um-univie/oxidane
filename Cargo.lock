@@ -329,26 +329,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "molecules"
-version = "0.2.0"
-dependencies = [
- "bit-set",
- "bitvec",
- "canonaut",
- "chemistry_consts",
- "itertools",
- "kiddo",
- "ndarray",
- "nohash-hasher",
- "petgraph",
- "rand",
- "rayon",
- "rustc-hash",
- "rustfft",
- "tinyvec",
-]
-
-[[package]]
 name = "ndarray"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -418,6 +398,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f4779c6901a562440c3786d08192c6fbda7c1c2060edd10006b05ee35d10f2d"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "oxidane"
+version = "0.2.0"
+dependencies = [
+ "bit-set",
+ "bitvec",
+ "canonaut",
+ "chemistry_consts",
+ "itertools",
+ "kiddo",
+ "ndarray",
+ "nohash-hasher",
+ "petgraph",
+ "rand",
+ "rayon",
+ "rustc-hash",
+ "rustfft",
+ "tinyvec",
 ]
 
 [[package]]

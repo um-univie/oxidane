@@ -18,7 +18,7 @@ pub trait MoleculeExperimental: MoleculeCore {
     /// # Examples
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("c1ccccc1").unwrap();
     /// let mut molecule = molecule.first().unwrap().clone();
     /// molecule.kekulize().unwrap();
@@ -439,8 +439,8 @@ pub trait MoleculeExperimental: MoleculeCore {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::experimental::MoleculeExperimental;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::experimental::MoleculeExperimental;
     /// let mut mol = MolecularGraph::from_smiles_single("c1ccccc1").unwrap();
     /// mol.simple_aromatization();
     /// assert!(mol.get_aromatic_atoms().len() == 6);

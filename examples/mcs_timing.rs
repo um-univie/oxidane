@@ -1,7 +1,7 @@
 //! Our side of the MCS timing table in `notes/rdkit-divergences.md`.
 //! Pair with `python3 notes/mcs_timing.py`.
-use molecules::graph_algorithms::mcsplit;
-use molecules::prelude::*;
+use oxidane::graph_algorithms::mcsplit;
+use oxidane::prelude::*;
 use std::time::Instant;
 
 const STEROIDS: [&str; 7] = [

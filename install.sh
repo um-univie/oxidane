@@ -2,8 +2,8 @@
 set -e
 
 # Configuration
-BINARY_NAME="molecules"
-GITHUB_REPO="um-univie/molecules"
+BINARY_NAME="oxidane"
+GITHUB_REPO="um-univie/oxidane"
 INSTALL_DIR="/usr/local/bin"
 
 # Parse arguments

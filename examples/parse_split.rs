@@ -1,6 +1,6 @@
 //! Where the parse time goes.
-use molecules::io::{SMILESParser, SmilesParseOptions};
-use molecules::prelude::*;
+use oxidane::io::{SMILESParser, SmilesParseOptions};
+use oxidane::prelude::*;
 use std::time::Instant;
 
 fn corpus() -> Vec<String> {

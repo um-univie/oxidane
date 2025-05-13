@@ -16,9 +16,9 @@
 //! moves the same information into the atom block columns; `sweep` is
 //! exhaustive over elements and codes.
 
-use molecules::io::{SdfParseOptions, parse_sdf_file};
-use molecules::molecule::base::MoleculeCore;
-use molecules::prelude::Molecule3D;
+use oxidane::io::{SdfParseOptions, parse_sdf_file};
+use oxidane::molecule::base::MoleculeCore;
+use oxidane::prelude::Molecule3D;
 use std::io::Cursor;
 
 /// Reads one JSON string field, undoing the escaping the oracle applies.

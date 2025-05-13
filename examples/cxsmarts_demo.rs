@@ -5,8 +5,8 @@ This example demonstrates the usage of CxSMARTS (ChemAxon Extended SMARTS)
 functionality in the molecules crate.
 */
 
-use molecules::io::SMILESParser;
-use molecules::prelude::*;
+use oxidane::io::SMILESParser;
+use oxidane::prelude::*;
 
 fn main() {
     println!("CxSMARTS (ChemAxon Extended SMARTS) Demo");

@@ -1,6 +1,6 @@
 //! Parse and write throughput, so isotope handling can be changed without
 //! silently costing either.
-use molecules::prelude::*;
+use oxidane::prelude::*;
 use std::time::Instant;
 
 fn main() {

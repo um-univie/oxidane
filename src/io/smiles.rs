@@ -133,7 +133,7 @@ impl<'a> SMILESParser<'a> {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecules = MolecularGraph::from_smiles("C(C(C))COCCl").unwrap();
     /// assert_eq!(molecules[0].atomic_numbers().len(), 18);
     /// assert_eq!(molecules[0].get_edges().len(), 17);
@@ -1295,7 +1295,7 @@ pub trait ToSMILES: Molecule {
     /// # Example
     ///
     /// ```rust
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     ///
     /// let molecule = MolecularGraph::from_smiles("c1ccccc1").unwrap();
     /// let molecule = molecule.first().unwrap();

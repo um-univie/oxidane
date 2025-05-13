@@ -130,7 +130,7 @@ impl MolecularSystem {
 /// This function returns a ParseFloatError if the line has errors in the float region, it does not check for other errors.
 ///
 /// ```
-/// use molecules::molecule::molecular_system::extract_atom_pdb;
+/// use oxidane::molecule::molecular_system::extract_atom_pdb;
 ///
 ///
 /// let line =  "ATOM   2073  CB  ALA B 128      11.390 -11.172  71.797  1.00 16.79           C";
@@ -170,8 +170,8 @@ pub fn extract_atom_pdb(line: &str) -> Result<Atom, ParseFloatError> {
 /// # Example
 ///
 /// ```
-/// use molecules::prelude::*;
-/// use molecules::molecule::molecular_system::extract_atom_cif;
+/// use oxidane::prelude::*;
+/// use oxidane::molecule::molecular_system::extract_atom_cif;
 ///
 /// let line = "ATOM   1    N N   . GLN A 1 1   ? 201.310 198.892 131.429 1.00 70.25  ? 1   GLN A N   1";
 /// let atom = extract_atom_cif(line).unwrap();

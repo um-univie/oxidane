@@ -87,7 +87,7 @@ pub fn rename_ring_numbers_in_place(smiles: &mut String) -> Result<(), String> {
 ///
 /// ```
 ///
-/// use molecules::molecule::utils::is_hueckel_satisfied;
+/// use oxidane::molecule::utils::is_hueckel_satisfied;
 ///
 /// assert!(is_hueckel_satisfied(6));
 /// assert!(is_hueckel_satisfied(10))

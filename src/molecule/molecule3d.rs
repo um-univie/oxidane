@@ -95,7 +95,7 @@ impl Molecule3D {
     ///
     /// # Examples
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
+    /// use oxidane::molecule::{Molecule3D,Molecule};
     ///
     /// let molecules = Molecule3D::from_xyz("tests/ethane.xyz").unwrap();
     /// assert_eq!(molecules[0].atomic_numbers.len(), 8);
@@ -281,7 +281,7 @@ impl Molecule3D {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom1 = Atom::new(6).with_position((0.0, 0.0, 0.0));
     /// let atom2 = Atom::new(6).with_position((1.0, 0.0, 0.0));
     /// let atom3 = Atom::new(6).with_position((2.0, 0.0, 0.0));
@@ -346,7 +346,7 @@ impl Molecule3D {
     /// # Example
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     ///
     /// let mut molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let dihedrals = molecule.dihedrals();
@@ -389,7 +389,7 @@ impl Molecule3D {
     /// # Example
     ///
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
+    /// use oxidane::molecule::{Molecule3D,Molecule};
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let dihedral_angle = molecule.dihedral_angle(&(0, 1, 2, 3));
     /// assert_eq!(dihedral_angle, Some(0.5807210503904102));
@@ -426,7 +426,7 @@ impl Molecule3D {
     ///
     /// # Example
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
+    /// use oxidane::molecule::{Molecule3D,Molecule};
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let degrees = molecule.degrees();
     /// assert_eq!(degrees, vec![0, 0, 0, 0, 0, 0, 0, 0]);
@@ -452,7 +452,7 @@ impl Molecule3D {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom = Atom::new(6);
     /// assert_eq!(atom.actual_valency(), 0);
     /// ```
@@ -598,7 +598,7 @@ impl Molecule3D {
     ///
     /// # Examples
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
+    /// use oxidane::molecule::{Molecule3D,Molecule};
     ///
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let atom_set = vec![0,1,2].into_iter().collect();
@@ -645,7 +645,7 @@ impl Molecule3D {
     ///
     /// # Examples
     /// ```
-    /// use molecules::molecule::{Molecule3D,Molecule};
+    /// use oxidane::molecule::{Molecule3D,Molecule};
     ///
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// let shortest_path = molecule.shortest_path(0,1).unwrap();

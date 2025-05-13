@@ -141,7 +141,7 @@ impl Atom {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom = Atom::new(6);
     /// assert_eq!(atom.expected_valency(), Some(4));
     /// ```
@@ -153,7 +153,7 @@ impl Atom {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom1 = Atom::new(6);
     /// let atom2 = Atom::new(8);
     /// assert!(atom1.cmp_electronegativity(&atom2) == std::cmp::Ordering::Less);
@@ -227,7 +227,7 @@ impl Atom {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom1 = Atom::new(6).with_position((0.0,0.0,0.0));
     /// let atom2 = Atom::new(6).with_position((1.0,0.0,0.0));
     /// assert_eq!(atom1.distance(&atom2),1.0);
@@ -243,7 +243,7 @@ impl Atom {
     /// # Example
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom1 = Atom::new(6).with_position((0.0,0.0,0.0));
     /// let atom2 = Atom::new(6).with_position((1.0,0.0,0.0));
     /// assert_eq!(atom1.distance_squared(&atom2),1.0);
@@ -271,7 +271,7 @@ impl Atom {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let atom1 = Atom::new(6).with_position((0.0,0.0,0.0));
     /// let atom2 = Atom::new(6).with_position((1.0,0.0,0.0));
     /// assert_eq!(atom1.potential_energy(&atom2, 1.0, 1.0),0.0);

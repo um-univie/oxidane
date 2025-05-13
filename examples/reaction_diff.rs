@@ -1,8 +1,8 @@
 //! Differential reaction-SMARTS check against RDKit's RunReactants.
 //! Reads `reaction<TAB>reactants<TAB>expected;expected` (notes/reaction_oracle.py).
-use molecules::graph_algorithms::mol_canonization::canonize_mol;
-use molecules::molecule::reaction::ReactionSmarts;
-use molecules::prelude::*;
+use oxidane::graph_algorithms::mol_canonization::canonize_mol;
+use oxidane::molecule::reaction::ReactionSmarts;
+use oxidane::prelude::*;
 use std::io::BufRead;
 
 fn canonical(mol: &MolecularGraph) -> String {

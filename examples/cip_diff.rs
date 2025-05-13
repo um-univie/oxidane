@@ -4,9 +4,9 @@
 //! script) and reports every disagreement, split into false positives (we
 //! label an atom RDKit leaves unlabelled), false negatives (the reverse) and
 //! outright wrong descriptors.
-use molecules::graph_algorithms::mol_canonization::reorder_molecule;
-use molecules::molecule::cip::CipConfig;
-use molecules::prelude::*;
+use oxidane::graph_algorithms::mol_canonization::reorder_molecule;
+use oxidane::molecule::cip::CipConfig;
+use oxidane::prelude::*;
 use std::io::BufRead;
 
 fn main() {

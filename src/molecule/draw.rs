@@ -12,8 +12,8 @@ pub trait Draw<M: Molecule> {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::draw::Draw;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::draw::Draw;
     /// let molecule = MolecularGraph::from_smiles("CC").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// let svg = molecule.to_svg();
@@ -157,8 +157,8 @@ pub trait Draw<M: Molecule> {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::draw::Draw;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::draw::Draw;
     /// let molecule = MolecularGraph::from_smiles("CC").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// let coords = molecule.get_2d_coordinates();

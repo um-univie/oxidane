@@ -133,7 +133,7 @@ pub trait MoleculeCore {
     ///
     ///
     /// # Examples
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_smiles("C1CCCCC1CC2CCCCC2");
     /// assert_eq!(molecule.valency_delta(0), Some(0));
     fn valency_delta(&self, atom_index: usize) -> Option<i8> {
@@ -158,7 +158,7 @@ pub trait MoleculeCore {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("C").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// assert!(molecule.has_plausible_valency(0)); // Carbon with 4 bonds is plausible
@@ -249,7 +249,7 @@ pub trait MoleculeCore {
     /// # Example
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     ///
     /// assert_eq!(molecule.cmp_electronegativities(0, 1), std::cmp::Ordering::Equal);
@@ -274,7 +274,7 @@ pub trait MoleculeCore {
     /// # Example
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// assert_eq!(molecule.electronegativity(0), Some(254)); // Carbon's electronegativity
     /// assert_eq!(molecule.electronegativity(2), Some(220)); // Hydrogen's electronegativity
@@ -291,7 +291,7 @@ pub trait MoleculeCore {
     /// # Example
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// assert_eq!(molecule.get_oxidation_state(0), -3);
     ///
@@ -681,7 +681,7 @@ pub trait MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("C[C@H](N)O").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// assert_eq!(molecule.has_stereochemistry(), true);
@@ -712,7 +712,7 @@ pub trait MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let mol = MolecularGraph::from_smiles("CC(=O)C").unwrap()[0].clone();
     /// let path = mol.get_smiles_path();
     /// // Acetone's four heavy atoms, each once; hydrogens are not traversed.
@@ -803,7 +803,7 @@ pub trait MoleculeCore {
     /// # Examples
     ///
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let mut molecule = MolecularGraph::from_smiles_single("C").unwrap();
     /// molecule.add_hydrogens();
     /// assert_eq!(molecule.number_of_bonded_element(0, 1), 4);
@@ -1047,7 +1047,7 @@ pub trait MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("C1CC1").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// let cycles = molecule.compute_fundamental_cycles();
@@ -1202,7 +1202,7 @@ pub trait MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("c1ccc2ccccc2c1").unwrap(); // naphthalene
     /// let molecule = molecule.first().unwrap();
     /// let cycles = molecule.enumerate_possible_cycles();
@@ -1544,7 +1544,7 @@ pub trait MoleculeCore {
 ///
 /// # Example
 /// ```
-/// use molecules::molecule::base::cycle_to_bitset;
+/// use oxidane::molecule::base::cycle_to_bitset;
 ///
 /// let cycle = vec![0, 2, 4];
 /// let bitset = cycle_to_bitset(&cycle);

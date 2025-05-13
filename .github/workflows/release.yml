@@ -51,9 +51,9 @@ jobs:
         run: |
           mkdir -p release
           if [ "${{ matrix.os }}" = "windows" ]; then
-            cp target/${{ matrix.target }}/release/molecules.exe release/molecules_${{ matrix.os }}_${{ matrix.arch }}.exe
+            cp target/${{ matrix.target }}/release/oxidane.exe release/molecules_${{ matrix.os }}_${{ matrix.arch }}.exe
           else
-            cp target/${{ matrix.target }}/release/molecules release/molecules_${{ matrix.os }}_${{ matrix.arch }}
+            cp target/${{ matrix.target }}/release/oxidane release/molecules_${{ matrix.os }}_${{ matrix.arch }}
           fi
 
       - name: Upload artifacts

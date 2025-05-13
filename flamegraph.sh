@@ -1,1 +1,1 @@
-cargo flamegraph --root --dev --unit-test molecules -- benchmark_parsing_from_file 
+cargo flamegraph --root --dev --unit-test oxidane -- benchmark_parsing_from_file 

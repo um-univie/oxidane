@@ -394,8 +394,8 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::graph::MoleculeGraph;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::graph::MoleculeGraph;
     ///
     /// let mol = MolecularGraph::from_smiles_single("C1=CC=CC=C1").unwrap();
     /// let adjacency_matrix = mol.adjacency_matrix();
@@ -555,9 +555,9 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::chirality::ChiralType;
-    /// use molecules::molecule::graph::AtomLabel;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::chirality::ChiralType;
+    /// use oxidane::molecule::graph::AtomLabel;
     /// let mol = MolecularGraph::from_smiles("[NH3+]").unwrap();
     /// let mol = mol.first().unwrap();
     /// // Nitrogen, charge +1; with no isotope in the SMILES the label falls
@@ -587,9 +587,9 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::graph::AtomLabelImplicitHydrogens;
-    /// use molecules::molecule::chirality::ChiralType;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::graph::AtomLabelImplicitHydrogens;
+    /// use oxidane::molecule::chirality::ChiralType;
     /// let mol = MolecularGraph::from_smiles("[NH3+]").unwrap();
     /// let mol = mol.first().unwrap();
     /// assert_eq!(mol.get_atom_label_with_hydrogens(0), AtomLabelImplicitHydrogens::new(7,1,false,ChiralType::None,3)); // Nitrogen, charge +1
@@ -622,9 +622,9 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::graph::AtomLabelImplicitHydrogens;
-    /// use molecules::molecule::chirality::ChiralType;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::graph::AtomLabelImplicitHydrogens;
+    /// use oxidane::molecule::chirality::ChiralType;
     /// let mol = MolecularGraph::from_smiles("[NH3+]").unwrap();
     /// let mol = mol.first().unwrap();
     /// assert_eq!(mol.get_atom_label_with_hydrogens(0), AtomLabelImplicitHydrogens::new(7,1,false,ChiralType::None,3)); // Nitrogen, charge +1
@@ -836,7 +836,7 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecules = MolecularGraph::from_smiles("c1ccccc1").unwrap();
     /// let molecule = molecules.first().unwrap();
     /// let (graph, label_map) = molecule.to_ungraph_with_edge_nodes_and_implicit_hydrogens_compact();
@@ -964,8 +964,8 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::graph::CompactGraph;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::graph::CompactGraph;
     ///
     /// let molecules = MolecularGraph::from_smiles("c1ccccc1").unwrap();
     /// let molecule = molecules.first().unwrap();
@@ -1264,7 +1264,7 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("CC(=O)O").unwrap();
     /// let molecule = molecule.first().unwrap();
     /// let (graph, atom_map, bond_map) = molecule.to_fully_indexed_graph_with_hydrogens();
@@ -1336,7 +1336,7 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("CC(=O)O").unwrap();
     /// let molecule = molecule.first().unwrap();
     ///
@@ -1470,7 +1470,7 @@ pub trait MoleculeGraph: MoleculeCore {
     ///
     /// # Example
     /// ```
-    /// use molecules::prelude::*;
+    /// use oxidane::prelude::*;
     /// let molecule = MolecularGraph::from_smiles("CC(=O)O").unwrap();
     /// let molecule = molecule.first().unwrap();
     ///

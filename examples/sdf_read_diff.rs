@@ -12,8 +12,8 @@
 //! python3 notes/sdf_read_oracle.py tests/smiles.txt
 //! ```
 
-use molecules::io::{SdfParseOptions, ToSMILES};
-use molecules::prelude::Molecule3D;
+use oxidane::io::{SdfParseOptions, ToSMILES};
+use oxidane::prelude::Molecule3D;
 
 fn main() {
     let mut arguments = std::env::args().skip(1);

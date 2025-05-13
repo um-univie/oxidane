@@ -165,8 +165,8 @@ impl MolecularGraph {
     ///
     /// # Example
     /// ```rust
-    /// # use molecules::prelude::*;
-    /// use molecules::molecule::cip::CipConfig;
+    /// # use oxidane::prelude::*;
+    /// use oxidane::molecule::cip::CipConfig;
     /// let mol = MolecularGraph::from_smiles_single("N[C@@H](C)C(=O)O").unwrap();
     /// assert_eq!(mol.assign_cip_configs()[1], CipConfig::S);
     /// ```

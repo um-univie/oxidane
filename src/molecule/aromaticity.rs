@@ -1040,8 +1040,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     ///
     /// # Examples
     /// ```
-    /// use molecules::prelude::*;
-    /// use molecules::molecule::aromaticity::AromaticityModel;
+    /// use oxidane::prelude::*;
+    /// use oxidane::molecule::aromaticity::AromaticityModel;
     ///
     ///
     /// let mut mol = MolecularGraph::from_smiles("C=1C=CC=CC=1").unwrap();

@@ -1,6 +1,6 @@
 //! Timing for CIP assignment and for the MCES that consumes it.
-use molecules::graph_algorithms::mcsplit;
-use molecules::prelude::*;
+use oxidane::graph_algorithms::mcsplit;
+use oxidane::prelude::*;
 use std::time::Instant;
 
 const STEROID: &str =

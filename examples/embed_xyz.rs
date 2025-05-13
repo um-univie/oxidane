@@ -4,7 +4,7 @@
 //! connectivity/order (parsed from the same SMILES) and this program
 //! supplies only the coordinates, since the crate has no SDF/molfile writer.
 use chemistry_consts::ElementProperties;
-use molecules::prelude::*;
+use oxidane::prelude::*;
 
 fn main() {
     let smiles = std::env::args().nth(1).unwrap_or_else(|| {

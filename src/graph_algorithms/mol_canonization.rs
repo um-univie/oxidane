@@ -75,8 +75,8 @@ fn print_matrix(matrix: &[usize], words_per_vertex: usize, number_of_vertices: u
 /// # Examples
 ///
 /// ```
-/// use molecules::graph_algorithms::mol_canonization::canonize_mol;
-/// use molecules::io::{SMILESParser, ToSMILES};
+/// use oxidane::graph_algorithms::mol_canonization::canonize_mol;
+/// use oxidane::io::{SMILESParser, ToSMILES};
 ///
 /// let mol = SMILESParser::parse_smiles_single("[N+]([O-])([O-])=O.C(CC(c1ccc(Cl)cc1Cl)(C#N)C[n+]1cn[nH]c1)CC").unwrap();
 /// let canonical_mol = canonize_mol(&mol);
@@ -100,8 +100,8 @@ pub fn canonize_mol<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
 /// # Examples
 ///
 /// ```
-/// use molecules::graph_algorithms::mol_canonization::{canonize_mol, canonize_mol_inplace};
-/// use molecules::io::{SMILESParser, ToSMILES};
+/// use oxidane::graph_algorithms::mol_canonization::{canonize_mol, canonize_mol_inplace};
+/// use oxidane::io::{SMILESParser, ToSMILES};
 ///
 /// let mut mol = SMILESParser::parse_smiles_single("[N+]([O-])([O-])=O.C(CC(c1ccc(Cl)cc1Cl)(C#N)C[n+]1cn[nH]c1)CC").unwrap();
 /// let canonical_mol = canonize_mol(&mol);
@@ -125,9 +125,9 @@ pub fn canonize_mol_inplace<T: Molecule + Clone + ToSMILES>(molecule: &mut T) {
 /// the same octahedral cobalt and all come back as `OH(19)`:
 ///
 /// ```rust
-/// # use molecules::prelude::*;
-/// use molecules::graph_algorithms::mol_canonization::canonical_chiral_classes;
-/// use molecules::molecule::chirality::ChiralClass;
+/// # use oxidane::prelude::*;
+/// use oxidane::graph_algorithms::mol_canonization::canonical_chiral_classes;
+/// use oxidane::molecule::chirality::ChiralClass;
 ///
 /// for smiles in [
 ///     "[Co@OH18]([SH])([Br])([I])([CH3])([F])[Cl]",
@@ -845,7 +845,7 @@ fn get_path_neighbors(path: &[usize], neighbor_set: &BitSet) -> Vec<usize> {
 ///
 /// # Example
 /// ```
-/// use molecules::graph_algorithms::mol_canonization::compare_strings_formatted;
+/// use oxidane::graph_algorithms::mol_canonization::compare_strings_formatted;
 /// let comparison = compare_strings_formatted("hello", "hallo");
 /// // Both strings, one per line, with the differing characters in red and the
 /// // matching ones in green.
@@ -911,7 +911,7 @@ pub fn compare_strings_formatted(s1: &str, s2: &str) -> String {
 ///
 /// # Example
 /// ```
-/// use molecules::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+/// use oxidane::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
 /// let smiles = "CC=CC.C(C=CC)";
 /// let canonical_smiles = canonicalize_and_sort_smiles(smiles, false).unwrap();
 /// assert_eq!(canonical_smiles, "CC=CC.CC=CC");

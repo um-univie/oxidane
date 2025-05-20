@@ -2,6 +2,7 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 #![allow(dead_code)]
+#![doc = include_str!("../README.md")]
 pub mod atom;
 pub mod consts;
 pub mod graph_algorithms;

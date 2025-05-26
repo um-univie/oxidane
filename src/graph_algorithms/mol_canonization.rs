@@ -43,12 +43,9 @@ use petgraph::visit::{EdgeRef, GetAdjacencyMatrix};
 use rustc_hash::FxHashMap;
 
 use graphcanon::{
-    naugraph::{DISPATCH_GRAPH, GraphContext},
-    nauty::nauty,
-    structs::{
-        DispatchVec,
-        nauty_core::{NautyOptions, Statistics},
-    },
+    refine::{DISPATCH_GRAPH, GraphContext},
+    search::canonicalize,
+    structs::{CanonautOptions, DispatchVec, Statistics},
 };
 
 use std::ffi::c_void;
@@ -245,16 +242,16 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     // molecules whose symmetry is broken only by atom identity (e.g. a palindromic
     // chain with N on one end and O on the other).
     AUTOMORPHISM_GENERATORS.with(|generators| generators.borrow_mut().clear());
-    let mut options: NautyOptions = NautyOptions {
+    let mut options: CanonautOptions = CanonautOptions {
         get_canonical: true,
         default_partition: false,
         user_automorphism_procedure: Some(collect_automorphism_generator),
-        ..NautyOptions::default()
+        ..CanonautOptions::default()
     };
     let mut statistics: Statistics = Statistics::default();
     let mut graph_context = GraphContext::new(number_of_vertices);
 
-    nauty(
+    canonicalize(
         &matrix,
         &mut labeling,  // weights
         &mut partition, // partition

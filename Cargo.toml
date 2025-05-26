@@ -16,12 +16,9 @@ exclude = ["tests/smiles_tree_permutations.txt", "notes/", "*.svg"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Both, deliberately: cargo builds against the path locally so the two can be
-# worked on together, and falls back to the registry version when oxidane is
-# published. A path-only dependency cannot be published at all.
-chemistry_consts = { version = "0.3", path = "../chemistry_consts" }
+chemistry_consts = "0.3"
 itertools = "0.14.0"
-kiddo = "5.2.2"
+kiddo = "5.3.3"
 ndarray = "0.17.1"
 nohash-hasher = "0.2.0"
 petgraph = "0.8"
@@ -31,7 +28,7 @@ tinyvec = "1.10.0"
 bitvec = "1.0.1"
 bit-set = "0.8.0"
 rustc-hash = "2.1.1"
-graphcanon = {path="../nauty", package="canonaut"}
+graphcanon = { version = "1.0", package = "canonaut" }
 rustfft = "6.4.1"
 
 

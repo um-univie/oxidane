@@ -208,6 +208,41 @@ mod canonization_stress_tests {
         );
     }
 
+    // ---- Regression: radical states survive canonization -----------------
+    //
+    // `reorder_molecule` permuted atomic numbers, charges, isotopes, atom
+    // classes, bonds and chirality tags, and left `radical_states` alone. The
+    // unpaired electron therefore stayed at the index its atom used to
+    // occupy and was written out against whatever atom landed there -- as a
+    // hydrogen count short of the valence, which is how SMILES spells a
+    // radical. `C[Si](C)CC` came out as `[Si]([CH3])(C)CC`: a methyl radical
+    // that is not in the molecule, on a different methyl for each way of
+    // writing the same compound.
+    //
+    // These use a bracketed atom with a spare valence, since that is where
+    // radicals come from on the way in. There is nothing silicon-specific
+    // about it; silicon is just the common case in the corpus.
+    #[test]
+    fn regression_radicals_do_not_move_during_canonization() {
+        assert_all_equal(
+            "dimethylethylsilyl radical",
+            &["C[Si](C)CC", "CC[Si](C)C", "[Si](C)(C)CC"],
+        );
+        assert_all_equal(
+            "dimethylphenylsilyl radical",
+            &[
+                "C[Si](C)c1ccccc1",
+                "c1ccccc1[Si](C)C",
+                "[Si](C)(C)c1ccccc1",
+                "c1cc([Si](C)C)ccc1",
+            ],
+        );
+        // A radical must still be written where there really is one, and only
+        // there: the methyl radical keeps its brackets, methane has none.
+        assert_eq!(canon_sorted("[CH3]"), "[CH3]");
+        assert_eq!(canon_sorted("C"), "C");
+    }
+
     // ---- Regression: fused aromatic sulfonium electron count -------------
     //
     // `handle_sulfur_aromaticity`'s formal_charge==+1 arm had no fallback for

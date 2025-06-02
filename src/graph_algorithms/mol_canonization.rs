@@ -516,6 +516,17 @@ pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, mut labeling: &[usi
     }
     *mol.charges_mut() = new_charges;
 
+    // Reorder radical states. Missing this moved the unpaired electron onto
+    // whichever atom inherited the index, so `C[Si](C)CC` and `CC[Si](C)C` --
+    // the same molecule -- canonicalized to `[Si]([CH3])(C)CC` and
+    // `[Si](C)([CH3])CC`: the radical stayed at the silicon's *old* index and
+    // was written out as a methyl radical, on a different methyl each time.
+    let mut new_radical_states = vec![0; mol.atomic_numbers().len()];
+    for (new_idx, &old_idx) in labeling.iter().enumerate() {
+        new_radical_states[new_idx] = mol.radical_states().get(old_idx).copied().unwrap_or(0);
+    }
+    *mol.radical_states_mut() = new_radical_states;
+
     // Reorder isotopes and atom classes. Both are per-atom labels, so leaving
     // them in place would silently move a `[13C]` or a `[C:1]` onto whichever
     // atom happened to land at that index — which, for isotopes, changes the

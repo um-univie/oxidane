@@ -243,6 +243,72 @@ mod canonization_stress_tests {
         assert_eq!(canon_sorted("C"), "C");
     }
 
+    // ---- Regression: every fragment gets its radicals assigned ------------
+    //
+    // The pass that turns a bracketed atom's unaccounted valence into unpaired
+    // electrons ran once, over whatever was left in the parser when the string
+    // ended -- which is only the last fragment. In `C(C)[Ge](CC)CC.[K]` the
+    // potassium was marked and the germanium was not, so the germanium had a
+    // hydrogen invented for it; writing the fragments the other way round
+    // moved the invented hydrogen to the potassium.
+    #[test]
+    fn regression_radicals_are_assigned_in_every_fragment() {
+        assert_all_equal(
+            "triethylgermyl radical with potassium",
+            &[
+                "C(C)[Ge](CC)CC.[K]",
+                "[K].C(C)[Ge](CC)CC",
+                "[K].CC[Ge](CC)CC",
+                "CC[Ge](CC)CC.[K]",
+                "[Ge](CC)(CC)CC.[K]",
+            ],
+        );
+        assert_all_equal("two bare fragments", &["[C].[N]", "[N].[C]"]);
+    }
+
+    // ---- Brackets are not what makes an atom a radical -------------------
+    //
+    // The rule is the valence left after the bonds *and* the stated hydrogens,
+    // so a bracketed atom is usually not a radical at all. Pinned here because
+    // both bugs above looked like stray brackets, and the obvious wrong fix --
+    // treating any bracketed atom as a radical, or none of them -- passes the
+    // invariance tests while making the chemistry wrong in one direction or
+    // the other. Every count below agrees with RDKit's
+    // GetNumRadicalElectrons().
+    #[test]
+    fn radicals_are_the_valence_left_after_hydrogens() {
+        let radicals = |smiles: &str| -> Vec<u8> {
+            let mols = MolecularGraph::from_smiles(smiles).expect("should parse");
+            mols.iter()
+                .flat_map(|mol| {
+                    mol.atomic_numbers()
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &z)| z != 1)
+                        .map(|(index, _)| mol.radical_states()[index])
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+
+        // Ethane written with one carbon bracketed: the stated hydrogens and
+        // the C-C bond fill both valences, so neither atom is a radical.
+        assert_eq!(radicals("C[CH3]"), vec![0, 0]);
+        assert_eq!(radicals("CC"), vec![0, 0]);
+        assert_eq!(radicals("[NH2]C"), vec![0, 0]);
+        // Bracketed and fully substituted: still not a radical.
+        assert_eq!(radicals("C[Si](C)(C)C"), vec![0, 0, 0, 0, 0]);
+        assert_eq!(radicals("C[SiH](C)CC"), vec![0, 0, 0, 0, 0]);
+
+        // One short of the valence, in each case by one stated hydrogen.
+        assert_eq!(radicals("[CH3]"), vec![1]);
+        assert_eq!(radicals("C[Si](C)CC"), vec![0, 1, 0, 0, 0]);
+        assert_eq!(radicals("[K]"), vec![1]);
+        // Further short: a carbene has two, a bare carbon four.
+        assert_eq!(radicals("[CH2]"), vec![2]);
+        assert_eq!(radicals("[C]"), vec![4]);
+    }
+
     // ---- Regression: fused aromatic sulfonium electron count -------------
     //
     // `handle_sulfur_aromaticity`'s formal_charge==+1 arm had no fallback for

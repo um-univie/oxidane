@@ -57,6 +57,44 @@ impl Default for SmilesParseOptions {
     }
 }
 
+/// Records, as unpaired electrons, the valence a bracketed atom's bonds and
+/// stated hydrogens together leave unaccounted for.
+///
+/// Brackets do not make an atom a radical; they make its hydrogen count
+/// explicit, and stop the reader inventing more. What is left over after the
+/// bonds and those hydrogens is the radical: `C[CH3]` is ethane, because the
+/// three stated hydrogens and the bond to carbon fill carbon's valence, while
+/// a lone `[CH3]` is the methyl radical and `[Si]` with three neighbours is a
+/// silyl radical, both one electron short. By this point the stated hydrogens
+/// are atoms in their own right, so `bond_valency` already counts them.
+///
+/// Requiring a stated hydrogen count here as well meant `[C]` and `[N+]`,
+/// which state none, fell through to having hydrogens invented for them
+/// instead.
+///
+/// This has to run for every fragment. It used to run once, on whatever was
+/// left in the parser at the end of the string, so in `C(C)[Ge](CC)CC.[K]`
+/// only the potassium was marked and the germanium silently acquired a
+/// hydrogen -- and writing the same molecule with the fragments the other way
+/// round moved the hydrogen to the other fragment.
+fn assign_radicals(atoms: &mut [Atom]) {
+    for atom in atoms.iter_mut() {
+        if !atom.is_complex() {
+            continue;
+        }
+        // The same effective valency `get_atom_degree` uses, against the bonds
+        // alone, so that what the radicals do not account for is exactly zero
+        // and no hydrogens follow.
+        let effective =
+            crate::molecule::base::effective_valency(atom.atomic_number(), atom.charge())
+                .unwrap_or(0);
+        let difference = effective - atom.bond_valency();
+        if difference > 0 {
+            atom.set_radical(difference as u8);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct SMILESParser<'a> {
     smiles: &'a str,
@@ -301,6 +339,7 @@ impl<'a> SMILESParser<'a> {
                         .iter()
                         .any(|(_, (a, b, _))| a.is_none() || b.is_none())
                     {
+                        assign_radicals(&mut parser.atoms);
                         let molecule = MolecularGraph::from_atoms(&parser.atoms);
                         molecules.push(molecule);
                         write_orders.push(parser.resolve_write_orders());
@@ -372,26 +411,7 @@ impl<'a> SMILESParser<'a> {
 
         parser.add_all_bonds();
 
-        // Whatever valence a bracketed atom does not account for is unpaired
-        // electrons. Requiring a stated hydrogen count here as well meant
-        // `[C]` and `[N+]`, which state none, fell through to having hydrogens
-        // invented for them instead.
-        for atom in parser.atoms.iter_mut() {
-            if atom.is_complex() {
-                // The same effective valency `get_atom_degree` uses, against
-                // the bonds alone, so that what the radicals do not account
-                // for is exactly zero and no hydrogens follow.
-                let effective = crate::molecule::base::effective_valency(
-                    atom.atomic_number(),
-                    atom.charge(),
-                )
-                .unwrap_or(0);
-                let difference = effective - atom.bond_valency();
-                if difference > 0 {
-                    atom.set_radical(difference as u8);
-                }
-            }
-        }
+        assign_radicals(&mut parser.atoms);
 
         let molecule = MolecularGraph::from_atoms(&parser.atoms);
         molecules.push(molecule);

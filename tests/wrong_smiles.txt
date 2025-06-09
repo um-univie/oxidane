@@ -1,9 +1,0 @@
-COMPARISON,CanonicalComparison, SMILES, Canonical
-c1c(C(Nc2ccccc2)=O)ccc(-c2nc#cnn2)c1
-O=C(Nc1ccccc1)c2ccc(cc2)-c3nnc#cn3
-O=C(NC1=CC=CC=C1)C1=CC=C(C2=NC#CN=N2)C=C1
-O=C(Nc1ccccc1)c2ccc(cc2)C=3N=NC#CN=3COMPARISON,CanonicalComparison, SMILES, Canonical
-CC1=CCC(C(C)=Cc2cc#cc(C)n2)OC(=O)CCC(C)(O)C(=O)C(C)C(O)C(C)CCC1
-OC1C(C)C(=O)C(O)(C)CCC(OC(CC=C(C)CCCC1C)C(C)=Cc2nc(c#cc2)C)=O
-CC1=CCC(C(C)=CC2=CC#CC(C)=N2)OC(=O)CCC(C)(O)C(=O)C(C)C(O)C(C)CCC1
-OC1C(C)C(=O)C(O)(C)CCC(OC(CC=C(C)CCCC1C)C(C)=CC=2N=C(C)C#CC=2)=O

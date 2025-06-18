@@ -86,6 +86,23 @@ fn print_matrix(matrix: &[usize], words_per_vertex: usize, number_of_vertices: u
 pub fn canonize_mol<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
     let mut molecule = mol.clone();
     molecule.aromatize(AromaticityModel::OpenSMILES, None, false);
+    canonize_perceived(molecule)
+}
+
+/// [`canonize_mol`] for a molecule whose aromaticity has already been
+/// perceived under the same model.
+///
+/// Perception is the single most expensive step in canonizing a molecule --
+/// over a third of the time, and more than three times what the canonical
+/// labelling itself costs -- and it is idempotent, so running it again on a
+/// molecule that has just been through it is pure waste. Callers that parsed
+/// the molecule themselves with the default options already have it done.
+///
+/// Not public: outside this module there is no way to know whether a molecule
+/// has been perceived, and getting it wrong means canonizing the Kekule form
+/// and the aromatic form to different strings. [`canonize_mol`] is the safe
+/// entry point and stays that way.
+fn canonize_perceived<T: Molecule + Clone + ToSMILES>(mut molecule: T) -> T {
     let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule);
     run_canonization(&mut molecule, &indices, &labels);
     molecule
@@ -928,16 +945,13 @@ pub fn canonicalize_and_sort_smiles(
     smiles: &str,
     with_sorting: bool,
 ) -> Result<String, SMILESParseError> {
-    let mut mols = MolecularGraph::from_smiles(smiles)?;
-
-    // Aromatize molecules
-    mols.iter_mut().for_each(|mol| {
-        let _ = mol.aromatize_opensmiles();
-    });
+    // Parsed with the default options, so aromaticity is already perceived;
+    // `canonize_mol` would do it a second time.
+    let mols = MolecularGraph::from_smiles(smiles)?;
 
     let mut canonical_smiles: Vec<String> = mols
-        .iter()
-        .map(|mol| canonize_mol(mol).to_smiles())
+        .into_iter()
+        .map(|mol| canonize_perceived(mol).to_smiles())
         .collect();
 
     // Sort the canonical SMILES strings

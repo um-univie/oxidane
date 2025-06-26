@@ -947,7 +947,14 @@ pub fn canonicalize_and_sort_smiles(
 ) -> Result<String, SMILESParseError> {
     // Parsed with the default options, so aromaticity is already perceived;
     // `canonize_mol` would do it a second time.
-    let mols = MolecularGraph::from_smiles(smiles)?;
+    let mut mols = MolecularGraph::from_smiles(smiles)?;
+
+    // Almost every SMILES is a single fragment, and for those the sort has
+    // nothing to order and the join nothing to join -- both of which would
+    // otherwise allocate a Vec and a second copy of the whole string.
+    if mols.len() == 1 {
+        return Ok(canonize_perceived(mols.remove(0)).to_smiles());
+    }
 
     let mut canonical_smiles: Vec<String> = mols
         .into_iter()

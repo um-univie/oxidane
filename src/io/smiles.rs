@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use crate::atom::Atom;
 use crate::molecule::aromaticity::{AromaticityModel, MoleculeAromaticity};
@@ -119,12 +120,17 @@ pub struct SMILESParser<'a> {
     /// Per-atom neighbor declarations in SMILES written order. Non-negative
     /// values are atom indices; a value `v < 0` is the ring-bond placeholder with
     /// id `-v - 1`, resolved to the partner atom via `write_ring_partner`.
-    write_order: IntMap<usize, Vec<i64>>,
+    /// Indexed by atom, not keyed by it: atom indices are dense and assigned
+    /// in order, so the hash map this used to be paid for hashing and
+    /// rehashing on every bond in the string to store what a `Vec` addresses
+    /// directly.
+    write_order: Vec<Vec<i64>>,
     /// Atoms that have an incoming "from" bond (i.e. are not a fragment root),
     /// whose first `write_order` entry is therefore the from-atom.
-    write_has_from: IntMap<usize, ()>,
-    /// Ring number currently open → placeholder id.
-    write_ring_open: IntMap<usize, usize>,
+    write_has_from: Vec<bool>,
+    /// Ring number currently open → placeholder id, indexed by ring number.
+    /// `usize::MAX` means the ring is not open.
+    write_ring_open: Vec<usize>,
     /// Placeholder id → the two atoms of that ring bond.
     write_ring_partner: Vec<[usize; 2]>,
 }
@@ -147,6 +153,7 @@ impl<'a> SMILESParser<'a> {
         self.write_order.clear();
         self.write_has_from.clear();
         self.write_ring_open.clear();
+        self.write_ring_partner.clear();
         self.write_ring_partner.clear();
 
         self.current_atom_index = 0;
@@ -234,9 +241,27 @@ impl<'a> SMILESParser<'a> {
     /// Resolves the captured per-atom written neighbor order for the current
     /// fragment. Each value is `(has_from_atom, neighbor_indices_in_written_order)`
     /// with ring placeholders resolved to their partner atoms.
+    /// Records `declaration` as the next neighbour of `atom` in written order.
+    fn declare_neighbor(&mut self, atom: usize, declaration: i64) {
+        if self.write_order.len() <= atom {
+            self.write_order.resize(atom + 1, Vec::new());
+        }
+        self.write_order[atom].push(declaration);
+    }
+
+    fn set_has_from(&mut self, atom: usize) {
+        if self.write_has_from.len() <= atom {
+            self.write_has_from.resize(atom + 1, false);
+        }
+        self.write_has_from[atom] = true;
+    }
+
     fn resolve_write_orders(&self) -> IntMap<usize, (bool, Vec<usize>)> {
         let mut out = IntMap::default();
-        for (&atom, decls) in self.write_order.iter() {
+        for (atom, decls) in self.write_order.iter().enumerate() {
+            if decls.is_empty() {
+                continue;
+            }
             let resolved: Vec<usize> = decls
                 .iter()
                 .map(|&d| {
@@ -249,7 +274,13 @@ impl<'a> SMILESParser<'a> {
                     }
                 })
                 .collect();
-            out.insert(atom, (self.write_has_from.contains_key(&atom), resolved));
+            out.insert(
+                atom,
+                (
+                    self.write_has_from.get(atom).copied().unwrap_or(false),
+                    resolved,
+                ),
+            );
         }
         out
     }
@@ -629,15 +660,9 @@ impl<'a> SMILESParser<'a> {
 
             // Written order: branch_atom is current_atom's from-atom; current_atom
             // is appended to branch_atom at this (post-branch) written position.
-            self.write_order
-                .entry(current_atom)
-                .or_default()
-                .push(branch_atom as i64);
-            self.write_has_from.insert(current_atom, ());
-            self.write_order
-                .entry(branch_atom)
-                .or_default()
-                .push(current_atom as i64);
+            self.declare_neighbor(current_atom, branch_atom as i64);
+            self.set_has_from(current_atom);
+            self.declare_neighbor(branch_atom, current_atom as i64);
             if self.is_multiple_branch {
                 // If we have multiple branches, we need to push the current atom back on the stack
                 self.branch_stack.push(branch_atom);
@@ -685,15 +710,9 @@ impl<'a> SMILESParser<'a> {
 
             // Record written neighbor order: the from-atom is current_atom's first
             // neighbor; current_atom is appended to previous_atom at this position.
-            self.write_order
-                .entry(current_atom)
-                .or_default()
-                .push(previous_atom as i64);
-            self.write_has_from.insert(current_atom, ());
-            self.write_order
-                .entry(previous_atom)
-                .or_default()
-                .push(current_atom as i64);
+            self.declare_neighbor(current_atom, previous_atom as i64);
+            self.set_has_from(current_atom);
+            self.declare_neighbor(previous_atom, current_atom as i64);
         }
         self.last_bond_type = None; // Reset to default bond type
         Ok(())
@@ -814,22 +833,22 @@ impl<'a> SMILESParser<'a> {
         // Record the ring bond in written order at the current atom. Pairing the
         // opening and closing digit occurrences gives the ring partner.
         let ring_atom = self.current_atom_index;
-        let placeholder_id = match self.write_ring_open.remove(&ring) {
-            Some(id) => {
+        if self.write_ring_open.len() <= ring {
+            self.write_ring_open.resize(ring + 1, usize::MAX);
+        }
+        let placeholder_id = match std::mem::replace(&mut self.write_ring_open[ring], usize::MAX) {
+            usize::MAX => {
+                let id = self.write_ring_partner.len();
+                self.write_ring_partner.push([ring_atom, usize::MAX]);
+                self.write_ring_open[ring] = id;
+                id
+            }
+            id => {
                 self.write_ring_partner[id][1] = ring_atom;
                 id
             }
-            None => {
-                let id = self.write_ring_partner.len();
-                self.write_ring_partner.push([ring_atom, usize::MAX]);
-                self.write_ring_open.insert(ring, id);
-                id
-            }
         };
-        self.write_order
-            .entry(ring_atom)
-            .or_default()
-            .push(-(placeholder_id as i64) - 1);
+        self.declare_neighbor(ring_atom, -(placeholder_id as i64) - 1);
 
         let entry = self.ring_bonds.entry(ring).or_insert((None, None, None));
 
@@ -1123,12 +1142,13 @@ pub trait ToSMILES: Molecule {
 
             let directional_marks = self.directional_bond_marks(&root);
             let allene_orders = self.allene_emission_orders(&root, &ring_closures);
-            smiles.push_str(&self.construct_smiles(
+            self.construct_smiles(
+                &mut smiles,
                 &root,
                 &ring_closures,
                 &directional_marks,
                 &allene_orders,
-            ))
+            )
         }
         relabel_smiles_numbers(&smiles)
     }
@@ -1324,12 +1344,12 @@ pub trait ToSMILES: Molecule {
     /// ```
     fn construct_smiles(
         &self,
+        smiles: &mut String,
         node: &Node,
         ring_closures: &IntMap<usize, Vec<(usize, usize, BondOrder)>>,
         directional_marks: &IntMap<usize, BondOrder>,
         allene_orders: &IntMap<usize, Vec<usize>>,
-    ) -> String {
-        let mut smiles = String::new();
+    ) {
 
         // Determine if the current bond is aromatic
         let is_current_bond_aromatic = node.bond_type() == BondOrder::Aromatic;
@@ -1402,32 +1422,32 @@ pub trait ToSMILES: Molecule {
         if folds_into_neighbour {
             // Add children
             if node.children().len() == 1 {
-                smiles.push_str(&self.construct_smiles(&node.children()[0], ring_closures, directional_marks, allene_orders));
+                self.construct_smiles(smiles, &node.children()[0], ring_closures, directional_marks, allene_orders);
             } else {
                 let length = node.children().len();
                 for (index, child) in node.children().iter().enumerate() {
                     if length - 1 == index {
                         // The terminal child does not need braces.
-                        smiles.push_str(&self.construct_smiles(child, ring_closures, directional_marks, allene_orders));
+                        self.construct_smiles(smiles, child, ring_closures, directional_marks, allene_orders);
                         continue;
                     }
                     smiles.push('(');
-                    smiles.push_str(&self.construct_smiles(child, ring_closures, directional_marks, allene_orders));
+                    self.construct_smiles(smiles, child, ring_closures, directional_marks, allene_orders);
                     smiles.push(')');
                 }
             }
-            return smiles;
+            return;
         }
 
         // Get atomic symbol. The wildcard atom has no element and so no entry
         // in the periodic table; it is written as `*`.
-        let mut atomic_symbol = if atomic_number == WILDCARD_ATOMIC_NUMBER {
-            WILDCARD_SYMBOL.to_string()
+        let atomic_symbol: &str = if atomic_number == WILDCARD_ATOMIC_NUMBER {
+            WILDCARD_SYMBOL
         } else {
             let Some(symbol) = atomic_number.atomic_symbol() else {
-                return "".to_string();
+                return;
             };
-            symbol.to_string()
+            symbol
         };
 
         // Check for aromaticity: if any bond of the atom is aromatic, make the symbol lowercase
@@ -1436,9 +1456,18 @@ pub trait ToSMILES: Molecule {
             .unwrap()
             .iter()
             .any(|bond| bond.bond_order() == BondOrder::Aromatic);
-        if is_aromatic {
-            atomic_symbol = atomic_symbol.to_lowercase();
-        }
+        // Written lowercase for an aromatic atom. Pushed a byte at a time
+        // rather than through `to_lowercase`, which allocates a String for
+        // every atom in the molecule and can only ever change ASCII here.
+        let push_symbol = |out: &mut String| {
+            if is_aromatic {
+                for byte in atomic_symbol.bytes() {
+                    out.push(byte.to_ascii_lowercase() as char);
+                }
+            } else {
+                out.push_str(atomic_symbol);
+            }
+        };
 
         let is_charged = charge != 0;
         let is_labelled = isotope.is_some();
@@ -1538,30 +1567,37 @@ pub trait ToSMILES: Molecule {
                 _ => String::new(),
             };
 
-            let hydrogen_str = match number_of_hydrogens {
-                0 => "",
-                1 => "H",
-                _ => &format!("H{}", number_of_hydrogens),
-            };
-
-            let charge_string = match charge {
-                2.. => format!("+{}", charge.abs()),
-                ..=-2 => format!("-{}", charge.abs()),
-                1 => "+".to_string(),
-                -1 => "-".to_string(),
-                0 => String::new(),
-            };
-
-            let isotope_string = match isotope {
-                Some(mass_number) => mass_number.to_string(),
-                None => String::new(),
-            };
-            smiles.push_str(&format!(
-                "[{}{}{}{}{}]",
-                isotope_string, atomic_symbol, chiral_str, hydrogen_str, charge_string
-            ));
+            // Pushed field by field. Building this through `format!` cost
+            // five allocations for every bracketed atom -- one per field and
+            // one for the result -- all of which were copied into `smiles`
+            // and dropped immediately.
+            smiles.push('[');
+            if let Some(mass_number) = isotope {
+                let _ = write!(smiles, "{mass_number}");
+            }
+            push_symbol(smiles);
+            smiles.push_str(&chiral_str);
+            match number_of_hydrogens {
+                0 => {}
+                1 => smiles.push('H'),
+                count => {
+                    let _ = write!(smiles, "H{count}");
+                }
+            }
+            match charge {
+                0 => {}
+                1 => smiles.push('+'),
+                -1 => smiles.push('-'),
+                2.. => {
+                    let _ = write!(smiles, "+{}", charge.abs());
+                }
+                ..=-2 => {
+                    let _ = write!(smiles, "-{}", charge.abs());
+                }
+            }
+            smiles.push(']');
         } else {
-            smiles.push_str(&atomic_symbol);
+            push_symbol(smiles);
         }
 
         // Add ring closures
@@ -1583,29 +1619,28 @@ pub trait ToSMILES: Molecule {
                 } else if ring_number > 9 {
                     smiles.push_str(&format!("{}%{}", bond_order, ring_number));
                 } else {
-                    smiles.push_str(&format!("{}{}", bond_order, ring_number));
+                    let _ = write!(smiles, "{bond_order}{ring_number}");
                 }
             }
         }
 
         // Add children
         if node.children().len() == 1 {
-            smiles.push_str(&self.construct_smiles(&node.children()[0], ring_closures, directional_marks, allene_orders));
+            self.construct_smiles(smiles, &node.children()[0], ring_closures, directional_marks, allene_orders);
         } else {
             let length = node.children().len();
             for (index, child) in node.children().iter().enumerate() {
                 if length - 1 == index {
                     // The terminal child does not need braces.
-                    smiles.push_str(&self.construct_smiles(child, ring_closures, directional_marks, allene_orders));
+                    self.construct_smiles(smiles, child, ring_closures, directional_marks, allene_orders);
                     continue;
                 }
                 smiles.push('(');
-                smiles.push_str(&self.construct_smiles(child, ring_closures, directional_marks, allene_orders));
+                self.construct_smiles(smiles, child, ring_closures, directional_marks, allene_orders);
                 smiles.push(')');
             }
         }
 
-        smiles
     }
 
     /// The order in which a single node's neighbors appear in the emitted SMILES:
@@ -1837,12 +1872,13 @@ pub trait ToSMILES: Molecule {
 
             let directional_marks = self.directional_bond_marks(&root);
             let allene_orders = self.allene_emission_orders(&root, &ring_closures);
-            smiles.push_str(&self.construct_smiles(
+            self.construct_smiles(
+                &mut smiles,
                 &root,
                 &ring_closures,
                 &directional_marks,
                 &allene_orders,
-            ))
+            )
         }
         relabel_smiles_numbers(&smiles)
     }
@@ -1879,10 +1915,29 @@ impl FromSMILES for MolecularGraph {
 
 fn relabel_smiles_numbers(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
-    let mut number_map: HashMap<String, String> = std::collections::HashMap::default();
-    let mut next_number = 1;
+    // A ring-closure label is one digit, or two after a `%`, so the mapping
+    // from the label as written to the label as emitted fits in a fixed table
+    // indexed by the number itself. This was a `HashMap<String, String>` built
+    // per molecule, with a `String` allocated for every single ring digit in
+    // the input and another for every mapping stored.
+    let mut mapping = [0u16; 100];
+    let mut next_number: u16 = 1;
     let mut chars = input.chars().peekable();
     let mut is_bracket = false;
+
+    let mut push_mapped = |result: &mut String, label: u32| {
+        if label >= 100 {
+            // Not a label this format can produce; pass it through untouched.
+            let _ = write!(result, "{label}");
+            return;
+        }
+        let slot = &mut mapping[label as usize];
+        if *slot == 0 {
+            *slot = next_number;
+            next_number += 1;
+        }
+        let _ = write!(result, "{}", *slot);
+    };
 
     while let Some(c) = chars.next() {
         if c == '[' {
@@ -1896,35 +1951,19 @@ fn relabel_smiles_numbers(input: &str) -> String {
             continue;
         }
         if c == '%' {
-            // Handle multi-digit numbers
-            let mut number = String::new();
+            // Multi-digit label.
+            let mut label: u32 = 0;
             while let Some(&next_char) = chars.peek() {
-                if next_char.is_ascii_digit() {
-                    number.push(chars.next().unwrap());
-                } else {
+                let Some(digit) = next_char.to_digit(10) else {
                     break;
-                }
+                };
+                label = label * 10 + digit;
+                chars.next();
             }
-
-            // Map the number if we haven't seen it before
-            let mapped = number_map.entry(number.clone()).or_insert_with(|| {
-                let current = next_number;
-                next_number += 1;
-                current.to_string()
-            });
-
             result.push('%');
-            result.push_str(mapped);
-        } else if c.is_ascii_digit() {
-            // Handle single digit numbers
-            let number = c.to_string();
-            let mapped = number_map.entry(number).or_insert_with(|| {
-                let current = next_number;
-                next_number += 1;
-                current.to_string()
-            });
-
-            result.push_str(mapped);
+            push_mapped(&mut result, label);
+        } else if let Some(digit) = c.to_digit(10) {
+            push_mapped(&mut result, digit);
         } else {
             result.push(c);
         }

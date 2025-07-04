@@ -1,5 +1,5 @@
 use crate::io::SMILESParseError;
-use crate::molecule::aromaticity::AromaticityModel;
+use crate::molecule::aromaticity::{AromaticityModel, Aromatizer};
 use crate::molecule::chirality::*;
 use crate::molecule::graph::{AtomInvariant, AtomLabel, AtomLabelImplicitHydrogens};
 use crate::prelude::*;
@@ -66,6 +66,107 @@ fn print_matrix(matrix: &[usize], words_per_vertex: usize, number_of_vertices: u
     }
 }
 
+/// The working buffers one canonization needs, beside the aromaticity ones.
+///
+/// Scratch, not state: every field is cleared and resized from the molecule
+/// before use.
+#[derive(Debug, Default, Clone)]
+pub struct CanonizationScratch {
+    sorted_labels: Vec<AtomInvariant>,
+    labeling: Vec<u32>,
+    heavy_labeling: Vec<usize>,
+    canong: Vec<usize>,
+    workspace: Vec<usize>,
+    orbits: Vec<u32>,
+}
+
+/// Canonizes molecules, keeping its working buffers between them.
+///
+/// [`canonize_mol`] and [`canonicalize_and_sort_smiles`] allocate everything
+/// they need per call -- the colouring, nauty's labelling, orbit and workspace
+/// arrays, and a full aromaticity perception on top. Canonizing a stream of
+/// molecules through a `Canonizer` pays for those once.
+///
+/// ```
+/// use oxidane::graph_algorithms::mol_canonization::Canonizer;
+///
+/// let mut canonizer = Canonizer::new();
+/// let first = canonizer.canonical_smiles("CC(=O)Oc1ccccc1C(=O)O", false).unwrap();
+/// let second = canonizer.canonical_smiles("O=C(C)Oc1ccccc1C(O)=O", false).unwrap();
+/// assert_eq!(first, second);
+/// ```
+///
+/// The answer is exactly what the free functions give; only the allocation
+/// traffic differs. It holds no state between molecules, but it is not `Sync`
+/// in spirit either -- give each thread its own, e.g. with rayon's
+/// `map_init(Canonizer::new, ..)`.
+#[derive(Debug, Default, Clone)]
+pub struct Canonizer {
+    aromatizer: Aromatizer,
+    scratch: CanonizationScratch,
+}
+
+impl Canonizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// [`canonize_mol`], reusing this canonizer's buffers.
+    pub fn canonize<T: Molecule + Clone + ToSMILES>(&mut self, mol: &T) -> T {
+        let mut molecule = mol.clone();
+        let _ = self.aromatizer.aromatize(
+            &mut molecule,
+            AromaticityModel::OpenSMILES,
+            None,
+            false,
+        );
+        self.canonize_perceived(molecule)
+    }
+
+    /// [`Canonizer::canonize`] for a molecule already perceived under the same
+    /// aromaticity model.
+    fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, mut molecule: T) -> T {
+        let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule);
+        let _ = run_canonization(&mut molecule, &indices, &labels, &mut self.scratch);
+        molecule
+    }
+
+    /// [`canonicalize_and_sort_smiles`], reusing this canonizer's buffers.
+    pub fn canonical_smiles(
+        &mut self,
+        smiles: &str,
+        with_sorting: bool,
+    ) -> Result<String, SMILESParseError> {
+        let mut mols = MolecularGraph::from_smiles(smiles)?;
+        if mols.len() == 1 {
+            return Ok(self.canonize_perceived(mols.remove(0)).to_smiles());
+        }
+        let mut canonical_smiles: Vec<String> = mols
+            .into_iter()
+            .map(|mol| self.canonize_perceived(mol).to_smiles())
+            .collect();
+        canonical_smiles.sort();
+        let _ = with_sorting;
+        Ok(canonical_smiles.join("."))
+    }
+}
+
+thread_local! {
+    /// The canonizer the free functions borrow, so existing callers get the
+    /// buffer reuse without threading a handle through their signatures.
+    static CANONIZER: std::cell::Cell<Canonizer> = std::cell::Cell::new(Canonizer::new());
+}
+
+/// Runs `f` against the thread's canonizer, taken out and put back so that
+/// anything reachable from `f` which itself canonizes gets its own rather than
+/// a double-borrow panic.
+fn with_canonizer<R>(f: impl FnOnce(&mut Canonizer) -> R) -> R {
+    let mut canonizer = CANONIZER.take();
+    let result = f(&mut canonizer);
+    CANONIZER.set(canonizer);
+    result
+}
+
 /// This function canonizes a given molecule.
 /// It returns a new molecule with the atoms reordered according to the canonical ordering.
 ///
@@ -84,9 +185,7 @@ fn print_matrix(matrix: &[usize], words_per_vertex: usize, number_of_vertices: u
 /// );
 /// ```
 pub fn canonize_mol<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
-    let mut molecule = mol.clone();
-    molecule.aromatize(AromaticityModel::OpenSMILES, None, false);
-    canonize_perceived(molecule)
+    with_canonizer(|canonizer| canonizer.canonize(mol))
 }
 
 /// [`canonize_mol`] for a molecule whose aromaticity has already been
@@ -102,10 +201,8 @@ pub fn canonize_mol<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
 /// has been perceived, and getting it wrong means canonizing the Kekule form
 /// and the aromatic form to different strings. [`canonize_mol`] is the safe
 /// entry point and stays that way.
-fn canonize_perceived<T: Molecule + Clone + ToSMILES>(mut molecule: T) -> T {
-    let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule);
-    run_canonization(&mut molecule, &indices, &labels);
-    molecule
+fn canonize_perceived<T: Molecule + Clone + ToSMILES>(molecule: T) -> T {
+    with_canonizer(|canonizer| canonizer.canonize_perceived(molecule))
 }
 
 /// This function canonizes a given molecule.
@@ -123,9 +220,7 @@ fn canonize_perceived<T: Molecule + Clone + ToSMILES>(mut molecule: T) -> T {
 /// assert_eq!(mol.to_smiles(), canonical_mol.to_smiles());
 /// ```
 pub fn canonize_mol_inplace<T: Molecule + Clone + ToSMILES>(molecule: &mut T) {
-    molecule.aromatize(AromaticityModel::OpenSMILES, None, false);
-    let (indices, labels) = prepare_and_sort_indices_and_labels(molecule);
-    run_canonization(molecule, &indices, &labels);
+    *molecule = with_canonizer(|canonizer| canonizer.canonize(molecule));
 }
 
 /// Each atom's chirality class as it reads in the molecule's *canonical* atom
@@ -225,34 +320,43 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     molecule: &mut T,
     indices: &[usize],
     labels: &[AtomInvariant],
+    scratch: &mut CanonizationScratch,
 ) -> Result<(), CanonizationError> {
     reorder_molecule(molecule, &indices);
 
     // `labels` is in the original atom order, but the molecule has just been
     // reordered by `indices`; reorder the labels to match so the colouring
     // partition lines up with the graph's vertex order.
-    let sorted_labels: Vec<AtomInvariant> = indices.iter().map(|&i| labels[i].clone()).collect();
+    let sorted_labels = &mut scratch.sorted_labels;
+    sorted_labels.clear();
+    sorted_labels.extend(indices.iter().map(|&i| labels[i].clone()));
 
     let Some((mut adjacency_matrix, mut partition, number_of_heavy_atoms)) =
-        molecule.prepare_canonization(&sorted_labels)
+        molecule.prepare_canonization(sorted_labels)
     else {
         return Err(CanonizationError::InvalidInput);
     };
 
     let mut words_per_vertex = adjacency_matrix.words_per_vertex;
     let mut number_of_vertices = adjacency_matrix.number_of_vertices;
-    let mut labeling: Vec<u32> = (0..number_of_vertices)
-        .map(|x| x as u32)
-        .collect::<Vec<_>>();
+    let labeling = &mut scratch.labeling;
+    labeling.clear();
+    labeling.extend((0..number_of_vertices).map(|x| x as u32));
     let mut matrix = adjacency_matrix.matrix;
 
-    let mut canong: Vec<usize> = vec![0; matrix.len()];
+    let canong = &mut scratch.canong;
+    canong.clear();
+    canong.resize(matrix.len(), 0);
     // let mut partition: Vec<i32> = vec![1; number_of_vertices];
 
     let worksize = 120;
-    let mut workspace: Vec<usize> = vec![0; 2 * words_per_vertex * worksize];
+    let workspace = &mut scratch.workspace;
+    workspace.clear();
+    workspace.resize(2 * words_per_vertex * worksize, 0);
 
-    let mut orbits: Vec<u32> = vec![0; number_of_vertices];
+    let orbits = &mut scratch.orbits;
+    orbits.clear();
+    orbits.resize(number_of_vertices, 0);
     // Enable canonical labeling and feed nauty our invariant-based colouring:
     // `default_partition` would otherwise discard `partition` and canonicalize the
     // uncoloured graph, leaving atom order undetermined for graph-symmetric
@@ -270,13 +374,13 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
 
     canonicalize(
         &matrix,
-        &mut labeling,  // weights
+        labeling,  // weights
         &mut partition, // partition
         None,           // active
-        &mut orbits,    //orbits
+        orbits,    //orbits
         &mut options,
         &mut statistics, // active
-        &mut workspace,
+        workspace,
         words_per_vertex as u32,
         number_of_vertices as u32,
         Some(canong.as_mut_slice()),
@@ -288,16 +392,20 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     // `prepare_canonization`. Those virtual vertices are not guaranteed to occupy
     // only the tail positions of the canonical order, so we filter them out
     // instead of assuming the first `number_of_heavy_atoms` entries are all real atoms.
-    let labeling = labeling
-        .iter()
-        .map(|x| *x as usize)
-        .filter(|&x| x < number_of_heavy_atoms)
-        .collect::<Vec<_>>();
+    let heavy_labeling = &mut scratch.heavy_labeling;
+    heavy_labeling.clear();
+    heavy_labeling.extend(
+        labeling
+            .iter()
+            .map(|x| *x as usize)
+            .filter(|&x| x < number_of_heavy_atoms),
+    );
+    let labeling = heavy_labeling;
 
     // Collect the automorphism generators nauty found (on the pre-canonical
     // graph) before reordering, so we can later pick a canonical chirality tag
     // assignment among symmetry-equivalent ones.
-    let generators = AUTOMORPHISM_GENERATORS.with(|g| g.borrow().clone());
+    let generators = AUTOMORPHISM_GENERATORS.with(|g| std::mem::take(&mut *g.borrow_mut()));
 
     reorder_molecule(molecule, &labeling);
 

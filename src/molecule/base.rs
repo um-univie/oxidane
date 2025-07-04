@@ -1407,11 +1407,25 @@ pub trait MoleculeCore {
     /// parent atoms so that a doubled bond between the same pair of atoms is
     /// still recognised as a ring.
     fn find_cyclic_bonds_and_atoms(&self) -> (BitSet, FxHashSet<(usize, usize)>) {
-        let atom_count = self.len();
         let mut cyclic_atoms = BitSet::new();
         let mut cyclic_bonds = FxHashSet::default();
+        self.find_cyclic_bonds_and_atoms_into(&mut cyclic_atoms, &mut cyclic_bonds);
+        (cyclic_atoms, cyclic_bonds)
+    }
+
+    /// [`MoleculeCore::find_cyclic_bonds_and_atoms`] writing into buffers the
+    /// caller owns, so a caller that does this for molecule after molecule can
+    /// keep the allocations instead of making a fresh pair each time.
+    fn find_cyclic_bonds_and_atoms_into(
+        &self,
+        cyclic_atoms: &mut BitSet,
+        cyclic_bonds: &mut FxHashSet<(usize, usize)>,
+    ) {
+        cyclic_atoms.clear();
+        cyclic_bonds.clear();
+        let atom_count = self.len();
         if atom_count == 0 {
-            return (cyclic_atoms, cyclic_bonds);
+            return;
         }
 
         // Each bond once, with an identity, plus adjacency that names it.
@@ -1488,8 +1502,6 @@ pub trait MoleculeCore {
                 cyclic_atoms.insert(second);
             }
         }
-
-        (cyclic_atoms, cyclic_bonds)
     }
 
     fn determine_ring_systems(

@@ -103,6 +103,83 @@ const AROMATICITY_MODEL_OPENSMILES: [AromaticityFlag; 34] = [
     AromaticityFlag::PotentiallyAromaticOneElectron, // 33: Arsenic with +1 charge, valency=4, bond_count=3
 ];
 
+/// The working buffers one aromaticity perception needs.
+///
+/// Every field is sized by the molecule and cleared before use, never read
+/// across calls: this is scratch space, not state. Keeping it lets a caller
+/// that perceives many molecules pay for the allocations once.
+#[derive(Debug, Default, Clone)]
+pub struct AromaticityScratch {
+    pub(crate) atoms_in_rings_placeholder: BitSet,
+    pub(crate) bonds_in_rings_placeholder: FxHashSet<(usize, usize)>,
+    pub(crate) aromaticity_flags: Vec<AromaticityFlag>,
+    pub(crate) aromatic_atoms: Vec<bool>,
+    pub(crate) aromatic_bonds: FxHashSet<(usize, usize)>,
+    pub(crate) visited: Vec<u8>,
+}
+
+/// Perceives aromaticity, keeping its working buffers between molecules.
+///
+/// [`MoleculeAromaticity::aromatize`] allocates a fresh set of buffers on every
+/// call, which is most of what the allocator is asked to do when parsing a
+/// stream of SMILES. An `Aromatizer` holds them:
+///
+/// ```
+/// use oxidane::prelude::*;
+/// use oxidane::molecule::aromaticity::{AromaticityModel, Aromatizer};
+///
+/// let mut aromatizer = Aromatizer::new();
+/// for smiles in ["C1=CC=CC=C1", "C1=CC=NC=C1"] {
+///     let mut molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+///     aromatizer
+///         .aromatize(&mut molecule, AromaticityModel::OpenSMILES, None, false)
+///         .unwrap();
+///     assert_eq!(molecule.get_aromatic_atoms().len(), 6);
+/// }
+/// ```
+///
+/// The result is identical to calling the trait method; only the allocation
+/// traffic differs. Hold one per thread -- it is not shared, and it is cheap to
+/// create if a thread only ever does one molecule.
+#[derive(Debug, Default, Clone)]
+pub struct Aromatizer {
+    scratch: AromaticityScratch,
+}
+
+impl Aromatizer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Perceives aromaticity in `molecule`, reusing this aromatizer's buffers.
+    pub fn aromatize<M: MoleculeAromaticity + ?Sized>(
+        &mut self,
+        molecule: &mut M,
+        aromaticity_model: AromaticityModel,
+        path_length_limit: Option<usize>,
+        strict_flag: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        molecule.aromatize_with(
+            &mut self.scratch,
+            aromaticity_model,
+            path_length_limit,
+            strict_flag,
+        )
+    }
+
+    /// The buffers, for a caller assembling a larger scratch of its own.
+    pub(crate) fn scratch_mut(&mut self) -> &mut AromaticityScratch {
+        &mut self.scratch
+    }
+}
+
+thread_local! {
+    /// The aromatizer [`MoleculeAromaticity::aromatize`] borrows, so that
+    /// existing callers get the buffer reuse without threading a handle
+    /// through every signature.
+    static AROMATIZER: std::cell::Cell<Aromatizer> = std::cell::Cell::new(Aromatizer::new());
+}
+
 pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     // This could fail but the way we use it, it won't
     fn lookup_model(index: usize, aromaticity_model: &[AromaticityFlag]) -> AromaticityFlag {
@@ -1055,10 +1132,44 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         path_length_limit: Option<usize>,
         strict_flag: bool,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        // Borrowed from the thread's own [`Aromatizer`] so that perceiving one
+        // molecule after another reuses the buffers instead of allocating a
+        // fresh set for each. Taken out and put back rather than held borrowed,
+        // so that anything reachable from here which itself perceives
+        // aromaticity gets its own scratch instead of a panic.
+        let mut aromatizer = AROMATIZER.take();
+        let result = aromatizer.aromatize(self, aromaticity_model, path_length_limit, strict_flag);
+        AROMATIZER.set(aromatizer);
+        result
+    }
+
+    /// [`MoleculeAromaticity::aromatize`] against buffers the caller owns.
+    ///
+    /// Perception allocates a vector per atom, two hash sets of bonds and a
+    /// ring-membership set every time it runs, and it runs once per molecule
+    /// parsed. Handing it a scratch that outlives the molecule turns that into
+    /// a `clear` and a `resize`.
+    fn aromatize_with(
+        &mut self,
+        scratch: &mut AromaticityScratch,
+        aromaticity_model: AromaticityModel,
+        path_length_limit: Option<usize>,
+        strict_flag: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let num_atoms = self.len();
 
-        let (atoms_in_rings_placeholder, bonds_in_rings_placeholder) =
-            self.find_cyclic_bonds_and_atoms();
+        let AromaticityScratch {
+            atoms_in_rings_placeholder,
+            bonds_in_rings_placeholder,
+            aromaticity_flags,
+            aromatic_atoms,
+            aromatic_bonds,
+            visited,
+        } = scratch;
+        self.find_cyclic_bonds_and_atoms_into(
+            atoms_in_rings_placeholder,
+            bonds_in_rings_placeholder,
+        );
 
         // If there are no cycles, we can return early
         if atoms_in_rings_placeholder.is_empty() {
@@ -1066,22 +1177,24 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         }
         let atoms_in_cycles =
             (0..num_atoms).filter(|index| atoms_in_rings_placeholder.contains(*index));
-        let mut aromaticity_flags = vec![AromaticityFlag::NotAromatic; num_atoms];
+        aromaticity_flags.clear();
+        aromaticity_flags.resize(num_atoms, AromaticityFlag::NotAromatic);
 
         let aromaticity_model = match aromaticity_model {
             AromaticityModel::Daylight => &AROMATICITY_MODEL_DAYLIGHT,
             AromaticityModel::OpenSMILES => &AROMATICITY_MODEL_OPENSMILES,
         };
 
-        let mut aromatic_atoms = vec![false; self.len()];
-        let mut aromatic_bonds = FxHashSet::default();
+        aromatic_atoms.clear();
+        aromatic_atoms.resize(self.len(), false);
+        aromatic_bonds.clear();
 
         for index in atoms_in_cycles {
             if self.is_atom_aromatic(index) {
                 aromatic_atoms[index] = true;
             }
             let aromaticity_flag =
-                self.handle_aromatic_atom(index, aromaticity_model, &bonds_in_rings_placeholder);
+                self.handle_aromatic_atom(index, aromaticity_model, bonds_in_rings_placeholder);
 
             aromaticity_flags[index] = aromaticity_flag;
         }
@@ -1094,7 +1207,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             return Ok(());
         }
 
-        self.remove_potential_aromatics(&mut aromaticity_flags, &bonds_in_rings_placeholder);
+        self.remove_potential_aromatics(aromaticity_flags, bonds_in_rings_placeholder);
 
         // This has to be checked
         if aromaticity_flags
@@ -1111,18 +1224,19 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         // if 31 < reduced_path_length {
         //     // reduced_path_length = self.reduce_path_length(
         //     //     path_length,
-        //     //     &atoms_in_rings_placeholder,
-        //     //     &bonds_in_rings_placeholder,
+        //     //     atoms_in_rings_placeholder,
+        //     //     bonds_in_rings_placeholder,
         //     // )
         // }
 
         self.find_aromatic_cycles(
-            &atoms_in_rings_placeholder,
-            &bonds_in_rings_placeholder,
+            atoms_in_rings_placeholder,
+            bonds_in_rings_placeholder,
             path_length,
-            &mut aromaticity_flags,
-            &mut aromatic_atoms,
-            &mut aromatic_bonds,
+            aromaticity_flags,
+            aromatic_atoms,
+            aromatic_bonds,
+            visited,
         );
 
         if strict_flag {
@@ -1147,16 +1261,17 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
 
                 if has_double_bond {
                     self.remove_potential_aromatics(
-                        &mut aromaticity_flags,
-                        &bonds_in_rings_placeholder,
+                        aromaticity_flags,
+                        bonds_in_rings_placeholder,
                     );
                     self.find_aromatic_cycles(
-                        &atoms_in_rings_placeholder,
-                        &bonds_in_rings_placeholder,
+                        atoms_in_rings_placeholder,
+                        bonds_in_rings_placeholder,
                         path_length,
-                        &mut aromaticity_flags,
-                        &mut aromatic_atoms,
-                        &mut aromatic_bonds,
+                        aromaticity_flags,
+                        aromatic_atoms,
+                        aromatic_bonds,
+                        visited,
                     )
                 }
             }
@@ -1188,8 +1303,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         aromaticity_flags: &mut [AromaticityFlag],
         aromatic_atoms: &mut [bool],
         aromatic_bonds: &mut FxHashSet<(usize, usize)>,
+        visited: &mut Vec<u8>,
     ) {
-        let mut visited = vec![0; self.len()];
+        visited.clear();
+        visited.resize(self.len(), 0);
 
         // Find all root atoms
         for atom_index in 0..self.len() {
@@ -1199,7 +1316,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     None,
                     aromaticity_flags,
                     bonds_in_rings,
-                    &mut visited,
+                    visited,
                 )
             }
         }
@@ -1229,7 +1346,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     neighbor_index,
                     atom_order,
                     aromaticity_flags,
-                    &mut visited,
+                    visited,
                     bonds_in_rings,
                     aromatic_atoms,
                     aromatic_bonds,
@@ -1253,7 +1370,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             loop {
                 if !self.identify_extra_aromatic_seed_atoms(
                     aromaticity_flags,
-                    &mut visited,
+                    visited,
                     aromatic_atoms,
                     aromatic_bonds,
                     bonds_in_rings,
@@ -1289,7 +1406,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                                     neighbor_index,
                                     atom_order,
                                     aromaticity_flags,
-                                    &mut visited,
+                                    visited,
                                     aromatic_atoms,
                                     aromatic_bonds,
                                     bonds_in_rings,
@@ -1322,7 +1439,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             loop {
                 if !self.identify_extra_aromatic_seed_atoms(
                     aromaticity_flags,
-                    &mut visited,
+                    visited,
                     aromatic_atoms,
                     aromatic_bonds,
                     bonds_in_rings,
@@ -1355,7 +1472,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                                     neighbor_index,
                                     atom_order,
                                     aromaticity_flags,
-                                    &mut visited,
+                                    visited,
                                     aromatic_atoms,
                                     aromatic_bonds,
                                     bonds_in_rings,

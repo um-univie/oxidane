@@ -112,7 +112,6 @@ impl Atom {
                 .map_err(|_| XYZParserError::InvalidFloat(String::from(parts[3])))?;
             Ok(Atom::new(atomic_number).with_position((x, y, z)))
         } else {
-            println!("Invalid XYZ line: {}", line);
             Err(XYZParserError::InvalidAtom(line.to_string()))
         }
     }

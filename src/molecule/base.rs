@@ -178,22 +178,17 @@ pub trait MoleculeCore {
             None => return true, // If we don't know the expected valency, assume it's plausible
         };
 
-        println!("expected_valency: {}", expected_valency);
         // Get the actual valency
         let actual_valency = self.actual_valency(atom_index);
-        println!("actual_valency: {}", actual_valency);
         // Get the charge and radical state
         let charge = self.get_atom_charge(atom_index);
-        println!("charge: {}", charge);
         let is_radical = self.is_atom_radical(atom_index);
-        println!("is_radical: {}", is_radical);
         // Calculate the valency delta (expected - actual)
         let valency_delta = expected_valency - actual_valency;
 
         // For most elements, the valency delta should be non-negative
         // Exceptions are made for charged atoms and radicals
         if valency_delta < 0 {
-            println!("valency_delta < 0");
             // Atoms with positive charge can have higher valency
             if charge > 0 && valency_delta + charge >= 0 {
                 return true;
@@ -505,7 +500,7 @@ pub trait MoleculeCore {
         if atom_index < self.radical_states().len() {
             self.radical_states_mut()[atom_index] = radical_state;
         } else {
-            println!("Atom index out of bounds, could not set radical state");
+            debug_assert!(false, "atom index out of bounds, could not set radical state");
         }
     }
 
@@ -513,7 +508,7 @@ pub trait MoleculeCore {
         if atom_index < self.charges().len() {
             self.charges_mut()[atom_index] = charge;
         } else {
-            println!("Atom index out of bounds, could not set charge");
+            debug_assert!(false, "atom index out of bounds, could not set charge");
         }
     }
     fn get_atom_class(&self, atom_index: usize) -> usize {
@@ -1212,10 +1207,6 @@ pub trait MoleculeCore {
     /// ```
     fn enumerate_possible_cycles(&self) -> Vec<BitSet> {
         let fundamental_cycles = self.compute_fundamental_cycles();
-        println!(
-            "Number of fundamental cycles: {:?}",
-            fundamental_cycles.len()
-        );
         if fundamental_cycles.len() < 2 {
             return fundamental_cycles.into_iter().collect();
         }

@@ -1010,10 +1010,6 @@ impl<'a> SMILESParser<'a> {
         }
 
         if bytes[*position] != b']' {
-            eprintln!(
-                "SMILESComplexError: {}",
-                String::from_utf8_lossy(&bytes[*position..])
-            );
             return Err(SMILESParseError::SMILESComplexError);
         }
 

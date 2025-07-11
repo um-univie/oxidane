@@ -452,7 +452,6 @@ pub trait MoleculeExperimental: MoleculeCore {
             return;
         }
         if cycles.len() > 20 {
-            println!("Number of cycles: {}", cycles.len());
             return;
         }
         // Group cycles into fused systems and filter based on aromaticity

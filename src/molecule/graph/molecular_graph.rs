@@ -525,10 +525,7 @@ pub trait MoleculeGraph: MoleculeCore {
         while let Some(index) = stack.pop() {
             current_component.push(index);
             let Some(bonds) = self.get_atom_bonds(index) else {
-                println!(
-                    "No bonds found for atom {}, this means an out of bounds access",
-                    index
-                );
+                debug_assert!(false, "no bonds for atom {index}: out of bounds access");
                 continue;
             };
             for &bond in bonds {

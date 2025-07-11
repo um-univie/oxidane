@@ -1256,7 +1256,6 @@ mod tests {
         let molecule = &molecules[0];
 
         let pattern = parse_cxsmarts("N").unwrap();
-        println!("Matches: {:?}", find_smarts_matches(&pattern, molecule));
         assert!(!smarts_matches(&pattern, molecule));
     }
     #[test]

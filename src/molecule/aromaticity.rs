@@ -1360,11 +1360,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         }
 
         #[cfg(debug_assertions)]
-        println!("Root atoms after short path: {:?}", visited);
         #[cfg(debug_assertions)]
-        println!("Aromatic flags {:?}", aromaticity_flags);
         #[cfg(debug_assertions)]
-        println!("Aromatic bonds after short path {:?}", aromatic_bonds);
 
         if max_path_length > 10 {
             loop {

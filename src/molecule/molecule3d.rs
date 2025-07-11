@@ -139,7 +139,7 @@ impl Molecule3D {
         if atom_index < self.charges().len() {
             self.charges_mut()[atom_index] += charge;
         } else {
-            println!("Atom index out of bounds, could not update charge");
+            debug_assert!(false, "atom index out of bounds, could not update charge");
         }
     }
 
@@ -751,7 +751,7 @@ impl Molecule3D {
         loop {
             depth += 1;
             if depth > max_depth {
-                println!("Morgan's algorithm did not converge after 100 iterations");
+                eprintln!("Morgan's algorithm did not converge after 100 iterations");
                 break;
             }
 
@@ -982,7 +982,7 @@ impl MoleculeCore for Molecule3D {
         if atom_index < self.radical_states.len() {
             self.radical_states[atom_index] = radical_state;
         } else {
-            println!("Atom index out of bounds, could not set radical state");
+            debug_assert!(false, "atom index out of bounds, could not set radical state");
         }
     }
 

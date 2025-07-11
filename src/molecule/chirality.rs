@@ -1701,10 +1701,6 @@ fn update_tb_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> Chira
 
     let axial_indices = find_axial_indices(old_order);
     let new_axial_indices = find_axial_indices(new_order);
-    println!(
-        "axial_indices, new_axial_indices: {:?} {:?}",
-        axial_indices, new_axial_indices
-    );
 
     // Calculate how axial ligands changed
     let axial_parity = calculate_permutation_parity(

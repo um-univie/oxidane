@@ -948,9 +948,6 @@ fn has_inversion(old_neighbors: &[usize], new_neighbors: &[usize]) -> bool {
         }
     }
 
-    #[cfg(debug_assertions)]
-    println!("Number of inversions: {}", inversions);
-
     // Odd number of inversions indicates a parity change
     inversions % 2 == 1
 }

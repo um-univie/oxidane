@@ -1419,16 +1419,55 @@ pub trait MoleculeCore {
             return;
         }
 
-        // Each bond once, with an identity, plus adjacency that names it.
-        let mut edges: Vec<(usize, usize)> = Vec::new();
-        let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); atom_count];
+        // Peel off everything that cannot possibly lie on a cycle before
+        // looking for one. A vertex of degree one is on no cycle, and removing
+        // it can leave its neighbour with degree one in turn, so this strips
+        // whole side chains and every hydrogen; what remains is the 2-core.
+        //
+        // It matters because the bridge search below is O(V+E) with a stack
+        // frame and three arrays per vertex, and in a drug-sized molecule
+        // roughly half the atoms are hydrogens and two thirds are not in any
+        // ring. Peeling is one pass over the degrees plus one queue.
+        let mut degree = vec![0u32; atom_count];
         for atom in 0..atom_count {
+            let Some(bonds) = self.get_atom_bonds(atom) else {
+                continue;
+            };
+            degree[atom] = bonds
+                .iter()
+                .filter(|bond| bond.target() < atom_count)
+                .count() as u32;
+        }
+        let mut peeled: Vec<usize> = (0..atom_count).filter(|&a| degree[a] <= 1).collect();
+        while let Some(atom) = peeled.pop() {
+            degree[atom] = 0;
             let Some(bonds) = self.get_atom_bonds(atom) else {
                 continue;
             };
             for bond in bonds {
                 let target = bond.target();
-                if atom < target && target < atom_count {
+                if target < atom_count && degree[target] > 0 {
+                    degree[target] -= 1;
+                    if degree[target] == 1 {
+                        peeled.push(target);
+                    }
+                }
+            }
+        }
+
+        // Each bond once, with an identity, plus adjacency that names it.
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); atom_count];
+        for atom in 0..atom_count {
+            if degree[atom] == 0 {
+                continue;
+            }
+            let Some(bonds) = self.get_atom_bonds(atom) else {
+                continue;
+            };
+            for bond in bonds {
+                let target = bond.target();
+                if atom < target && target < atom_count && degree[target] > 0 {
                     let edge_id = edges.len();
                     edges.push((atom, target));
                     adjacency[atom].push((target, edge_id));

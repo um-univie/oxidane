@@ -191,9 +191,47 @@ pub struct SMARTSMatcher<'a> {
     pattern: &'a CxSMARTSPattern,
     molecule: &'a MolecularGraph,
     /// Cached ring analysis for molecule
-    ring_info: RingInfo,
+    ring_info: std::borrow::Cow<'a, RingInfo>,
     /// Cached aromaticity information
-    aromaticity_info: AromaticityInfo,
+    aromaticity_info: std::borrow::Cow<'a, AromaticityInfo>,
+}
+
+/// What a molecule looks like to the matcher: its rings and its aromaticity.
+///
+/// Neither depends on the pattern, and both are expensive -- the ring analysis
+/// enumerates every simple cycle up to `MAX_RING_SIZE`. Matching a molecule
+/// against one pattern computes them; matching it against ten patterns used to
+/// compute them ten times. Build one of these and hand it to each match
+/// instead:
+///
+/// ```
+/// use oxidane::prelude::*;
+/// use oxidane::io::MoleculeMatchContext;
+///
+/// let molecule = MolecularGraph::from_smiles_single("CC(=O)Oc1ccccc1C(=O)O").unwrap();
+/// let context = MoleculeMatchContext::new(&molecule);
+///
+/// for pattern in ["c1ccccc1", "[CX3](=O)[OX2H1]"] {
+///     let pattern = parse_cxsmarts(pattern).unwrap();
+///     assert!(pattern.matches_with(&molecule, &context));
+/// }
+/// ```
+///
+/// It describes one molecule and is only valid while that molecule is
+/// unchanged.
+#[derive(Debug, Clone)]
+pub struct MoleculeMatchContext {
+    pub(crate) ring_info: RingInfo,
+    pub(crate) aromaticity_info: AromaticityInfo,
+}
+
+impl MoleculeMatchContext {
+    pub fn new(molecule: &MolecularGraph) -> Self {
+        Self {
+            ring_info: SMARTSMatcher::compute_ring_info(molecule),
+            aromaticity_info: SMARTSMatcher::compute_aromaticity_info(molecule),
+        }
+    }
 }
 
 /// Cached ring information for efficient R/r property evaluation
@@ -225,14 +263,26 @@ pub struct AromaticityInfo {
 impl<'a> SMARTSMatcher<'a> {
     /// Create a new SMARTS matcher
     pub fn new(pattern: &'a CxSMARTSPattern, molecule: &'a MolecularGraph) -> Self {
-        let ring_info = Self::compute_ring_info(molecule);
-        let aromaticity_info = Self::compute_aromaticity_info(molecule);
-
         Self {
             pattern,
             molecule,
-            ring_info,
-            aromaticity_info,
+            ring_info: std::borrow::Cow::Owned(Self::compute_ring_info(molecule)),
+            aromaticity_info: std::borrow::Cow::Owned(Self::compute_aromaticity_info(molecule)),
+        }
+    }
+
+    /// [`SMARTSMatcher::new`] against an analysis of the molecule that the
+    /// caller already has.
+    pub fn with_context(
+        pattern: &'a CxSMARTSPattern,
+        molecule: &'a MolecularGraph,
+        context: &'a MoleculeMatchContext,
+    ) -> Self {
+        Self {
+            pattern,
+            molecule,
+            ring_info: std::borrow::Cow::Borrowed(&context.ring_info),
+            aromaticity_info: std::borrow::Cow::Borrowed(&context.aromaticity_info),
         }
     }
 
@@ -773,21 +823,34 @@ pub struct BondEdge {
 pub struct PetgraphSMARTSMatcher<'a> {
     pattern: &'a CxSMARTSPattern,
     molecule: &'a MolecularGraph,
-    ring_info: RingInfo,
-    aromaticity_info: AromaticityInfo,
+    ring_info: std::borrow::Cow<'a, RingInfo>,
+    aromaticity_info: std::borrow::Cow<'a, AromaticityInfo>,
 }
 
 impl<'a> PetgraphSMARTSMatcher<'a> {
     /// Create a new petgraph-based SMARTS matcher
     pub fn new(pattern: &'a CxSMARTSPattern, molecule: &'a MolecularGraph) -> Self {
-        let ring_info = SMARTSMatcher::compute_ring_info(molecule);
-        let aromaticity_info = SMARTSMatcher::compute_aromaticity_info(molecule);
-
         Self {
             pattern,
             molecule,
-            ring_info,
-            aromaticity_info,
+            ring_info: std::borrow::Cow::Owned(SMARTSMatcher::compute_ring_info(molecule)),
+            aromaticity_info: std::borrow::Cow::Owned(SMARTSMatcher::compute_aromaticity_info(
+                molecule,
+            )),
+        }
+    }
+
+    /// [`PetgraphSMARTSMatcher::new`] against an analysis the caller already has.
+    pub fn with_context(
+        pattern: &'a CxSMARTSPattern,
+        molecule: &'a MolecularGraph,
+        context: &'a MoleculeMatchContext,
+    ) -> Self {
+        Self {
+            pattern,
+            molecule,
+            ring_info: std::borrow::Cow::Borrowed(&context.ring_info),
+            aromaticity_info: std::borrow::Cow::Borrowed(&context.aromaticity_info),
         }
     }
 
@@ -1203,6 +1266,25 @@ pub fn find_smarts_matches(
 pub fn smarts_matches(pattern: &CxSMARTSPattern, molecule: &MolecularGraph) -> bool {
     let matcher = PetgraphSMARTSMatcher::new(pattern, molecule);
     matcher.has_match()
+}
+
+/// [`find_smarts_matches`] against an analysis of the molecule the caller
+/// already has -- see [`MoleculeMatchContext`].
+pub fn find_smarts_matches_with(
+    pattern: &CxSMARTSPattern,
+    molecule: &MolecularGraph,
+    context: &MoleculeMatchContext,
+) -> Vec<HashMap<usize, usize>> {
+    PetgraphSMARTSMatcher::with_context(pattern, molecule, context).find_all_matches()
+}
+
+/// [`smarts_matches`] against an analysis the caller already has.
+pub fn smarts_matches_with(
+    pattern: &CxSMARTSPattern,
+    molecule: &MolecularGraph,
+    context: &MoleculeMatchContext,
+) -> bool {
+    PetgraphSMARTSMatcher::with_context(pattern, molecule, context).has_match()
 }
 
 /// New petgraph-based API functions (placeholder for now)

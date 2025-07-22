@@ -1234,6 +1234,36 @@ impl CxSMARTSPattern {
 }
 
 /// Public API for parsing CxSMARTS
+/// [`CxSMARTSPattern::matches`] reusing an analysis of the molecule.
+impl CxSMARTSPattern {
+    pub fn matches_with(
+        &self,
+        molecule: &MolecularGraph,
+        context: &crate::io::MoleculeMatchContext,
+    ) -> bool {
+        crate::io::subgraph_matching::smarts_matches_with(self, molecule, context)
+    }
+
+    /// [`CxSMARTSPattern::find_matches`] reusing an analysis of the molecule.
+    pub fn find_matches_with(
+        &self,
+        molecule: &MolecularGraph,
+        context: &crate::io::MoleculeMatchContext,
+    ) -> Vec<Vec<usize>> {
+        if self.is_reaction {
+            return vec![];
+        }
+        crate::io::subgraph_matching::find_smarts_matches_with(self, molecule, context)
+            .into_iter()
+            .map(|match_map| {
+                let mut match_vec: Vec<usize> = match_map.values().copied().collect();
+                match_vec.sort();
+                match_vec
+            })
+            .collect()
+    }
+}
+
 pub fn parse_cxsmarts(smarts_pattern: &str) -> Result<CxSMARTSPattern, CxSMARTSError> {
     let mut parser = CxSMARTSParser::new();
     parser.parse(smarts_pattern)

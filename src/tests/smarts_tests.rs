@@ -186,3 +186,55 @@ fn aromaticity_is_perceived_by_default_and_can_be_turned_off() {
     assert_eq!(find_cxsmarts_matches(&literal, "c1ccccc1").unwrap().len(), 0);
     assert_eq!(find_cxsmarts_matches(&literal, "C=C").unwrap().len(), 6);
 }
+
+/// Reusing one analysis of a molecule across several patterns has to give
+/// exactly what rebuilding it per match gives. The whole point of
+/// [`MoleculeMatchContext`] is that it is not pattern-dependent, and if it
+/// ever became so this is where it would show.
+#[test]
+fn a_shared_analysis_matches_what_a_fresh_one_finds() {
+    use crate::io::MoleculeMatchContext;
+
+    let molecules = [
+        "CC(=O)Oc1ccccc1C(=O)O",
+        "c1ccc2c(c1)ccc1ccccc12",
+        "C1CCNCC1",
+        "[nH]1cccc1",
+        "CC(N)C(=O)O",
+        "FC(F)(F)c1ccc(Cl)cc1",
+        "O=S(=O)(N)c1ccccc1",
+        "C1CC2CCC1CC2",
+    ];
+    let patterns = [
+        "c1ccccc1",
+        "[CX3](=O)[OX2H1]",
+        "[NX3;H2]",
+        "c1ccncc1",
+        "[OX2H]",
+        "C(=O)N",
+        "[F,Cl,Br,I]",
+        "[nH]",
+        "C1CCCCC1",
+        "[CX3]=[CX3]",
+        "[R]",
+        "[r6]",
+    ];
+
+    for smiles in molecules {
+        let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+        let context = MoleculeMatchContext::new(&molecule);
+        for smarts in patterns {
+            let pattern = parse_cxsmarts(smarts).unwrap();
+            assert_eq!(
+                pattern.matches_with(&molecule, &context),
+                pattern.matches(&molecule),
+                "{smarts} against {smiles}"
+            );
+            assert_eq!(
+                pattern.find_matches_with(&molecule, &context),
+                pattern.find_matches(&molecule),
+                "{smarts} against {smiles}"
+            );
+        }
+    }
+}

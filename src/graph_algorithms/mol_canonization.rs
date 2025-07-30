@@ -123,9 +123,19 @@ impl Canonizer {
         self.canonize_perceived(molecule)
     }
 
-    /// [`Canonizer::canonize`] for a molecule already perceived under the same
-    /// aromaticity model.
-    fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, mut molecule: T) -> T {
+    /// [`Canonizer::canonize`] for a molecule whose aromaticity has already
+    /// been perceived under the same model.
+    ///
+    /// Perception is over a third of what canonizing a parsed molecule costs,
+    /// and parsing has already done it: `MolecularGraph::from_smiles` and
+    /// `from_sdf` both perceive by default. Canonizing what they return with
+    /// [`Canonizer::canonize`] pays for it a second time.
+    ///
+    /// Only call this on a molecule that really has been perceived. On one that
+    /// has not, the Kekule and the aromatic way of writing the same structure
+    /// canonicalize to different strings -- which is a silent wrong answer, not
+    /// an error. When in doubt use [`Canonizer::canonize`].
+    pub fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, mut molecule: T) -> T {
         let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule);
         let _ = run_canonization(&mut molecule, &indices, &labels, &mut self.scratch);
         molecule
@@ -203,6 +213,25 @@ pub fn canonize_mol<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
 /// entry point and stays that way.
 fn canonize_perceived<T: Molecule + Clone + ToSMILES>(molecule: T) -> T {
     with_canonizer(|canonizer| canonizer.canonize_perceived(molecule))
+}
+
+/// [`canonize_mol`] for a molecule whose aromaticity has already been
+/// perceived under the same model -- see [`Canonizer::canonize_perceived`] for
+/// when that is true and what it costs to be wrong about it.
+///
+/// ```
+/// use oxidane::prelude::*;
+/// use oxidane::graph_algorithms::mol_canonization::{canonize_mol, canonize_mol_perceived};
+///
+/// // `from_smiles` perceives aromaticity, so this molecule is already done.
+/// let molecule = MolecularGraph::from_smiles_single("C1=CC=CC=C1").unwrap();
+/// assert_eq!(
+///     canonize_mol_perceived(&molecule).to_smiles(),
+///     canonize_mol(&molecule).to_smiles()
+/// );
+/// ```
+pub fn canonize_mol_perceived<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
+    canonize_perceived(mol.clone())
 }
 
 /// This function canonizes a given molecule.

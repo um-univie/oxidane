@@ -208,6 +208,36 @@ mod canonization_stress_tests {
         );
     }
 
+    /// Skipping perception for a molecule that has already been perceived must
+    /// change nothing but the time it takes. Every molecule here comes from
+    /// `from_smiles`, which perceives, so the two entry points have to agree --
+    /// including on the aromatic/Kekule pairs, which is exactly where they
+    /// would diverge if the skip were unsound.
+    #[test]
+    fn skipping_perception_agrees_when_the_molecule_was_perceived() {
+        use crate::graph_algorithms::mol_canonization::canonize_mol_perceived;
+
+        for smiles in [
+            "c1ccccc1",
+            "C1=CC=CC=C1",
+            "c1ccc2ccccc2c1",
+            "C1=CC2=CC=CC=C2C=C1",
+            "c1cc[nH]c1",
+            "CC(=O)Oc1ccccc1C(=O)O",
+            "O=C(C)Oc1ccccc1C(O)=O",
+            "c1ccc(-c2ccccc2)cc1",
+            "[Na+].[Cl-]",
+            "C[Si](C)CC",
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            assert_eq!(
+                canonize_mol_perceived(&molecule).to_smiles(),
+                canonize_mol(&molecule).to_smiles(),
+                "{smiles}"
+            );
+        }
+    }
+
     // ---- Regression: radical states survive canonization -----------------
     //
     // `reorder_molecule` permuted atomic numbers, charges, isotopes, atom

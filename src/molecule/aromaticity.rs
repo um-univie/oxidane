@@ -167,6 +167,7 @@ impl Aromatizer {
         )
     }
 
+
     /// The buffers, for a caller assembling a larger scratch of its own.
     pub(crate) fn scratch_mut(&mut self) -> &mut AromaticityScratch {
         &mut self.scratch
@@ -179,6 +180,37 @@ thread_local! {
     /// through every signature.
     static AROMATIZER: std::cell::Cell<Aromatizer> = std::cell::Cell::new(Aromatizer::new());
 }
+
+/// A molecule whose aromatic bonds state more π demand than any assignment of
+/// double bonds can satisfy, and which therefore has no Kekulé structure.
+///
+/// `O=c1ccccc1` is the shortest example: the carbonyl carbon has spent its π
+/// bond outside the ring, and the five carbons left each want one double bond
+/// among themselves, which an odd number of atoms cannot share out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KekulizationError {
+    /// The atoms left wanting a π bond, in index order.
+    pub atoms: Vec<usize>,
+}
+
+impl std::fmt::Display for KekulizationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the aromatic bonds cannot be written as alternating single and \
+             double ones: no double bond is left for atom"
+        )?;
+        if self.atoms.len() > 1 {
+            write!(formatter, "s")?;
+        }
+        for (position, atom) in self.atoms.iter().enumerate() {
+            write!(formatter, "{} {atom}", if position == 0 { "" } else { "," })?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for KekulizationError {}
 
 pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     // This could fail but the way we use it, it won't
@@ -244,7 +276,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     }
 
     fn handle_boron_aromaticity(&self, atom_index: usize) -> u8 {
-        let mut lookup_index = 0;
+        let lookup_index = 0;
         let formal_charge = self.get_atom_charge(atom_index);
 
         let valency = self.actual_valency(atom_index);
@@ -627,7 +659,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     ) -> u8 {
         let formal_charge = self.get_atom_charge(atom_index);
         let valency = self.actual_valency(atom_index);
-        let mut lookup_index = 0;
+        let lookup_index = 0;
 
         match formal_charge {
             0 => {
@@ -764,7 +796,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         let mut lookup_index = 0;
 
         let bonds = self.get_atom_bonds(atom_index).unwrap_or_default();
-        let bond_count = bonds.len();
+        let _bond_count = bonds.len();
 
         match formal_charge {
             0 => {
@@ -803,7 +835,24 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                         }
                     }
                 }
-                lookup_index = 18
+                // Everything a neutral sulfur can offer a ring is now spoken
+                // for: two neighbours leave it a lone pair to donate, and the
+                // sulfoxide above donates the pair its exocyclic `=O` has not
+                // taken. This used to fall through to the thiophene answer for
+                // any sulfur at all, which made a ring sulfone aromatic -- the
+                // sulfur of a sultam has four σ bonds, no lone pair and no
+                // p orbital, and is exactly what breaks such a ring's
+                // conjugation. A three-coordinate neutral sulfur has likewise
+                // spent one pair on its third bond, and giving up the second
+                // would leave it positive, which is the case the `+1` arm below
+                // handles and why that arm exists at all.
+                //
+                // Two neighbours is the test, not two bonds' worth of valence:
+                // the sulfur of 1,2,5-thiadiazole is written `N=S=N` as often
+                // as `n-s-n`, and both are the same aromatic ring.
+                if bond_count == 2 {
+                    lookup_index = 18;
+                }
             }
             1 => {
                 let Some(bonds) = self.get_atom_bonds(atom_index) else {
@@ -857,7 +906,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
 
     fn handle_arsenic_aromaticity(&self, atom_index: usize) -> u8 {
         let formal_charge = self.get_atom_charge(atom_index);
-        let mut lookup_index = 0;
+        let lookup_index = 0;
         let valency = self.actual_valency(atom_index);
 
         match formal_charge {
@@ -865,7 +914,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 let Some(bonds) = self.get_atom_bonds(atom_index) else {
                     return 0;
                 };
-                let bond_count = bonds.len();
+                let _bond_count = bonds.len();
 
                 let mut number_of_aromatic_bonds = 0;
 
@@ -922,7 +971,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     fn handle_selenium_aromaticity(&self, atom_index: usize) -> u8 {
         let formal_charge = self.get_atom_charge(atom_index);
         let valency = self.actual_valency(atom_index);
-        let mut lookup_index = 0;
+        let lookup_index = 0;
 
         match formal_charge {
             0 => {
@@ -931,7 +980,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 };
                 let bond_count = bonds.len();
                 let mut number_of_aromatic_bonds = 0;
-                let mut number_of_single_bonds = 0;
+                let _number_of_single_bonds = 0;
                 let mut has_oxygen_double_bond = false;
 
                 for bond in bonds.iter() {
@@ -950,7 +999,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 {
                     return 28;
                 }
-                if (valency == 2 && bond_count == 2) {
+                if valency == 2 && bond_count == 2  {
                     return 28;
                 }
             }
@@ -960,8 +1009,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 };
                 let bond_count = bonds.len();
                 let mut number_of_aromatic_bonds = 0;
-                let mut number_of_single_bonds = 0;
-                let mut has_oxygen_double_bond = false;
+                let _number_of_single_bonds = 0;
+                let _has_oxygen_double_bond = false;
 
                 for bond in bonds.iter() {
                     if bond.bond_order() == BondOrder::Aromatic {
@@ -1175,6 +1224,26 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         if atoms_in_rings_placeholder.is_empty() {
             return Ok(());
         }
+
+        // Perceive from a Kekulé structure, always.
+        //
+        // Everything below reads bond orders -- how many double bonds an atom
+        // has, how many aromatic ones -- so it answers differently for the two
+        // ways of writing one compound. What hid that was the write-back at the
+        // end only ever *adding* aromatic bonds: a bond the input wrote
+        // aromatic and perception rejected kept its order, so a lower-case
+        // input silently retained rings perception had just refused, and the
+        // two writings agreed by repair rather than by agreement. That repair
+        // held only while perception was permissive enough to accept whatever
+        // the input asserted. Localizing first removes the difference instead
+        // of patching it.
+        // Perception itself stays tolerant of a molecule that cannot be
+        // localized: the offending bonds keep the order they were written with,
+        // and everything around them is perceived as usual. Rejecting such a
+        // molecule is the reader's job, not perception's -- see
+        // `SmilesParseOptions`.
+        let _ = self.localize_aromatic_bonds();
+
         let atoms_in_cycles =
             (0..num_atoms).filter(|index| atoms_in_rings_placeholder.contains(*index));
         aromaticity_flags.clear();
@@ -1189,12 +1258,19 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         aromatic_atoms.resize(self.len(), false);
         aromatic_bonds.clear();
 
+        // Classification asks whether an atom's double bond leaves the ring,
+        // and for that "ring" has to mean a ring that could carry a π system
+        // rather than any cycle at all -- see [`conjugated_ring_bonds`], whose
+        // documentation carries the pair of molecules that separates the two.
+        let conjugated_bonds =
+            crate::molecule::pi_system::conjugated_ring_bonds(self, bonds_in_rings_placeholder);
+
         for index in atoms_in_cycles {
             if self.is_atom_aromatic(index) {
                 aromatic_atoms[index] = true;
             }
             let aromaticity_flag =
-                self.handle_aromatic_atom(index, aromaticity_model, bonds_in_rings_placeholder);
+                self.handle_aromatic_atom(index, aromaticity_model, &conjugated_bonds);
 
             aromaticity_flags[index] = aromaticity_flag;
         }
@@ -1277,6 +1353,25 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             }
         }
 
+        // Only write aromatic what can be read back. Perception counts π
+        // electrons ring by ring and can land on a ring no assignment of double
+        // bonds reproduces -- `C1(=O)SN=S=C1` counts six over its five atoms,
+        // but the two demands it leaves sit either side of a sulfur that has
+        // none, so nothing can pair them. Written all in lower case such a ring
+        // is a string this crate's own reader refuses, and refuses rightly.
+        // Perception has to decline it instead.
+        // The molecule reaching here is in Kekulé form, so the double bonds it
+        // already carries are a candidate answer: when they leave nobody short,
+        // they are a Kekulé structure for the set and the matching would only
+        // confirm it. That witness holds for all but a handful of molecules in
+        // a hundred thousand, and testing it is one pass over the set.
+        if !crate::molecule::pi_system::aromatic_set_is_satisfied(self, aromatic_bonds) {
+            let kekulization = crate::molecule::pi_system::kekulize(self, aromatic_bonds);
+            if !kekulization.unsatisfied.is_empty() {
+                aromatic_bonds.retain(|&(first, _)| !kekulization.is_atom_deficient(first));
+            }
+        }
+
         for atom_index in 0..self.len() {
             let bonds = self.get_atom_bonds_mut(atom_index).unwrap_or_default();
             for bond in bonds.iter_mut() {
@@ -1291,13 +1386,102 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         Ok(())
     }
 
+    /// Rewrites every bond the input wrote aromatic as a single or a double
+    /// one, so that perception is handed a Kekulé structure whatever it was
+    /// given.
+    ///
+    /// Which bonds become double is decided by counting rather than by reading:
+    /// each atom's π demand is what its element, charge and σ-connectivity
+    /// require, less the π bonds already committed on the bonds that were *not*
+    /// written aromatic. Satisfying as many of the remaining demands as
+    /// possible over the aromatic bonds is a maximum matching, and it has to be
+    /// an exact one -- a greedy pairing leaves atoms unpaired that could have
+    /// been paired, and an unpaired demand is an unpaired electron, so a greedy
+    /// answer invents radicals. Matched bonds become double, the rest single.
+    ///
+    /// A molecule handed over already in Kekulé form has no aromatic bond to
+    /// rewrite and passes through untouched.
+    ///
+    /// # Errors
+    ///
+    /// [`KekulizationError`] when a connected run of aromatic bonds states more
+    /// π demand than it can satisfy -- `O=c1ccccc1` is five carbons each wanting
+    /// a double bond, and one of them must go without. Such a molecule has no
+    /// Kekulé structure and is not a molecule; the bonds are left as they were
+    /// found rather than localized, since which atom ends up short would
+    /// otherwise depend on the order the atoms happen to be numbered in.
+    fn localize_aromatic_bonds(&mut self) -> Result<(), KekulizationError> {
+        let atom_count = self.len();
+
+        // Perception calls this on every molecule and the parser has usually
+        // localized it already, so the common case is that there is nothing to
+        // do. Finding that out must not cost a hash set.
+        let has_aromatic_bond = (0..atom_count).any(|atom| {
+            self.get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .any(|bond| bond.bond_order() == BondOrder::Aromatic)
+        });
+        if !has_aromatic_bond {
+            return Ok(());
+        }
+
+        let mut aromatic: FxHashSet<(usize, usize)> = FxHashSet::default();
+        for atom in 0..atom_count {
+            let Some(bonds) = self.get_atom_bonds(atom) else {
+                continue;
+            };
+            for bond in bonds {
+                let target = bond.target();
+                if atom < target && bond.bond_order() == BondOrder::Aromatic {
+                    aromatic.insert((atom, target));
+                }
+            }
+        }
+
+        let kekulization = crate::molecule::pi_system::kekulize(self, &aromatic);
+
+        for atom_index in 0..atom_count {
+            // A component with no Kekulé structure is left exactly as it was
+            // found, and the rest of the molecule is localized around it.
+            if kekulization.is_atom_deficient(atom_index) {
+                continue;
+            }
+            let bonds = self.get_atom_bonds_mut(atom_index).unwrap_or_default();
+            for bond in bonds.iter_mut() {
+                let atom_order = order_tuple(atom_index, bond.target());
+                if !aromatic.contains(&atom_order) {
+                    continue;
+                }
+                let paired = kekulization
+                    .matched
+                    .get(atom_order.0)
+                    .and_then(|partner| *partner)
+                    .is_some_and(|partner| partner == atom_order.1);
+                bond.bond_order = if paired {
+                    BondOrder::Double
+                } else {
+                    BondOrder::Single
+                };
+            }
+        }
+
+        if kekulization.unsatisfied.is_empty() {
+            Ok(())
+        } else {
+            Err(KekulizationError {
+                atoms: kekulization.unsatisfied,
+            })
+        }
+    }
+
     fn aromatize_opensmiles(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.aromatize(AromaticityModel::OpenSMILES, None, false)
     }
 
     fn find_aromatic_cycles(
         &self,
-        atoms_in_rings: &BitSet,
+        _atoms_in_rings: &BitSet,
         bonds_in_rings: &FxHashSet<(usize, usize)>,
         max_path_length: usize,
         aromaticity_flags: &mut [AromaticityFlag],
@@ -1735,7 +1919,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             while counter < number_of_rings {
                 let ring_atoms = rings
                     .iter()
-                    .map(|&assignment| (assignment == Some(counter)))
+                    .map(|&assignment| assignment == Some(counter) )
                     .collect::<BitVec>();
 
                 let mut number_of_atoms_in_system = 0;

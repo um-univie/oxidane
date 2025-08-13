@@ -1,9 +1,9 @@
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::atom::Atom;
+use std::collections::HashMap;
 use crate::molecule::aromaticity::{AromaticityModel, MoleculeAromaticity};
-use crate::atom::{WILDCARD_ATOMIC_NUMBER, WILDCARD_SYMBOL};
+use crate::atom::{BOND_CAPACITY, WILDCARD_ATOMIC_NUMBER, WILDCARD_SYMBOL};
 use crate::molecule::Molecule;
 use crate::molecule::graph::Node;
 pub use crate::{
@@ -32,6 +32,15 @@ pub enum SMILESParseError {
     /// A character that is not part of the SMILES language appeared where an
     /// atom, bond or structural symbol was expected.
     UnexpectedCharacter(char, String),
+    /// An atom was given more bonds than an atom can be given. Ring-closure
+    /// labels that are opened but never closed, or reused across a `.`, pile up
+    /// on whichever atom happens to be current, and ten is already past every
+    /// coordination number this crate models.
+    TooManyBonds(usize),
+    /// The lower-case bonds the string states cannot all be written as
+    /// alternating single and double ones, so the string does not describe a
+    /// molecule. See [`crate::molecule::aromaticity::KekulizationError`].
+    Kekulization(String),
 }
 
 /// What to perceive after the atoms and bonds have been read.
@@ -203,6 +212,14 @@ impl<'a> SMILESParser<'a> {
             molecule.convert_directional_bonds_to_chiral();
 
             if let Some(model) = options.aromaticity {
+                // Reading is where a string that is not a molecule gets turned
+                // away. Perception is tolerant by design, so ask for the Kekulé
+                // structure here, where the answer can be refused; the call
+                // perception makes later finds the bonds already localized and
+                // returns at once.
+                molecule.localize_aromatic_bonds().map_err(|failure| {
+                    SMILESParseError::Kekulization(failure.to_string())
+                })?;
                 // A ring written in Kekulé form describes the same molecule as
                 // one written in lower case, so without this the two parse to
                 // graphs that answer aromaticity questions differently:
@@ -362,7 +379,7 @@ impl<'a> SMILESParser<'a> {
 
                 b'.' => {
                     parser.handle_atom(None)?;
-                    parser.add_all_bonds();
+                    parser.add_all_bonds()?;
                     // If we still have unsatisfied ring bonds, we need to wait
                     // This does not yet solve the issue as we will need to split mols in the end
                     if !parser
@@ -440,7 +457,7 @@ impl<'a> SMILESParser<'a> {
             parser.handle_atom(None)?
         }
 
-        parser.add_all_bonds();
+        parser.add_all_bonds()?;
 
         assign_radicals(&mut parser.atoms);
 
@@ -566,7 +583,7 @@ impl<'a> SMILESParser<'a> {
     /// bond orders based on the aromaticity of the connected atoms.
     ///
     /// All other bonds default to their parsed bond orders.
-    fn add_all_bonds(&mut self) {
+    fn add_all_bonds(&mut self) -> Result<(), SMILESParseError> {
         for entry in self.ring_bonds.iter() {
             match (entry.1.0, entry.1.1) {
                 (Some(start_idx), Some(end_idx)) => {
@@ -608,15 +625,11 @@ impl<'a> SMILESParser<'a> {
         for bond in self.bonds.iter_mut() {
             let atom1_index = bond.0;
             let atom2_index = bond.1;
-            // Ensure bond indices are within bounds
+            // A bond to an atom that was never read cannot be repaired, and
+            // silently dropping it hands back a different molecule than the one
+            // the string asked for.
             if bond.0 >= self.atoms.len() || bond.1 >= self.atoms.len() {
-                eprintln!(
-                    "Error: Bond indices out of bounds: bond.0={}, bond.1={}, atoms.len={}",
-                    bond.0,
-                    bond.1,
-                    self.atoms.len()
-                );
-                continue; // Skip invalid bonds
+                return Err(SMILESParseError::RingIndexError);
             }
 
             let is_atom1_aromatic = self.atoms[atom1_index].aromatic;
@@ -627,11 +640,22 @@ impl<'a> SMILESParser<'a> {
                 bond.2.unwrap_or(BondOrder::Single)
             };
 
+            // The bond list is a fixed-capacity inline array, so a string that
+            // piles more than it holds onto one atom used to abort the process
+            // rather than fail the parse.
+            if self.atoms[atom1_index].bonds().len() >= BOND_CAPACITY {
+                return Err(SMILESParseError::TooManyBonds(atom1_index));
+            }
+            if self.atoms[atom2_index].bonds().len() >= BOND_CAPACITY {
+                return Err(SMILESParseError::TooManyBonds(atom2_index));
+            }
+
             let atom1 = &mut self.atoms[bond.0];
             atom1.add_bond(BondTarget::new(bond.1, bond_order));
             let atom2 = &mut self.atoms[bond.1];
             atom2.add_bond(BondTarget::new(bond.0, bond_order));
         }
+        Ok(())
     }
 
     fn handle_branch(&mut self) -> Result<(), SMILESParseError> {
@@ -688,7 +712,7 @@ impl<'a> SMILESParser<'a> {
         if self.branch_exits > 0 && !self.branch_stack.is_empty() {
             self.handle_branch()?;
         } else {
-            let mut previous_atom = self.current_atom_index - 1;
+            let previous_atom = self.current_atom_index - 1;
             let current_atom = self.current_atom_index;
 
             let bond_order = if let (Some(prev_atom), Some(curr_atom)) =
@@ -1481,28 +1505,51 @@ pub trait ToSMILES: Molecule {
         let is_organic_subset =
             matches!(atomic_number, 0 | 5 | 6 | 7 | 8 | 9 | 15 | 16 | 17 | 35 | 53);
 
-        let has_standard_hydrogens = match atomic_number {
+        // Whether a reader handed this atom without brackets would give it back
+        // the hydrogens it has. The count is not a property of the element
+        // alone: it is what the element's valence leaves over once the bonds
+        // the atom already carries are taken off, so `P` is phosphine and
+        // `P(C)(C)C` is trimethylphosphine, and the old test -- which asked
+        // only whether the hydrogen count was within the element's lowest
+        // valence -- wrote `[PH2](C)(C)C` as `P(C)(C)C` and lost two.
+        //
+        // Two readers have to agree, not one. This crate fills a bare atom to
+        // the element's *lowest* valence; every other toolkit fills it to the
+        // smallest valence the bonds have not already outgrown, which is the
+        // same number until an element with several valences passes the first.
+        // A sulfur with three bonds is nought hydrogens here and one hydrogen
+        // elsewhere, so `[S](C)=C` written bare comes back as a different
+        // molecule -- brackets whenever the two disagree. Aromatic atoms are
+        // exempt because the two rules already agree on them: an aromatic bond
+        // counts one and a half, so the sum has passed the lowest valence for
+        // every heteroatom and both readers infer none.
+        let has_standard_hydrogens = if atomic_number == 0 {
             // A wildcard has no valence, so any hydrogen on it must be stated.
-            0 => number_of_hydrogens == 0,
-            // The count a reader would infer for a bare atom is its lowest
-            // valence, so writing one bare is safe up to that many hydrogens.
-            // Nitrogen and phosphorus are trivalent, which is why ammonia is
-            // `N` and not `[NH3]`; both were capped at two.
-            5 => number_of_hydrogens <= 3,            // Boron
-            6 => number_of_hydrogens <= 4,            // Carbon
-            7 => number_of_hydrogens <= 3,            // Nitrogen
-            8 => number_of_hydrogens <= 2,            // Oxygen
-            9 => number_of_hydrogens <= 1,            // Fluorine
-            15 => number_of_hydrogens <= 3,           // Phosphorus
-            16 => number_of_hydrogens <= 2,           // Sulfur
-            17 | 35 | 53 => number_of_hydrogens <= 1, // Chlorine/Bromine/Iodine
-            _ => false,
+            number_of_hydrogens == 0
+        } else {
+            let hydrogen_bond_valence = 2 * number_of_hydrogens as i8;
+            let bare_bond_valence =
+                (self.actual_valency(node.index()) * 2 - hydrogen_bond_valence) / 2;
+            crate::molecule::base::effective_valency(atomic_number, charge).is_some_and(
+                |valency| {
+                    let inferred = (valency - bare_bond_valence).max(0);
+                    number_of_hydrogens as i8 == inferred
+                        && (is_aromatic
+                            || crate::molecule::base::saturating_valency(
+                                atomic_number,
+                                charge,
+                                bare_bond_valence,
+                            )
+                            // Bonds past every valence the element has leave a
+                            // reader nothing to fill in.
+                            .map_or(inferred == 0, |reader| {
+                                reader - bare_bond_valence == inferred
+                            }))
+                },
+            )
         };
 
         let has_negative_degree = self.get_atom_degree(node.index()).unwrap_or(0) < 0;
-
-        let is_aromatic_nitrogen_with_hydrogen =
-            atomic_number == 7 && is_aromatic && number_of_hydrogens > 0;
 
         // Cis/trans stereochemistry is emitted as directional bonds (`/`,`\`),
         // not as an atom tag, so it does not require brackets or a chiral symbol.
@@ -1518,7 +1565,7 @@ pub trait ToSMILES: Molecule {
             || !(!is_charged && is_organic_subset && has_standard_hydrogens)
             || (has_negative_degree);
         // Build atom string
-        if needs_brackets || is_aromatic_nitrogen_with_hydrogen || is_chiral {
+        if needs_brackets || is_chiral {
             let chiral_str: String = match chirality {
                 ChiralClass::Counterclockwise => "@".to_string(),
                 ChiralClass::Clockwise => "@@".to_string(),
@@ -1904,7 +1951,7 @@ impl FromSMILES for MolecularGraph {
     fn from_smiles_with_sanitization(
         smiles: &str,
     ) -> Result<Vec<MolecularGraph>, SMILESParseError> {
-        let mut molecules = SMILESParser::parse_smiles(smiles)?;
+        let molecules = SMILESParser::parse_smiles(smiles)?;
         Ok(molecules)
     }
 }
@@ -1921,10 +1968,17 @@ fn relabel_smiles_numbers(input: &str) -> String {
     let mut chars = input.chars().peekable();
     let mut is_bracket = false;
 
+    // The `%` prefix belongs to the label that comes out, not the one that went
+    // in. Renumbering moves labels across the one-digit boundary in both
+    // directions -- a `%12` that becomes 3 must be written `3`, and a `5` that
+    // becomes 10 must be written `%10` -- so carrying the prefix over from the
+    // input produced `%3`, which is not a label at all, and `10`, which is two
+    // labels. Molecules needing ten open ring closures at once were written as
+    // SMILES no reader could take back.
     let mut push_mapped = |result: &mut String, label: u32| {
         if label >= 100 {
             // Not a label this format can produce; pass it through untouched.
-            let _ = write!(result, "{label}");
+            let _ = write!(result, "%{label}");
             return;
         }
         let slot = &mut mapping[label as usize];
@@ -1932,7 +1986,11 @@ fn relabel_smiles_numbers(input: &str) -> String {
             *slot = next_number;
             next_number += 1;
         }
-        let _ = write!(result, "{}", *slot);
+        if *slot > 9 {
+            let _ = write!(result, "%{}", *slot);
+        } else {
+            let _ = write!(result, "{}", *slot);
+        }
     };
 
     while let Some(c) = chars.next() {
@@ -1956,7 +2014,6 @@ fn relabel_smiles_numbers(input: &str) -> String {
                 label = label * 10 + digit;
                 chars.next();
             }
-            result.push('%');
             push_mapped(&mut result, label);
         } else if let Some(digit) = c.to_digit(10) {
             push_mapped(&mut result, digit);
@@ -1971,7 +2028,215 @@ fn relabel_smiles_numbers(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::io::smiles::ToSMILES;
-    use crate::prelude::*;
+    
+
+    #[test]
+    fn nothing_is_written_aromatic_that_cannot_be_read_back() {
+        // Whatever perception marks aromatic is written in lower case, and a
+        // lower-case ring with no Kekulé structure is a string this crate's own
+        // reader refuses. Every canonical form must survive a round trip.
+        for smiles in [
+            "C1(=O)SN=S=C1",
+            "c1ccc2nsnc2c1",
+            "C1=CC=C2N=S=NC2=C1",
+            "O=c1cc[nH]c(=O)[nH]1",
+            "c1ccc2c(c1)[nH]c3ccccc23",
+            "C1=CC2=NC1=Cc1ccc([nH]1)C=C1C=CC(=N1)C=c1ccc(=C2)[nH]1",
+        ] {
+            let written = crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                smiles, false,
+            )
+            .unwrap();
+            let again = crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                &written, false,
+            )
+            .unwrap_or_else(|error| panic!("{smiles} was written {written}, which fails: {error:?}"));
+            assert_eq!(written, again, "{smiles} is not a fixed point");
+        }
+    }
+
+    #[test]
+    fn a_string_with_no_kekule_structure_is_refused() {
+        // Five carbons cannot share out a double bond each. RDKit refuses the
+        // same string; what matters here is that we refuse it rather than
+        // inventing a radical on whichever atom happens to be numbered first.
+        assert!(matches!(
+            MolecularGraph::from_smiles_single("O=c1ccccc1"),
+            Err(SMILESParseError::Kekulization(_))
+        ));
+        assert!(matches!(
+            MolecularGraph::from_smiles_single("O=[n+]1ccccc1[O-]"),
+            Err(SMILESParseError::Kekulization(_))
+        ));
+        // The rings that do have one are untouched, including the ones whose
+        // heteroatom contributes a lone pair and demands no double bond.
+        for smiles in [
+            "c1ccccc1",
+            "c1cc[nH]c1",
+            "c1ccsc1",
+            "O=c1cc[nH]c(=O)[nH]1",
+            "c1ccc2[nH]ccc2c1",
+            "[cH-]1cccc1",
+        ] {
+            assert!(
+                MolecularGraph::from_smiles_single(smiles).is_ok(),
+                "{smiles} should still parse"
+            );
+        }
+        // Perception on its own stays tolerant: it leaves what it cannot
+        // localize exactly as written rather than failing.
+        let options = SmilesParseOptions {
+            aromaticity: None,
+            ..Default::default()
+        };
+        let mut molecule = SMILESParser::parse_smiles_single_with("O=c1ccccc1", options).unwrap();
+        assert!(molecule.aromatize_opensmiles().is_ok());
+    }
+
+    #[test]
+    fn an_atom_given_more_bonds_than_it_can_hold_fails_the_parse() {
+        // Ring-closure labels reused across a `.` pile onto whichever atom is
+        // current. The bond list is a fixed-capacity inline array, so this used
+        // to abort the process inside `tinyvec` instead of failing the parse.
+        assert!(matches!(
+            MolecularGraph::from_smiles("c1cc2ccc3ccc4ccc5ccc1[nH]2.[nH]3.[nH]4.[nH]5"),
+            Err(SMILESParseError::TooManyBonds(_))
+        ));
+    }
+
+    #[test]
+    fn ring_labels_carry_the_percent_of_the_label_they_become() {
+        // Renumbering moves labels across the one-digit boundary both ways, and
+        // the `%` has to follow the label that comes out, not the one that went
+        // in. `%12` renumbered to 3 must lose its `%`, and `5` renumbered to 10
+        // must gain one -- written bare, `10` is two ring closures.
+        assert_eq!(relabel_smiles_numbers("C%12CC%12"), "C1CC1");
+        assert_eq!(
+            relabel_smiles_numbers("C1C2C3C4C5C6C7C8C9C%10C%11C1C2C3C4C5C6C7C8C9C%10C%11"),
+            "C1C2C3C4C5C6C7C8C9C%10C%11C1C2C3C4C5C6C7C8C9C%10C%11"
+        );
+        // Bracketed atoms keep their own digits: an isotope is not a label.
+        assert_eq!(relabel_smiles_numbers("[13CH3]C%12CC%12"), "[13CH3]C1CC1");
+    }
+
+    #[test]
+    fn buckminsterfullerene_is_written_with_readable_ring_labels() {
+        // Sixty carbons need far more than nine ring closures open at once, so
+        // this is the smallest well-known molecule that shows the difference.
+        // Written bare, a renumbered `10` is two ring closures rather than one,
+        // and the written molecule falls apart on the way back in.
+        let smiles = "C12=C3C4=C5C6=C1C7=C8C9=C1C%10=C%11C(=C29)C8=C2C8=C%11C%10=C1C1=C8C(=C23)C4=C1C5=C67";
+        let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+        let written = molecule.to_smiles();
+        assert!(
+            !written.contains("%1c") && !written.contains("%1C"),
+            "a `%` must introduce two digits in {written}"
+        );
+        let reparsed = MolecularGraph::from_smiles_single(&written).unwrap();
+        assert_eq!(reparsed.len(), molecule.len());
+        assert_eq!(reparsed.to_smiles(), written);
+    }
+
+    #[test]
+    fn a_bare_symbol_is_only_used_where_both_readers_infer_the_same_hydrogens() {
+        // Sulfur and phosphorus have more than one normal valence, so the count
+        // a reader fills in depends on the bonds the atom already carries. The
+        // test used to ask only whether the hydrogen count fell within the
+        // element's lowest valence, which wrote a phosphorane as a phosphine.
+        for (smiles, expected) in [
+            // Hydrogens that a bare symbol would drop.
+            ("[PH2](C)(C)C", "[PH2](C)(C)C"),
+            ("C[PH](C)C", "[PH](C)(C)C"),
+            ("C[SH]C", "[SH](C)C"),
+            ("O=[SH2]", "[SH2]=O"),
+            // Hydrogens a bare symbol would invent elsewhere: three bonds have
+            // outgrown sulfur's first valence, so every other reader gives this
+            // sulfur one hydrogen that it does not have.
+            ("C1(=[S]C)NCCN1", "[S](C)=C1NCCN1"),
+            // And the ordinary cases stay bare.
+            ("CP(C)C", "P(C)(C)C"),
+            ("CS(C)(C)C", "S(C)(C)(C)C"),
+            ("CS(=O)C", "S(=O)(C)C"),
+            ("C[S]C", "S(C)C"),
+            ("c1ccsc1", "s1cccc1"),
+            ("c1ccoc1", "o1cccc1"),
+            ("c1ccccc1", "c1ccccc1"),
+        ] {
+            assert_eq!(
+                crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                    smiles, false
+                )
+                .unwrap(),
+                expected,
+                "writing {smiles}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_neutral_sulfur_is_only_aromatic_where_it_has_a_lone_pair_to_give() {
+        // Thiophene's sulfur donates its lone pair, and so does the sulfoxide's
+        // once its exocyclic `=O` has taken the other. A three-coordinate
+        // neutral sulfur has spent one pair on its third bond and would have to
+        // become positive to give up the second, and a two-coordinate sulfur
+        // carrying two double bonds has no p orbital left at all -- both used
+        // to be counted as thiophene's and written back as SMILES no other
+        // reader accepts.
+        for (smiles, aromatic) in [
+            ("c1ccsc1", true),
+            ("c1ccc2sccc2c1", true),
+            ("C1=CC=CS1(=O)", true),
+            // 1,2,5-thiadiazole, written both ways round. The hypervalent
+            // sulfur is the same aromatic sulfur as the divalent one, and a
+            // rule that read the valence rather than the neighbour count made
+            // the two writings disagree.
+            ("c1ccc2nsnc2c1", true),
+            ("C1=CC=C2N=S=NC2=C1", true),
+            ("C1=NSN=C1", true),
+            // Three σ bonds and no exocyclic `=O`: the second lone pair can
+            // only be given up by becoming positive.
+            ("C1=C[S](SC)N=N1", false),
+            // A ring sulfone has neither a lone pair nor a p orbital left.
+            ("O=C1NS(=O)(=O)c2ccccc21", false),
+            ("O=S1(=O)C=CC=C1", false),
+            // Six π electrons over five atoms, and still no ring: the two
+            // demands sit either side of a sulfur with none, so no assignment
+            // of double bonds reproduces the aromatic form. Perception has to
+            // decline what it cannot write.
+            ("C1(=O)SN=S=C1", false),
+        ] {
+            let written = crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                smiles, false,
+            )
+            .unwrap();
+            assert_eq!(
+                written.contains('s'),
+                aromatic,
+                "{smiles} was written {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_aromatic_phosphorus_keeps_its_hydrogen() {
+        // Bare `p` is read as phosphinine-like, with no hydrogen, so a phosphole
+        // written `p1cccc1` has silently lost one and is not a molecule any
+        // reader will take back. Only carbon may state a hydrogen by being bare.
+        let molecule = MolecularGraph::from_smiles_single("c1cc[pH]c1").unwrap();
+        assert!(
+            molecule.to_smiles().contains("[pH]"),
+            "the phosphorus lost its hydrogen: {}",
+            molecule.to_smiles()
+        );
+        assert_eq!(
+            crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                "c1cc[pH]c1",
+                false
+            )
+            .unwrap(),
+            "[pH]1cccc1"
+        );
+    }
 
     #[test]
     fn test_parse_smiles() {

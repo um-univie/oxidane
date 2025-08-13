@@ -63,6 +63,13 @@ mod canonization_stress_tests {
             "C(F)(F)(F)C(Cl)(Br)I",
             "O=C1CCCCC1",
             "N1C=CC=C1",
+            // More than nine ring closures open at once, which is where a
+            // renumbered label crosses the one-digit boundary and has to gain
+            // or lose its `%`.
+            "C12=C3C4=C5C6=C1C7=C8C9=C1C%10=C%11C(=C29)C8=C2C8=C%11C%10=C1C1=C8C(=C23)C4=C1C5=C67",
+            // An aromatic heteroatom whose hydrogen a bare symbol would drop.
+            "c1cc[pH]c1",
+            "c1cc[asH]c1",
         ];
 
         base.chain(extra.into_iter().map(String::from)).collect()
@@ -375,23 +382,19 @@ mod canonization_stress_tests {
         );
     }
 
-    // ---- KNOWN GAP (documented, currently failing) ------------------------
+    // ---- Regression: aromatic ring written with a triple bond -------------
     //
-    // Minimal reproduction of the remaining 2 (of the original 10) mismatches
-    // found by `mol_canonization::tests::benchmark_canonization_from_file` in
-    // `tests/smiles_tree_permutations.txt`. Cross-checked against RDKit
-    // directly: RDKit itself reports the triple-bonded ring atoms as both
-    // `SP`-hybridized (linear) *and* aromatic for `c1cc#cc(C)n1`, which is
-    // self-contradictory (aromaticity requires planar sp2 p-orbital overlap;
-    // a linear sp carbon can't participate). This looks like bad ground
-    // truth inherited from RDKit's own aromaticity-perception quirk for
-    // triple-bonded ring atoms, not a confirmed molecules defect - kept as a
-    // documented, ignored gap rather than deleted, in case it turns out to
-    // matter. Ignored so `cargo test` stays green; remove `#[ignore]` if a
-    // real fix (or a parse-time rejection of this input) is applied.
+    // The last two mismatches in the permutation corpus, and an instructive
+    // pair. RDKit reports the triple-bonded ring atoms of `c1cc#cc(C)n1` as
+    // both `SP`-hybridized and aromatic, which cannot both hold: a linear sp
+    // carbon has no p orbital lying in the ring plane to overlap. The Kekulé
+    // writing disagreed with the lower-case ones here because perception read
+    // the bond orders it was handed and the lower-case writings were never
+    // re-derived. Localizing the input before perceiving removes the
+    // difference: all three writings now agree, and they agree on the reading
+    // that a triple bond in the ring is not aromatic.
     #[test]
-    #[ignore]
-    fn known_gap_aromatic_ring_with_triple_bond() {
+    fn aromatic_ring_written_with_a_triple_bond() {
         // A pyridine ring written with an explicit triple bond (`c#c`) to a
         // ring carbon: the Kekule writing disagrees with the aromatic ones.
         assert_all_equal(

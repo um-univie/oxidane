@@ -279,9 +279,21 @@ mod aromatization_tests {
         let smiles =
             "COCCOC(=O)C1=C(C)N=C2SC(=CC3=CC=C(C4=CC(Cl)=CC=C4)O3)C(=O)N2C1C1=CC=C(C(C)C)C=C1";
         let molecule = diff_smiles(smiles);
+        // The thiazolone is not aromatic, and used to be perceived as such. The
+        // ring carries five π electrons, not six: the imine carbon and the
+        // carbonyl carbon give nothing, the sulfur and the amide nitrogen give
+        // two each, and the arylidene carbon gives one.
+        //
+        // The imine is what changed. Its `C=N` leaves the five-ring but also
+        // lies on the fused six-ring, and the exocyclic test used to accept any
+        // cycle at all, so the carbon was counted as if the bond stayed in --
+        // six electrons, and an aromatic ring. That six-ring runs through a
+        // saturated carbon and carries no π system for the bond to belong to;
+        // see `molecule::pi_system`. RDKit calls this ring aromatic, by the
+        // same route, and is wrong.
         assert_eq!(
             molecule,
-            "COCCOC(=O)C1=C(C)N=c2sc(=Cc3ccc(-c4cc(Cl)ccc4)o3)c(=O)n2C1c5ccc(C(C)C)cc5"
+            "COCCOC(=O)C1=C(C)N=C2SC(=Cc3ccc(-c4cc(Cl)ccc4)o3)C(=O)N2C1c5ccc(C(C)C)cc5"
         );
 
         let smiles = "[B-]1(=CC=CC=C1)C";
@@ -468,70 +480,7 @@ mod aromatization_tests {
 
 #[cfg(test)]
 mod graph_comparison_tests {
-    use crate::molecule::graph::AtomLabel;
     use crate::prelude::*;
-    use petgraph::algo::isomorphism::subgraph_isomorphisms_iter;
-    use petgraph::graph::UnGraph;
-    use petgraph::graph::{EdgeReference, NodeIndex};
-    use petgraph::prelude::*;
-
-    #[derive(Debug)]
-    pub struct GraphDifferences {
-        unmatched_in_first: Vec<usize>,
-        unmatched_in_second: Vec<usize>,
-        mapping: Option<Vec<usize>>,
-    }
-
-    /// Finds the maximum common subgraph between two molecules and returns the differences
-    fn compare_molecular_graphs(mol1: &MolecularGraph, mol2: &MolecularGraph) -> GraphDifferences {
-        let graph1 = mol1.to_ungraph_with_edge_nodes();
-        let graph2 = mol2.to_ungraph_with_edge_nodes();
-        let g_ref = &graph1;
-        let h_ref = &graph2;
-
-        let mut node_match = |node1: &AtomLabel, node2: &AtomLabel| node1 == node2;
-        let mut edge_match = |edge1: &(), edge2: &()| edge1 == edge2;
-
-        // Find all possible isomorphisms between the graphs
-        let Some(iso) =
-            subgraph_isomorphisms_iter(&h_ref, &g_ref, &mut node_match, &mut edge_match)
-        else {
-            return GraphDifferences {
-                unmatched_in_first: graph1.node_indices().map(|n| n.index()).collect(),
-                unmatched_in_second: graph2.node_indices().map(|n| n.index()).collect(),
-                mapping: None,
-            };
-        };
-
-        // Get the largest matching subgraph
-        let best_mapping = iso.max_by_key(|mapping| mapping.len());
-
-        // Identify unmatched nodes in both graphs
-        if let Some(mapping) = best_mapping {
-            let unmatched_g1: Vec<_> = graph1
-                .node_indices()
-                .filter(|&n| !mapping.contains(&n.index()))
-                .map(|n| n.index())
-                .collect();
-            let unmatched_g2: Vec<_> = graph2
-                .node_indices()
-                .filter(|&n| !mapping.contains(&n.index()))
-                .map(|n| n.index())
-                .collect();
-
-            GraphDifferences {
-                unmatched_in_first: unmatched_g1,
-                unmatched_in_second: unmatched_g2,
-                mapping: Some(mapping),
-            }
-        } else {
-            GraphDifferences {
-                unmatched_in_first: graph1.node_indices().map(|n| n.index()).collect(),
-                unmatched_in_second: graph2.node_indices().map(|n| n.index()).collect(),
-                mapping: None,
-            }
-        }
-    }
 
     #[test]
     fn enumerate_possible_cycles() {
@@ -546,7 +495,7 @@ mod graph_comparison_tests {
 #[cfg(test)]
 mod new_aromatization {
     use super::*;
-    use crate::prelude::*;
+    
 
     #[test]
     fn test_furan_aromatization() {
@@ -635,7 +584,7 @@ mod new_aromatization {
         let mut molecule =
             MolecularGraph::from_smiles_single("C1=CC=CC=CC=CC=CC=CC=CC=CC=CC=CC=C1").unwrap();
         molecule.aromatize_opensmiles();
-        let mut number_of_aromatic_atoms = 0;
+        let _number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
@@ -646,7 +595,7 @@ mod new_aromatization {
         let mut molecule = MolecularGraph::from_smiles_single("C1=CC2=CC3=CC4=C5C6=C3C7=C2C(=C1)C8=C9C7=C1C6=C2C3=C6C1=C1C9=C(C=CC1=CC6=CC1=C3C3=C6C(=C1)C=C1C=CC=C7C1=C6C1=C6C3=C2C5=C2C6=C3C(=CC2=C4)C=CC2=C3C1=C7C=C2)C=C8").unwrap();
         molecule.aromatize_opensmiles();
         println!("{}", molecule.to_smiles());
-        let mut number_of_aromatic_atoms = 0;
+        let _number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
@@ -675,8 +624,8 @@ mod new_aromatization {
 mod chirality_tests {
     use super::*;
     use crate::graph_algorithms::mol_canonization::{self, reorder_molecule};
-    use crate::molecule::Molecule;
-    use crate::molecule::chirality::{ChiralClass, update_chirality_after_relabeling_in_place};
+    
+    use crate::molecule::chirality::ChiralClass;
     use crate::molecule::molecular_graph::MolecularGraph;
 
     #[test]
@@ -693,7 +642,7 @@ mod chirality_tests {
         molecule.aromatize_opensmiles();
         assert_eq!(molecule.to_smiles(), "N1[C@H](Cl)[C@@H](Cl)C(Cl)CC1");
 
-        let mut molecule = MolecularGraph::from_smiles_single("C/C=C/C").unwrap();
+        let molecule = MolecularGraph::from_smiles_single("C/C=C/C").unwrap();
         // let canonized = mol_canonization(&molecule);
         assert_eq!(molecule.to_smiles(), "C/C=C/C");
         // assert_eq!(canonized.to_smiles(), "C[C@@H]=[C@H]C");
@@ -728,20 +677,19 @@ mod chirality_tests {
         println!("Atomic numbers: {:?}", mol.atomic_numbers());
         println!("Chiral classes: {:?}", mol.chiral_classes());
         // Test permutation that should invert chirality
-        let mut labeling = vec![1, 0, 2, 3, 4];
+        let labeling = vec![1, 0, 2, 3, 4];
         reorder_molecule(&mut mol, &labeling);
         let chiral_classes = mol.chiral_classes().unwrap().to_vec();
         assert_eq!(chiral_classes[1].clockness(), ChiralClass::Clockwise); // Should invert from 1 to 2
 
         // Test permutation that should preserve chirality, this is due to the fact that the smiles
         // path does not change
-        let mut labeling = vec![0, 2, 1, 3, 4];
+        let labeling = vec![0, 2, 1, 3, 4];
         reorder_molecule(&mut mol, &labeling);
         let chiral_classes = mol.chiral_classes().unwrap().to_vec();
         assert_eq!(chiral_classes[2].clockness(), ChiralClass::Clockwise); // Should not invert
     }
 
-    #[test]
     /// Swapping the indices of two of an allene's carriers has to flip its
     /// tag, since the tag is read against those carriers sorted by index and
     /// the molecule itself has not changed.
@@ -767,7 +715,7 @@ mod chirality_tests {
     fn cis_trans_chirality_update() {
         // Test molecule: cis/trans alkene (e.g., CHF=CHF)
         let mut mol = MolecularGraph::from_smiles_single("F/C=C/F").unwrap();
-        let mut chiral_classes = mol.chiral_classes().unwrap().to_vec();
+        let chiral_classes = mol.chiral_classes().unwrap().to_vec();
         println!("Chiral classes: {:?}", chiral_classes);
         println!("Molecule: {:?}", mol.to_smiles());
 
@@ -779,15 +727,15 @@ mod chirality_tests {
         assert_eq!(mol.to_smiles(), "C(/F)=C\\F");
 
         let mut mol = MolecularGraph::from_smiles_single("F/C(C)=C(C)/F").unwrap();
-        let mut chiral_classes = mol.chiral_classes().unwrap().to_vec();
+        let chiral_classes = mol.chiral_classes().unwrap().to_vec();
         println!("Chiral classes: {:?}", chiral_classes);
         println!("Molecule: {:?}", mol.to_smiles());
 
-        let mut labeling = vec![1, 0, 3, 2];
+        let labeling = vec![1, 0, 3, 2];
         reorder_molecule(&mut mol, &labeling);
         println!("Molecule: {:?}", mol.to_smiles());
 
-        let mut mol = MolecularGraph::from_smiles_single("F/C(C)=C(C)/F").unwrap();
+        let mol = MolecularGraph::from_smiles_single("F/C(C)=C(C)/F").unwrap();
         println!("Molecule: {:?}", mol.to_smiles());
         println!("Starting canonization");
         // let mol = mol_canonization(&mol);
@@ -795,19 +743,19 @@ mod chirality_tests {
         println!("Chiral classes: {:?}", mol.chiral_classes());
         println!("Molecule: {:?}", mol.to_smiles());
 
-        let mut mol = MolecularGraph::from_smiles_single("F[C@@H]=[C@H]F").unwrap();
+        let mol = MolecularGraph::from_smiles_single("F[C@@H]=[C@H]F").unwrap();
         // let mol = mol_canonization(&mol);
         println!("Molecule: {:?}", mol.to_smiles());
 
-        let mut mol = MolecularGraph::from_smiles_single("F[C@H]=[C@@H]F").unwrap();
+        let mol = MolecularGraph::from_smiles_single("F[C@H]=[C@@H]F").unwrap();
         // let mol = mol_canonization(&mol);
         println!("Molecule: {:?}", mol.to_smiles());
 
-        let mut mol = MolecularGraph::from_smiles_single("C1(=NC)SC(=C)C(=O)N1(C)").unwrap();
+        let mol = MolecularGraph::from_smiles_single("C1(=NC)SC(=C)C(=O)N1(C)").unwrap();
 
         println!("Molecule: {:?}", mol.to_smiles());
 
-        let mut mol = MolecularGraph::from_smiles_single("C1(=NC4)SC(=C)C(=O)N1(C4)").unwrap();
+        let mol = MolecularGraph::from_smiles_single("C1(=NC4)SC(=C)C(=O)N1(C4)").unwrap();
         // let mol = mol_canonization(&mol);
         println!("Molecule: {:?}", mol.to_smiles());
 

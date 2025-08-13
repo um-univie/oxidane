@@ -6,6 +6,12 @@ use crate::{
 use chemistry_consts::ElementProperties;
 use tinyvec::ArrayVec;
 
+/// How many bonds an atom's inline bond list holds before it overflows.
+///
+/// Past every coordination number this crate models, so exceeding it means the
+/// input is malformed rather than exotic.
+pub const BOND_CAPACITY: usize = 10;
+
 /// Atomic number standing for the SMILES wildcard atom `*` — an atom whose
 /// element is deliberately left unspecified, as used for attachment points,
 /// polymer end caps and Markush-style fragments.
@@ -31,7 +37,7 @@ pub struct Atom {
     pub atom_class: Option<usize>,
     pub position_vector: Option<Vector3D>,
     pub partial_charge: Option<f64>,
-    pub bonds: ArrayVec<[BondTarget; 10]>,
+    pub bonds: ArrayVec<[BondTarget; BOND_CAPACITY]>,
     pub is_complex: bool,
 }
 

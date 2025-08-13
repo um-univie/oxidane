@@ -1657,3 +1657,15 @@ pub(crate) fn effective_valency(atomic_number: u8, charge: i8) -> Option<i8> {
 pub fn cycles_to_bitsets(cycles: &[Vec<usize>]) -> Vec<BitSet> {
     cycles.iter().map(|cycle| cycle_to_bitset(cycle)).collect()
 }
+
+/// elements with no valence entry at all.
+pub(crate) fn saturating_valency(atomic_number: u8, charge: i8, bonded: i8) -> Option<i8> {
+    use chemistry_consts::ElementProperties;
+    let shift = charge_valency_shift(atomic_number, charge);
+    atomic_number
+        .valencies()?
+        // A negative entry is an ionic charge rather than a covalent valence.
+        .filter(|valency| *valency > 0)
+        .map(|valency| valency + shift)
+        .find(|valency| *valency >= bonded)
+}

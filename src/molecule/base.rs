@@ -1404,6 +1404,20 @@ pub trait MoleculeCore {
         (cyclic_atoms, cyclic_bonds)
     }
 
+    /// Which atoms lie on a cycle, without working out which bonds do.
+    ///
+    /// The bond set costs a hash insert per ring bond and a caller that only
+    /// wants to know whether an atom is in a ring -- the atom invariant of a
+    /// circular fingerprint, for one -- pays it for nothing.
+    fn cyclic_atoms(&self) -> BitSet {
+        let mut cyclic_atoms = BitSet::with_capacity(self.len());
+        self.walk_cyclic_bonds(|first, second| {
+            cyclic_atoms.insert(first);
+            cyclic_atoms.insert(second);
+        });
+        cyclic_atoms
+    }
+
     /// [`MoleculeCore::find_cyclic_bonds_and_atoms`] writing into buffers the
     /// caller owns, so a caller that does this for molecule after molecule can
     /// keep the allocations instead of making a fresh pair each time.
@@ -1414,6 +1428,21 @@ pub trait MoleculeCore {
     ) {
         cyclic_atoms.clear();
         cyclic_bonds.clear();
+        self.walk_cyclic_bonds(|first, second| {
+            cyclic_bonds.insert(order_tuple(first, second));
+            cyclic_atoms.insert(first);
+            cyclic_atoms.insert(second);
+        });
+    }
+
+    /// Calls `visit` once for every bond that lies on a cycle.
+    ///
+    /// Everything asked about rings comes from here, and what each caller wants
+    /// out of it differs: perception needs the bonds in a set it can look up,
+    /// a fingerprint's atom invariant needs only whether an atom was named at
+    /// all. Handing the bonds over one at a time lets each build what it needs
+    /// and nothing else.
+    fn walk_cyclic_bonds<F: FnMut(usize, usize)>(&self, mut visit: F) {
         let atom_count = self.len();
         if atom_count == 0 {
             return;
@@ -1455,9 +1484,13 @@ pub trait MoleculeCore {
             }
         }
 
-        // Each bond once, with an identity, plus adjacency that names it.
+        // Each bond once, with an identity, plus adjacency that names it. Held
+        // as one array with an index of where each atom's neighbours start,
+        // rather than as a vector per atom: after peeling, every atom still
+        // standing has neighbours, so a vector per atom is a heap allocation
+        // per ring atom and this is called once for every molecule parsed.
         let mut edges: Vec<(usize, usize)> = Vec::new();
-        let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); atom_count];
+        let mut neighbour_start = vec![0u32; atom_count + 1];
         for atom in 0..atom_count {
             if degree[atom] == 0 {
                 continue;
@@ -1468,12 +1501,25 @@ pub trait MoleculeCore {
             for bond in bonds {
                 let target = bond.target();
                 if atom < target && target < atom_count && degree[target] > 0 {
-                    let edge_id = edges.len();
                     edges.push((atom, target));
-                    adjacency[atom].push((target, edge_id));
-                    adjacency[target].push((atom, edge_id));
+                    neighbour_start[atom] += 1;
+                    neighbour_start[target] += 1;
                 }
             }
+        }
+        let mut running = 0u32;
+        for start in neighbour_start.iter_mut() {
+            let count = *start;
+            *start = running;
+            running += count;
+        }
+        let mut cursor = neighbour_start.clone();
+        let mut adjacency: Vec<(usize, usize)> = vec![(0, 0); running as usize];
+        for (edge_id, &(first, second)) in edges.iter().enumerate() {
+            adjacency[cursor[first] as usize] = (second, edge_id);
+            cursor[first] += 1;
+            adjacency[cursor[second] as usize] = (first, edge_id);
+            cursor[second] += 1;
         }
 
         let mut discovery = vec![usize::MAX; atom_count];
@@ -1493,11 +1539,13 @@ pub trait MoleculeCore {
             stack.push((start, usize::MAX, 0));
 
             while let Some(&(atom, entered_by, cursor)) = stack.last() {
-                if cursor < adjacency[atom].len() {
+                let neighbours =
+                    &adjacency[neighbour_start[atom] as usize..neighbour_start[atom + 1] as usize];
+                if cursor < neighbours.len() {
                     if let Some(top) = stack.last_mut() {
                         top.2 += 1;
                     }
-                    let (neighbour, edge_id) = adjacency[atom][cursor];
+                    let (neighbour, edge_id) = neighbours[cursor];
                     // Step over the edge we arrived on, but only that one: a
                     // second, parallel bond back to the same atom is a ring.
                     if edge_id == entered_by {
@@ -1527,9 +1575,7 @@ pub trait MoleculeCore {
 
         for (edge_id, &(first, second)) in edges.iter().enumerate() {
             if !is_bridge[edge_id] {
-                cyclic_bonds.insert(order_tuple(first, second));
-                cyclic_atoms.insert(first);
-                cyclic_atoms.insert(second);
+                visit(first, second);
             }
         }
     }
@@ -1647,17 +1693,19 @@ pub(crate) fn charge_valency_shift(atomic_number: u8, charge: i8) -> i8 {
     }
 }
 
-/// The number of bonds an atom of this element and charge is expected to form.
-#[inline]
-pub(crate) fn effective_valency(atomic_number: u8, charge: i8) -> Option<i8> {
-    use chemistry_consts::ElementProperties;
-    Some(atomic_number.valencies()?.next()? + charge_valency_shift(atomic_number, charge))
-}
-
-pub fn cycles_to_bitsets(cycles: &[Vec<usize>]) -> Vec<BitSet> {
-    cycles.iter().map(|cycle| cycle_to_bitset(cycle)).collect()
-}
-
+/// The valence a bare atom settles on once it already carries `bonded` bonds'
+/// worth of them: the smallest of the element's normal valences that is at
+/// least `bonded`.
+///
+/// This is the rule every other toolkit fills a bare atom's hydrogens by, and
+/// it differs from [`effective_valency`] exactly where an element has more than
+/// one normal valence and the bonds have already passed the first: a sulfur
+/// with three bonds is read as taking one hydrogen, not none, because sulfur's
+/// valences are 2, 4 and 6 and three bonds have outgrown the first. Writing
+/// such an atom bare therefore hands back a different molecule, whatever this
+/// crate's own reader would have made of it.
+///
+/// `None` when the bonds exceed every valence the element has, and for the
 /// elements with no valence entry at all.
 pub(crate) fn saturating_valency(atomic_number: u8, charge: i8, bonded: i8) -> Option<i8> {
     use chemistry_consts::ElementProperties;
@@ -1668,4 +1716,15 @@ pub(crate) fn saturating_valency(atomic_number: u8, charge: i8, bonded: i8) -> O
         .filter(|valency| *valency > 0)
         .map(|valency| valency + shift)
         .find(|valency| *valency >= bonded)
+}
+
+/// The number of bonds an atom of this element and charge is expected to form.
+#[inline]
+pub(crate) fn effective_valency(atomic_number: u8, charge: i8) -> Option<i8> {
+    use chemistry_consts::ElementProperties;
+    Some(atomic_number.valencies()?.next()? + charge_valency_shift(atomic_number, charge))
+}
+
+pub fn cycles_to_bitsets(cycles: &[Vec<usize>]) -> Vec<BitSet> {
+    cycles.iter().map(|cycle| cycle_to_bitset(cycle)).collect()
 }

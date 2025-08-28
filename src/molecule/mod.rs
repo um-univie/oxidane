@@ -11,6 +11,7 @@ pub mod graph;
 pub mod matching;
 pub mod molecular_graph;
 pub mod pi_system;
+pub mod topology;
 pub mod molecular_system;
 pub mod reaction;
 pub mod molecule3d;

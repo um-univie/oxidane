@@ -1,0 +1,292 @@
+//! Fingerprints, and the property that matters most about them: two writings
+//! of one molecule must fingerprint identically, or every similarity built on
+//! them is a similarity between SMILES strings rather than between compounds.
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use crate::molecule::fingerprint::{
+        BitFingerprint, Fingerprint, circular_fingerprint, circular_fingerprint_with_invariants,
+        feature_invariants,
+    };
+    use crate::molecule::topology::{DistanceMatrix, topological_distances};
+    use crate::prelude::*;
+
+    fn parse(smiles: &str) -> MolecularGraph {
+        MolecularGraph::from_smiles_single(smiles).expect("should parse")
+    }
+
+    #[test]
+    fn identifiers_are_counted_and_kept_in_order() {
+        let fingerprint = Fingerprint::from_ids([7u32, 3, 7, 9, 7]);
+        assert_eq!(fingerprint.entries(), &[(3, 1), (7, 3), (9, 1)]);
+        assert_eq!(fingerprint.count(7), 3);
+        assert_eq!(fingerprint.count(4), 0);
+        assert_eq!(fingerprint.len(), 3);
+        assert_eq!(fingerprint.total_count(), 5);
+    }
+
+    #[test]
+    fn similarity_of_known_sets() {
+        let left = Fingerprint::from_ids([1u32, 2, 3, 4]);
+        let right = Fingerprint::from_ids([3u32, 4, 5]);
+        // Two shared out of five between them.
+        assert!((left.tanimoto(&right) - 2.0 / 5.0).abs() < 1e-12);
+        assert!((left.dice(&right) - 4.0 / 7.0).abs() < 1e-12);
+        assert!((left.cosine(&right) - 2.0 / (4.0f64 * 3.0).sqrt()).abs() < 1e-12);
+        assert!((left.tversky(&right, 1.0, 1.0) - left.tanimoto(&right)).abs() < 1e-12);
+        assert!((left.tversky(&right, 0.5, 0.5) - left.dice(&right)).abs() < 1e-12);
+        assert_eq!(left.tanimoto(&left), 1.0);
+        assert_eq!(
+            left.tanimoto(&Fingerprint::from_ids([100u32, 200])),
+            0.0
+        );
+        // Nothing said either way is agreement, not disagreement.
+        assert_eq!(Fingerprint::new().tanimoto(&Fingerprint::new()), 1.0);
+    }
+
+    #[test]
+    fn counts_separate_what_presence_cannot() {
+        let one_ring = Fingerprint::from_ids([1u32]);
+        let four_rings = Fingerprint::from_ids([1u32, 1, 1, 1]);
+        assert_eq!(one_ring.tanimoto(&four_rings), 1.0);
+        assert!((one_ring.count_tanimoto(&four_rings) - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn folding_keeps_what_it_can() {
+        let fingerprint = Fingerprint::from_ids([1u32, 65, 129]);
+        let folded = fingerprint.fold(64);
+        assert_eq!(folded.len(), 64);
+        // All three identifiers are congruent to 1 modulo 64, so a 64-bit
+        // vector cannot tell them apart -- which is the cost of folding.
+        assert_eq!(folded.count_ones(), 1);
+        assert!(folded.get(1));
+
+        let wider = fingerprint.fold(1024);
+        assert_eq!(wider.count_ones(), 3);
+        assert_eq!(wider.set_bits().collect::<Vec<_>>(), vec![1, 65, 129]);
+    }
+
+    #[test]
+    fn bit_vectors_compare_the_same_way() {
+        let mut left = BitFingerprint::new(128);
+        let mut right = BitFingerprint::new(128);
+        for bit in [1, 2, 3, 100] {
+            left.set(bit);
+        }
+        for bit in [3, 100, 127] {
+            right.set(bit);
+        }
+        assert_eq!(left.intersection_with(&right), 2);
+        assert_eq!(left.union_with(&right), 5);
+        assert!((left.tanimoto(&right) - 0.4).abs() < 1e-12);
+        assert_eq!(left.tanimoto(&left), 1.0);
+        assert_eq!(
+            BitFingerprint::new(64).tanimoto(&BitFingerprint::new(64)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn distances_along_a_chain_and_around_a_ring() {
+        let hexane = parse("CCCCCC");
+        let distances = topological_distances(&hexane);
+        // The chain is written in order, so the carbons are atoms 0 to 5.
+        assert_eq!(distances.get(0, 0), 0);
+        assert_eq!(distances.get(0, 5), 5);
+        assert_eq!(distances.get(2, 4), 2);
+
+        let benzene = parse("c1ccccc1");
+        let distances = topological_distances(&benzene);
+        // Opposite corners of a six-ring are three bonds apart whichever way
+        // round you go, and no pair is further.
+        assert_eq!(distances.get(0, 3), 3);
+        for first in 0..6 {
+            for second in 0..6 {
+                assert!(distances.get(first, second) <= 3);
+            }
+        }
+
+        // A hydrogen is a leaf, so it never shortens a path between carbons.
+        let ethane = parse("CC");
+        let distances = topological_distances(&ethane);
+        assert_eq!(distances.get(0, 1), 1);
+
+    }
+
+    #[test]
+    fn the_wiener_index_of_hexane() {
+        let hexane = parse("CCCCCC");
+        let distances = topological_distances(&hexane);
+        let heavy: Vec<bool> = (0..hexane.len())
+            .map(|atom| hexane.get_atomic_number(atom) != 1)
+            .collect();
+        // The unbranched six-carbon chain is the textbook value.
+        assert_eq!(distances.distance_sum(&heavy), 35);
+    }
+
+    #[test]
+    fn a_fingerprint_does_not_depend_on_how_the_molecule_was_written() {
+        for writings in [
+            ["CCO", "OCC", "C(O)C"].as_slice(),
+            ["c1ccccc1", "C1=CC=CC=C1", "c1cc(cc(c1))"].as_slice(),
+            [
+                "CC(=O)Oc1ccccc1C(=O)O",
+                "OC(=O)C1=CC=CC=C1OC(C)=O",
+                "O=C(O)c1ccccc1OC(C)=O",
+            ]
+            .as_slice(),
+            [
+                "O=c1cc[nH]c(=O)[nH]1",
+                "O=C1NC(=O)NC=C1",
+                "C1=CNC(=O)NC1=O",
+            ]
+            .as_slice(),
+            // Two atoms can grow environments covering the same atoms and be
+            // given different identifiers, and only one may be kept. Choosing
+            // by atom index made these fingerprint several different ways,
+            // because the indices are an accident of the writing.
+            [
+                "CN(C(C[NH2+]CC(c1ccccc1)O)c1occc1)C",
+                "C(C[NH2+]CC(c1ccccc1)O)(N(C)C)c1ccco1",
+                "c1cccc(C(C[NH2+]CC(N(C)C)c2ccco2)O)c1",
+                "c1cccc(c1)C(C[NH2+]CC(N(C)C)c1ccco1)O",
+            ]
+            .as_slice(),
+            [
+                "C(NC(=O)Cc1csc(NC(=O)Cc2cccs2)n1)(CC)c1c(OCC(=O)NC)cccc1",
+                "C(C(NC(CC)c1c(OCC(NC)=O)cccc1)=O)c1csc(NC(Cc2sccc2)=O)n1",
+                "c1ccc(CC(=O)Nc2nc(cs2)CC(=O)NC(CC)c2ccccc2OCC(=O)NC)s1",
+            ]
+            .as_slice(),
+        ] {
+            let reference = circular_fingerprint(&parse(writings[0]), 2).fingerprint;
+            for &writing in &writings[1..] {
+                assert_eq!(
+                    circular_fingerprint(&parse(writing), 2).fingerprint,
+                    reference,
+                    "{writing} fingerprinted differently from {}",
+                    writings[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn benzene_says_one_thing_six_times() {
+        let benzene = parse("c1ccccc1");
+        let result = circular_fingerprint(&benzene, 1);
+        // Every carbon is the same carbon, so radius zero and radius one each
+        // give one identifier, six times over.
+        assert_eq!(result.fingerprint.len(), 2);
+        assert_eq!(result.fingerprint.total_count(), 12);
+        for &(_, count) in result.fingerprint.entries() {
+            assert_eq!(count, 6);
+        }
+    }
+
+    #[test]
+    fn an_environment_that_has_already_been_named_is_not_named_again() {
+        let benzene = parse("c1ccccc1");
+        // By radius three every atom's environment is the whole ring, so five
+        // of the six are the same substructure reached from a different atom.
+        let result = circular_fingerprint(&benzene, 3);
+        let whole_ring: Vec<usize> = result
+            .environments
+            .iter()
+            .filter(|environment| environment.atoms.len() == 6)
+            .map(|environment| environment.center)
+            .collect();
+        assert_eq!(whole_ring.len(), 1);
+    }
+
+    #[test]
+    fn environments_point_back_at_their_atoms() {
+        let ethanol = parse("CCO");
+        let result = circular_fingerprint(&ethanol, 1);
+        // Three heavy atoms, so three radius-zero environments, each its own
+        // atom and no hydrogens.
+        let zero: Vec<&_> = result
+            .environments
+            .iter()
+            .filter(|environment| environment.radius == 0)
+            .collect();
+        assert_eq!(zero.len(), 3);
+        for environment in zero {
+            assert_eq!(environment.atoms, vec![environment.center]);
+            assert!(ethanol.get_atomic_number(environment.center) != 1);
+        }
+        // The carbon in the middle reaches both its neighbours at radius one.
+        let middle = result
+            .environments
+            .iter()
+            .find(|environment| environment.radius == 1 && environment.center == 1)
+            .expect("the middle atom has an environment");
+        assert_eq!(middle.atoms, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn radius_zero_is_the_atom_alone() {
+        let result = circular_fingerprint(&parse("CCO"), 0);
+        // Before any neighbour is taken into account the three heavy atoms are
+        // still distinct: the oxygen by element, and the two carbons by how
+        // many heavy neighbours and hydrogens each has.
+        assert_eq!(result.fingerprint.len(), 3);
+        assert_eq!(result.fingerprint.total_count(), 3);
+    }
+
+    #[test]
+    fn different_molecules_are_not_the_same_fingerprint() {
+        let ethanol = circular_fingerprint(&parse("CCO"), 2).fingerprint;
+        let propanol = circular_fingerprint(&parse("CCCO"), 2).fingerprint;
+        let benzene = circular_fingerprint(&parse("c1ccccc1"), 2).fingerprint;
+        assert_ne!(ethanol, propanol);
+        assert!(ethanol.tanimoto(&propanol) > 0.0);
+        assert!(ethanol.tanimoto(&propanol) < 1.0);
+        // Nothing in common at all.
+        assert_eq!(ethanol.tanimoto(&benzene), 0.0);
+    }
+
+    #[test]
+    fn features_generalise_where_elements_do_not() {
+        let chloro = parse("Clc1ccccc1");
+        let bromo = parse("Brc1ccccc1");
+        // The two halogens are different elements and the same feature.
+        assert_ne!(
+            circular_fingerprint(&chloro, 2).fingerprint,
+            circular_fingerprint(&bromo, 2).fingerprint
+        );
+        let by_feature = |molecule: &MolecularGraph| {
+            let invariants = feature_invariants(molecule);
+            circular_fingerprint_with_invariants(molecule, 2, &invariants).fingerprint
+        };
+        assert_eq!(by_feature(&chloro), by_feature(&bromo));
+    }
+
+    #[test]
+    fn a_fragment_is_contained_in_what_contains_it() {
+        let phenol = circular_fingerprint(&parse("Oc1ccccc1"), 2).fingerprint;
+        let paracetamol = circular_fingerprint(&parse("CC(=O)Nc1ccc(O)cc1"), 2).fingerprint;
+        // Asymmetric Tversky asks how much of the first the second holds, and
+        // a phenol ring is most of what phenol has to say.
+        let contained = phenol.tversky(&paracetamol, 1.0, 0.0);
+        assert!(
+            contained > 0.5,
+            "phenol should be largely contained in paracetamol, got {contained}"
+        );
+        assert!(contained > phenol.tanimoto(&paracetamol));
+    }
+
+    #[test]
+    fn atoms_in_different_fragments_never_reach_each_other() {
+        // `from_smiles` splits on the `.`, so a molecule holding two fragments
+        // has to be built rather than parsed.
+        let ethanol = parse("CCO");
+        let chloride = parse("[Cl-]");
+        let salt = MolecularGraph::combine(&[&ethanol, &chloride]);
+        let distances = topological_distances(&salt);
+        let far = salt.len() - 1;
+        assert_eq!(distances.get(0, far), DistanceMatrix::UNREACHABLE);
+        assert_eq!(distances.get(far, far), 0);
+    }
+}

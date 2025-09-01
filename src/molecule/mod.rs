@@ -6,6 +6,7 @@ pub mod descriptors;
 pub mod draw;
 pub mod cip;
 pub mod embed;
+pub mod fingerprint;
 pub mod experimental;
 pub mod graph;
 pub mod matching;

@@ -3,6 +3,7 @@ mod chiral_canonization_tests;
 mod chirality_tests;
 mod cip_tests;
 mod embed_tests;
+mod fingerprint_tests;
 mod matching_tests;
 mod mces_tests;
 mod mcsplit_tests;

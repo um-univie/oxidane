@@ -8,6 +8,7 @@ pub mod cip;
 pub mod embed;
 pub mod fingerprint;
 pub mod experimental;
+pub mod featurize;
 pub mod graph;
 pub mod matching;
 pub mod molecular_graph;

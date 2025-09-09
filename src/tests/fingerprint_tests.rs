@@ -290,3 +290,169 @@ mod fingerprint_tests {
         assert_eq!(distances.get(far, far), 0);
     }
 }
+
+mod featurize_tests {
+    use crate::molecule::featurize::{
+        ATOM_FEATURE_WIDTH, BOND_FEATURE_WIDTH, Hybridization, graph_features, hybridization,
+    };
+    use crate::prelude::*;
+
+    fn parse(smiles: &str) -> MolecularGraph {
+        MolecularGraph::from_smiles_single(smiles).expect("should parse")
+    }
+
+    #[test]
+    fn hydrogens_are_counted_rather_than_given_rows() {
+        let ethanol = parse("CCO");
+        let features = graph_features(&ethanol);
+        assert_eq!(features.atom_count, 3);
+        assert_eq!(features.atoms, vec![0, 1, 2]);
+        assert_eq!(features.atom_features.len(), 3 * ATOM_FEATURE_WIDTH);
+        // Two bonds, each given both ways round.
+        assert_eq!(features.edge_count, 4);
+        assert_eq!(features.bond_features.len(), 4 * BOND_FEATURE_WIDTH);
+        assert_eq!(features.edge_index.len(), 8);
+        for edge in 0..features.edge_count {
+            let (from, to) = features.edge(edge);
+            assert!(from < 3 && to < 3 && from != to);
+        }
+    }
+
+    #[test]
+    fn every_row_says_exactly_one_thing_per_field() {
+        let molecule = parse("CC(=O)Oc1ccccc1C(=O)O");
+        let features = graph_features(&molecule);
+        for row in 0..features.atom_count {
+            let values = features.atom_row(row);
+            // Thirteen element columns, six degree, six charge, five hydrogen,
+            // six hybridization, four chirality: each block has one entry set.
+            let mut cursor = 0;
+            for width in [13usize, 6, 6, 5, 6] {
+                let block = &values[cursor..cursor + width];
+                assert_eq!(
+                    block.iter().filter(|&&value| value == 1.0).count(),
+                    1,
+                    "row {row} block at {cursor}"
+                );
+                cursor += width;
+            }
+            // Aromatic and in-ring are flags.
+            assert!(values[cursor] == 0.0 || values[cursor] == 1.0);
+            assert!(values[cursor + 1] == 0.0 || values[cursor + 1] == 1.0);
+            cursor += 2;
+            assert_eq!(
+                values[cursor..cursor + 4]
+                    .iter()
+                    .filter(|&&value| value == 1.0)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    /// Hybridisation is how many orbitals the atom needs, not how many double
+    /// bonds it has. Every expectation here is RDKit's for the same atom.
+    #[test]
+    fn hybridization_counts_orbitals_and_not_double_bonds() {
+        // Four sigma bonds is four orbitals however many of them are double,
+        // which is what reading the double bonds gets wrong about every
+        // sulfone, sulfoxide and phosphate.
+        assert_eq!(hybridization(&parse("CS(=O)(=O)C"), 1), Hybridization::Sp3);
+        assert_eq!(hybridization(&parse("CP(=O)(O)O"), 1), Hybridization::Sp3);
+        // Lone pairs take corners too: water is bent, not linear.
+        assert_eq!(hybridization(&parse("O"), 0), Hybridization::Sp3);
+        assert_eq!(hybridization(&parse("CN"), 1), Hybridization::Sp3);
+        // A lone pair delocalised into a neighbouring pi system flattens the
+        // atom, which is what an amide and an aryl ether are.
+        assert_eq!(hybridization(&parse("CC(=O)NC"), 3), Hybridization::Sp2);
+        assert_eq!(hybridization(&parse("COC=C"), 1), Hybridization::Sp2);
+        assert_eq!(hybridization(&parse("CC(=O)O"), 3), Hybridization::Sp2);
+        // Below the second row it does not, unless a charge makes it reach: a
+        // thioether beside a vinyl group and a sulfonamide's nitrogen stay
+        // tetrahedral, a thiolate on a ring does not, and an aromatic sulfur is
+        // flat because its bonds are aromatic rather than single.
+        assert_eq!(hybridization(&parse("CSC=C"), 1), Hybridization::Sp3);
+        assert_eq!(hybridization(&parse("CN(C)S(C)(=O)=O"), 1), Hybridization::Sp3);
+        assert_eq!(hybridization(&parse("c1ccccc1[S-]"), 6), Hybridization::Sp2);
+        assert_eq!(hybridization(&parse("c1ccsc1"), 3), Hybridization::Sp2);
+        // A hydrogen has no shape of its own and a bare ion has nothing to
+        // hybridise.
+        assert_eq!(hybridization(&parse("CC"), 2), Hybridization::Unspecified);
+        assert_eq!(hybridization(&parse("[Na+]"), 0), Hybridization::S);
+    }
+
+    #[test]
+    fn hybridization_reads_the_bonds() {
+        assert_eq!(hybridization(&parse("CC"), 0), Hybridization::Sp3);
+        assert_eq!(hybridization(&parse("C=C"), 0), Hybridization::Sp2);
+        assert_eq!(hybridization(&parse("C#C"), 0), Hybridization::Sp);
+        assert_eq!(hybridization(&parse("C=C=C"), 1), Hybridization::Sp);
+        assert_eq!(hybridization(&parse("c1ccccc1"), 0), Hybridization::Sp2);
+        // Written in Kekulé form it is the same atom, because perception has
+        // already made the two writings agree.
+        assert_eq!(hybridization(&parse("C1=CC=CC=C1"), 0), Hybridization::Sp2);
+        // Hypervalent by neighbour count.
+        assert_eq!(
+            hybridization(&parse("FS(F)(F)(F)(F)F"), 1),
+            Hybridization::Sp3d2
+        );
+        assert_eq!(hybridization(&parse("FP(F)(F)(F)F"), 1), Hybridization::Sp3d);
+    }
+
+    #[test]
+    fn a_bond_row_records_order_conjugation_and_ring() {
+        let amide = parse("CC(=O)NC");
+        let features = graph_features(&amide);
+        // The C-N of an amide is single, conjugated, and not in a ring.
+        let (carbon, nitrogen) = (1usize, 3usize);
+        let edge = (0..features.edge_count)
+            .find(|&edge| {
+                let (from, to) = features.edge(edge);
+                features.atoms[from] == carbon && features.atoms[to] == nitrogen
+            })
+            .expect("the amide bond has an edge");
+        let row = features.bond_row(edge);
+        assert_eq!(row[0], 1.0, "single");
+        assert_eq!(row[4], 1.0, "conjugated");
+        assert_eq!(row[5], 0.0, "not in a ring");
+
+        // An ethane C-C is single and conjugated with nothing.
+        let ethane = graph_features(&parse("CC"));
+        assert_eq!(ethane.bond_row(0)[4], 0.0);
+
+        // A benzene bond is aromatic, conjugated and in a ring.
+        let benzene = graph_features(&parse("c1ccccc1"));
+        let row = benzene.bond_row(0);
+        assert_eq!(row[3], 1.0, "aromatic");
+        assert_eq!(row[4], 1.0, "conjugated");
+        assert_eq!(row[5], 1.0, "in a ring");
+    }
+
+    #[test]
+    fn the_matrix_does_not_depend_on_how_the_molecule_was_written() {
+        // Rows are in the molecule's atom order, which differs between
+        // writings, so what has to match is the multiset of rows.
+        let sorted_rows = |smiles: &str| {
+            let molecule = parse(smiles);
+            let features = graph_features(&molecule);
+            let mut rows: Vec<Vec<u32>> = (0..features.atom_count)
+                .map(|row| {
+                    features
+                        .atom_row(row)
+                        .iter()
+                        .map(|value| value.to_bits())
+                        .collect()
+                })
+                .collect();
+            rows.sort_unstable();
+            rows
+        };
+        for writings in [
+            ["CC(=O)Oc1ccccc1C(=O)O", "OC(=O)C1=CC=CC=C1OC(C)=O"],
+            ["O=c1cc[nH]c(=O)[nH]1", "C1=CNC(=O)NC1=O"],
+            ["CN1C=NC2=C1C(=O)N(C)C(=O)N2C", "Cn1cnc2c1c(=O)n(C)c(=O)n2C"],
+        ] {
+            assert_eq!(sorted_rows(writings[0]), sorted_rows(writings[1]), "{}", writings[1]);
+        }
+    }
+}

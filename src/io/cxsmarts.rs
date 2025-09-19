@@ -118,14 +118,8 @@ This implementation provides:
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::atom::Atom;
-use crate::molecule::Molecule;
-use crate::molecule::bond::{BondOrder, BondTarget};
 use crate::molecule::chirality::ChiralClass;
 use crate::molecule::molecular_graph::MolecularGraph;
-use crate::molecule::traits::*;
-use chemistry_consts::ElementProperties;
-use nohash_hasher::IntMap;
 
 /// Errors that can occur during CxSMARTS parsing
 #[derive(Debug, Clone, PartialEq)]
@@ -229,6 +223,11 @@ pub enum AtomExpression {
     Valence(u8),
     /// Connectivity (total connections)
     Connectivity(u8),
+    /// SMARTS `^<n>`: the atom's hybridisation, numbered as RDKit numbers it --
+    /// 1 for sp, 2 for sp2, 3 for sp3, 4 for sp3d, 5 for sp3d2. `^0`, an
+    /// unhybridised atom, is a state this crate does not model and matches
+    /// nothing.
+    Hybridization(u8),
     /// Formal charge
     Charge(i8),
     /// Chirality
@@ -600,31 +599,44 @@ impl CxSMARTSParser {
 
     /// Parse NOT expressions (!)
     fn parse_not_expression(&mut self) -> Result<AtomExpression, CxSMARTSError> {
+        self.parse_primary_atom_expression()
+    }
+
+    /// One primitive, negated as many times as it is written to be.
+    ///
+    /// `!` binds to the primitive that follows it and to nothing else:
+    /// `[#6+0!$(...)]` is a neutral carbon that is also not the recursive
+    /// pattern, three primitives anded together, and negating the whole chain
+    /// would say something quite different.
+    fn parse_negated_primitive(&mut self) -> Result<AtomExpression, CxSMARTSError> {
         if self.position < self.input.len() && self.current_char()? == '!' {
-            self.advance_position(); // Skip '!'
-            let expression = self.parse_not_expression()?; // Allow nested NOTs
-            Ok(AtomExpression::Logical {
+            self.advance_position();
+            let expression = self.parse_negated_primitive()?;
+            return Ok(AtomExpression::Logical {
                 operator: LogicalOperator::Not,
                 operands: vec![expression],
-            })
-        } else {
-            self.parse_primary_atom_expression()
+            });
         }
+        self.parse_atom_expression()
     }
 
     /// Parse primary atom expressions (atoms, properties, recursive patterns)
     fn parse_primary_atom_expression(&mut self) -> Result<AtomExpression, CxSMARTSError> {
         // Handle implicit AND (no operator between properties)
         let mut expressions = Vec::new();
-        expressions.push(self.parse_atom_expression()?);
+        expressions.push(self.parse_negated_primitive()?);
 
         // Look for additional properties that should be ANDed together
         while self.position < self.input.len() {
             let current_character = self.current_char()?;
 
-            // Stop at logical operators or closing bracket or atom class
+            // Stop at logical operators or closing bracket or atom class. A
+            // `!` is not one of those: it begins another primitive, anded on
+            // like any other, which is how `[N!H0v3]` and `[#6+0!$(...)]` are
+            // written.
             match current_character {
-                '!' | '&' | ',' | ';' | ']' | ':' => break,
+                '&' | ',' | ';' | ']' | ':' => break,
+                '!' => expressions.push(self.parse_negated_primitive()?),
                 _ => {
                     // Try to parse another atom property
                     if let Ok(expr) = self.parse_atom_expression() {
@@ -650,6 +662,29 @@ impl CxSMARTSParser {
     /// Parse an atom expression (used within bracketed atoms)
     fn parse_atom_expression(&mut self) -> Result<AtomExpression, CxSMARTSError> {
         let current_character = self.current_char()?;
+
+        // A two-letter element symbol wins over any primitive that starts with
+        // the same letter. Without this `[Dy]` is a degree with no number after
+        // it, `[Rn]` is "in a ring and an aromatic nitrogen", and `[Hf]` is "one
+        // hydrogen and a fluorine" -- none of which can match anything, and all
+        // of which are what half the lanthanides and every noble gas parse as.
+        // Nothing is lost: no two-letter element's reading as a primitive pair
+        // describes an atom that could exist.
+        if current_character.is_ascii_uppercase() {
+            let next_character = self
+                .input
+                .chars()
+                .nth(self.position + 1)
+                .unwrap_or('\0');
+            if next_character.is_ascii_lowercase() {
+                let symbol = format!("{current_character}{next_character}");
+                if chemistry_consts::atomic_numbers(&symbol).is_some() {
+                    self.advance_position();
+                    self.advance_position();
+                    return Ok(AtomExpression::Element(symbol));
+                }
+            }
+        }
 
         match current_character {
             '#' => {
@@ -711,6 +746,11 @@ impl CxSMARTSParser {
                 let connectivity = self.parse_number()? as u8;
                 Ok(AtomExpression::Connectivity(connectivity))
             }
+            '^' => {
+                self.advance_position();
+                let hybridization = self.parse_number()? as u8;
+                Ok(AtomExpression::Hybridization(hybridization))
+            }
             '+' => {
                 self.advance_position();
                 let charge =
@@ -737,10 +777,48 @@ impl CxSMARTSParser {
                 let isotope = self.parse_number()? as u16;
                 Ok(AtomExpression::Isotope(isotope))
             }
-            'A'..='Z' | 'a'..='z' => {
-                // Element symbol
-                let element = self.parse_element()?;
-                Ok(AtomExpression::Element(element))
+            // `a` and `A` inside brackets are the aromatic and aliphatic
+            // wildcards, not one-letter elements. Reading `[a]` as an element
+            // symbol makes it match nothing at all, and it is how half the
+            // published key sets say "aromatic". A two-letter element starting
+            // with the same letter has already been taken above, so anything
+            // reaching here is the wildcard -- except an aromatic two-letter
+            // symbol, which is lowercase throughout.
+            'a' if !self
+                .input
+                .chars()
+                .nth(self.position + 1)
+                .is_some_and(|next| next.is_ascii_lowercase()) =>
+            {
+                self.advance_position();
+                Ok(AtomExpression::Aromatic)
+            }
+            'A' => {
+                self.advance_position();
+                Ok(AtomExpression::Aliphatic)
+            }
+            'A'..='Z' => {
+                // A two-letter symbol beginning with an uppercase letter was
+                // taken above, so this is a one-letter element. Swallowing the
+                // next lowercase character regardless made `[Cv4]` a carbon of
+                // the element "Cv" rather than a carbon of valence four.
+                self.advance_position();
+                Ok(AtomExpression::Element(current_character.to_string()))
+            }
+            'a'..='z' => {
+                // Aromatic symbols are lowercase throughout, so the two-letter
+                // ones -- `as`, `se`, `te`, `si` -- have to be recognised here.
+                let next_character = self.input.chars().nth(self.position + 1).unwrap_or('\0');
+                if next_character.is_ascii_lowercase() {
+                    let symbol = format!("{current_character}{next_character}");
+                    if chemistry_consts::atomic_numbers(&symbol).is_some() {
+                        self.advance_position();
+                        self.advance_position();
+                        return Ok(AtomExpression::Element(symbol));
+                    }
+                }
+                self.advance_position();
+                Ok(AtomExpression::Element(current_character.to_string()))
             }
             '*' => {
                 self.advance_position();
@@ -891,39 +969,6 @@ impl CxSMARTSParser {
         Ok(AtomExpression::Recursive(pattern))
     }
 
-    /// Parse component grouping with parentheses
-    fn parse_component_grouping(&mut self) -> Result<(), CxSMARTSError> {
-        self.advance_position(); // Skip '('
-
-        let component_start_index = self.current_atom_index;
-
-        // Parse until matching ')'
-        let mut parenthesis_count = 1;
-        while self.position < self.input.len() && parenthesis_count > 0 {
-            let current_character = self.current_char()?;
-            if current_character == '(' {
-                parenthesis_count += 1;
-            } else if current_character == ')' {
-                parenthesis_count -= 1;
-                if parenthesis_count == 0 {
-                    self.advance_position();
-                    break;
-                }
-            }
-
-            self.parse_atom_or_bond()?;
-        }
-
-        // Create component grouping
-        let component_atom_indices: Vec<usize> =
-            (component_start_index..self.current_atom_index).collect();
-        if !component_atom_indices.is_empty() {
-            self.components.push(component_atom_indices);
-        }
-
-        Ok(())
-    }
-
     /// `(` — a branch when it follows an atom, a component group when it does
     /// not.
     fn parse_branch_open(&mut self) -> Result<(), CxSMARTSError> {
@@ -1046,34 +1091,66 @@ impl CxSMARTSParser {
         Ok(())
     }
 
-    /// Parse bond expression with logical operators like !@, ~,:
+    /// Parse a bond expression, with the same three precedence levels an atom
+    /// expression has: `;` binds loosest, then `,`, then `&`, and `!` binds
+    /// tightest of all. `=;@` -- a double bond that is also a ring bond -- is
+    /// the form MACCS key 26 is written in, and it is not exotic.
     fn parse_bond_expression(&mut self) -> Result<BondExpression, CxSMARTSError> {
-        // Handle NOT operator for bonds
-        if self.position < self.input.len() && self.current_char()? == '!' {
-            self.advance_position(); // Skip '!'
-            let bond_expr = self.parse_primary_bond_expression()?;
-            return Ok(BondExpression::Not(Box::new(bond_expr)));
+        let mut operands = vec![self.parse_bond_or()?];
+        while self.position < self.input.len() && self.current_char()? == ';' {
+            self.advance_position();
+            operands.push(self.parse_bond_or()?);
         }
+        Ok(Self::joined_bond(LogicalOperator::LowAnd, operands))
+    }
 
-        // Parse primary bond expressions with OR logic
-        let mut left_expression = self.parse_primary_bond_expression()?;
+    fn parse_bond_or(&mut self) -> Result<BondExpression, CxSMARTSError> {
+        let mut operands = vec![self.parse_bond_and()?];
+        while self.position < self.input.len() && self.current_char()? == ',' {
+            self.advance_position();
+            operands.push(self.parse_bond_and()?);
+        }
+        Ok(Self::joined_bond(LogicalOperator::Or, operands))
+    }
 
-        // Handle bond OR combinations (though less common in practice)
+    fn parse_bond_and(&mut self) -> Result<BondExpression, CxSMARTSError> {
+        let mut operands = vec![self.parse_bond_negation()?];
         while self.position < self.input.len() {
-            let current_character = self.current_char()?;
-            if current_character == ',' {
-                self.advance_position(); // Skip ','
-                let right_expression = self.parse_primary_bond_expression()?;
-                left_expression = BondExpression::Logical {
-                    operator: LogicalOperator::Or,
-                    operands: vec![left_expression, right_expression],
-                };
-            } else {
+            // Two bond primitives written next to each other are an and, the
+            // `&` being optional exactly as it is between atom primitives.
+            // `=@` is a double bond that closes a ring; reading it as a double
+            // bond and then losing the `@` makes it any double bond.
+            let current = self.current_char()?;
+            if current == '&' {
+                self.advance_position();
+            } else if !Self::starts_bond_expression(current) {
                 break;
             }
+            operands.push(self.parse_bond_negation()?);
         }
+        Ok(Self::joined_bond(LogicalOperator::HighAnd, operands))
+    }
 
-        Ok(left_expression)
+    /// Whether a character can begin a bond primitive. Nothing that can begin
+    /// an atom is in this set, so a bond expression knows where it ends.
+    fn starts_bond_expression(character: char) -> bool {
+        matches!(character, '-' | '=' | '#' | ':' | '~' | '@' | '/' | '\\' | '!')
+    }
+
+    fn parse_bond_negation(&mut self) -> Result<BondExpression, CxSMARTSError> {
+        if self.position < self.input.len() && self.current_char()? == '!' {
+            self.advance_position();
+            return Ok(BondExpression::Not(Box::new(self.parse_bond_negation()?)));
+        }
+        self.parse_primary_bond_expression()
+    }
+
+    /// One operand stays as it is; several are joined by the operator.
+    fn joined_bond(operator: LogicalOperator, mut operands: Vec<BondExpression>) -> BondExpression {
+        if operands.len() == 1 {
+            return operands.pop().expect("just checked there is one");
+        }
+        BondExpression::Logical { operator, operands }
     }
 
     /// Parse primary bond expressions (single bond types)
@@ -1117,28 +1194,6 @@ impl CxSMARTSParser {
         Ok(bond_expression)
     }
 
-    /// Parse element symbol
-    fn parse_element(&mut self) -> Result<String, CxSMARTSError> {
-        let mut element = String::new();
-
-        if self.position < self.input.len() {
-            let current_character = self.current_char()?;
-            element.push(current_character);
-            self.advance_position();
-
-            // Check for second character (lowercase)
-            if self.position < self.input.len() {
-                let next_character = self.current_char()?;
-                if next_character.is_ascii_lowercase() {
-                    element.push(next_character);
-                    self.advance_position();
-                }
-            }
-        }
-
-        Ok(element)
-    }
-
     /// Parse a number from the current position
     fn parse_number(&mut self) -> Result<usize, CxSMARTSError> {
         let mut number = 0;
@@ -1170,13 +1225,14 @@ impl CxSMARTSParser {
             .ok_or(CxSMARTSError::UnexpectedEndOfInput)
     }
 
-    /// Advance position by one character
-    fn advance_position(&mut self) -> Result<(), CxSMARTSError> {
+    /// Steps past the current character.
+    ///
+    /// Every caller has already established that the character it is stepping
+    /// past exists, so running off the end is not an error to report but a
+    /// position to leave alone.
+    fn advance_position(&mut self) {
         if self.position < self.input.len() {
             self.position += 1;
-            Ok(())
-        } else {
-            Err(CxSMARTSError::UnexpectedEndOfInput)
         }
     }
 }
@@ -1739,7 +1795,7 @@ mod tests {
 
         #[test]
         fn test_degree_patterns() {
-            let methane = create_test_molecule("C"); // Carbon degree 0 (only H)
+            let _methane = create_test_molecule("C"); // Carbon degree 0 (only H)
             let ethanol = create_test_molecule("CCO"); // Various degrees
             let tert_butyl = create_test_molecule("CC(C)(C)C"); // Central carbon degree 4
 

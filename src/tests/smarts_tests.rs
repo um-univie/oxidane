@@ -3,13 +3,16 @@
 //! The expectations here were taken from `GetSubstructMatches(..,
 //! uniquify=False)` on the same molecule with `Chem.AddHs` applied, because
 //! this crate's molecules always carry hydrogens as real atoms. The full
-//! differential (2849 pattern/target pairs) lives in `notes/smarts_oracle.py`
-//! and `examples/smarts_diff.rs`; what is pinned here is one case per defect
-//! that differential found.
+//! differential lives in `tests/smarts_oracle.py` and
+//! `examples/smarts_diff.rs`; what is pinned here is one case per defect that
+//! differential found.
 //!
-//! All 2849 pairs currently agree.
+//! On 400 molecules against 69 patterns -- 27600 pairs -- 27555 agree. The
+//! forty-five that do not are molecules the two toolkits perceive differently,
+//! and atoms in bridged cages, where RDKit counts a symmetrised set of smallest
+//! rings and this crate counts a minimum one.
 
-use crate::io::{find_cxsmarts_matches, parse_cxsmarts};
+use crate::io::find_cxsmarts_matches;
 use crate::prelude::*;
 
 fn count(pattern: &str, target: &str) -> usize {
@@ -237,4 +240,139 @@ fn a_shared_analysis_matches_what_a_fresh_one_finds() {
             );
         }
     }
+}
+
+/// A recursive pattern asks about the atom it is written on.
+///
+/// `[$(...)]` was parsed and then ignored -- the evaluator had a catch-all that
+/// said yes to every expression it did not implement -- so a recursive pattern
+/// matched every atom in every molecule. That is worse than refusing it: it
+/// makes any key or filter built on one always true, silently.
+#[test]
+fn a_recursive_pattern_is_a_question_about_one_atom() {
+    assert_eq!(count("[$(CCO)]", "CCO"), 1);
+    assert_eq!(count("[$(CCO)]", "CCC"), 0);
+    // The first atom of the sub-pattern is the one being asked about, so this
+    // is the carbon of an ethanol's methyl and not its oxygen.
+    assert_eq!(count("[$(CCO)]", "CCOCC"), 2);
+    assert_eq!(count("[$([NH2][CX4])]", "NCC"), 1);
+    assert_eq!(count("[$([NH2][CX4])]", "NC=O"), 0);
+    // Nested recursion works the same way.
+    assert_eq!(count("[$([$(CC)])]", "CC"), 2);
+}
+
+/// `X` counts connections and `v` sums bond orders.
+///
+/// Both were implemented in a matcher nothing calls and missing from the one
+/// everything calls, where the catch-all made them true of every atom --
+/// including in the doc example `[CX3](=O)[OX2H1]`.
+#[test]
+fn connectivity_and_valence_are_read() {
+    // Methane's carbon has four connections; ethene's has three.
+    assert_eq!(count("[CX4]", "C=C"), 0);
+    assert_eq!(count("[CX3]", "C=C"), 2);
+    assert_eq!(count("[CX3](=O)[OX2H1]", "CC(=O)O"), 1);
+    assert_eq!(count("[CX3](=O)[OX2H1]", "CC(=O)OC"), 0);
+    assert_eq!(count("[Cv4]", "C=C"), 2);
+    assert_eq!(count("[Cv3]", "C=C"), 0);
+}
+
+/// A bond that closes a ring, and one that does not.
+///
+/// `!@` was false for every bond of every molecule whose rings touch anything,
+/// because the matcher asked whether both the bond's atoms were ring atoms
+/// rather than whether the bond itself was a ring bond. Biphenyl's central bond
+/// is in neither ring.
+#[test]
+fn a_ring_bond_is_the_bond_and_not_its_atoms() {
+    assert_eq!(count("[!#1]!@[!#1]", "c1ccccc1-c1ccccc1"), 2);
+    assert_eq!(count("[!#1]@[!#1]", "c1ccccc1-c1ccccc1"), 24);
+    assert_eq!(count("*@*!@*@*", "c1ccccc1-c1ccccc1"), 8);
+}
+
+/// Two bond primitives written together are an and.
+///
+/// `=@` -- a double bond that closes a ring -- was read as a double bond with
+/// the `@` dropped, which makes it any double bond at all.
+#[test]
+fn bond_primitives_written_together_are_both_required() {
+    assert_eq!(count("[#6]=@[#6]", "C1=CCCCC1"), 2);
+    assert_eq!(count("[#6]=@[#6]", "C=CCCCC"), 0);
+    // And the low-precedence spelling means the same thing.
+    assert_eq!(count("[#6]=;@[#6]", "C1=CCCCC1"), 2);
+    assert_eq!(count("[#6]=;@[#6]", "C=CCCCC"), 0);
+}
+
+/// `r<n>` is the *smallest* ring the atom is in.
+///
+/// An indane's two bridgehead atoms are in a five- and a six-membered ring, and
+/// are `r5` alone -- which is what RDKit says and what the keys that use `r`
+/// were written against.
+#[test]
+fn a_ring_size_is_the_smallest_ring_the_atom_is_in() {
+    assert_eq!(count("[r5]", "c1ccc2c(c1)CCC2"), 5);
+    assert_eq!(count("[r6]", "c1ccc2c(c1)CCC2"), 4);
+    assert_eq!(count("[R1]", "c1ccc2c(c1)CCC2"), 7);
+    assert_eq!(count("[R2]", "c1ccc2c(c1)CCC2"), 2);
+}
+
+/// Two rings joined by a bond are two rings.
+///
+/// The cycle basis was sized by walking the ring atoms along *any* bond, so
+/// biphenyl's two rings counted as one connected piece and one of them was
+/// thrown away: none of its atoms was in a ring of any size afterwards.
+#[test]
+fn rings_joined_by_a_bond_are_still_two_rings() {
+    assert_eq!(count("[r6]", "c1ccccc1-c1ccccc1"), 12);
+    assert_eq!(count("[r6]", "C1CCCCC1C1CCCC1"), 6);
+    assert_eq!(count("[r5]", "C1CCCCC1C1CCCC1"), 5);
+    // And a fused pair is two rings, not the three cycles that can be drawn
+    // through it.
+    assert_eq!(count("[R1]", "c1ccc2ccccc2c1"), 8);
+    assert_eq!(count("[R2]", "c1ccc2ccccc2c1"), 2);
+}
+
+/// `a` and `A` inside brackets are the aromatic and aliphatic wildcards.
+///
+/// They were read as one-letter element symbols, so `[a]` matched nothing at
+/// all -- and `[a]` is how most published key sets say "aromatic".
+#[test]
+fn the_aromatic_and_aliphatic_wildcards_are_not_elements() {
+    assert_eq!(count("[a]", "c1ccccc1"), 6);
+    assert_eq!(count("[a]", "C1CCCCC1"), 0);
+    assert_eq!(count("[A]", "c1ccccc1C"), 9); // the methyl and every hydrogen
+    assert_eq!(count("[!c;!n;a]", "c1ccoc1"), 1);
+    // A two-letter symbol beginning with the same letter is still an element.
+    assert_eq!(count("[As]", "[AsH3]"), 1);
+    assert_eq!(count("[Ag]", "[Ag+]"), 1);
+}
+
+/// A two-letter element symbol beats the primitive its first letter names.
+///
+/// `[Dy]` was a degree with no number after it, `[Rn]` was "in a ring and an
+/// aromatic nitrogen", `[Hf]` was "one hydrogen and a fluorine". None of those
+/// can match anything, and between them they cover half the lanthanides and
+/// every noble gas.
+#[test]
+fn a_two_letter_element_is_read_as_an_element() {
+    for symbol in ["Dy", "Rn", "Hf", "Ho", "Sc", "Xe", "Ne", "Rb", "Ar"] {
+        let pattern = format!("[{symbol}]");
+        assert!(
+            parse_cxsmarts(&pattern).is_ok(),
+            "{pattern} should parse as an element"
+        );
+        assert_eq!(count(&pattern, &format!("[{symbol}]")), 1, "{pattern}");
+    }
+    assert!(parse_cxsmarts("[La,Ce,Pr,Nd,Pm,Sm,Eu,Gd,Tb,Dy,Ho,Er,Tm,Yb,Lu]").is_ok());
+}
+
+/// An isotope is read rather than ignored.
+#[test]
+fn an_isotope_is_read_and_an_atom_map_is_not_a_question() {
+    assert_eq!(count("[13C]", "[13CH4]"), 1);
+    assert_eq!(count("[13C]", "C"), 0);
+    // An atom map number is a label rather than a question, so both of these
+    // match: it is what tells a reaction where the atom goes.
+    assert_eq!(count("[C:1]", "[CH4:1]"), 1);
+    assert_eq!(count("[C:2]", "[CH4:1]"), 1);
 }

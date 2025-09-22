@@ -30,6 +30,7 @@
 
 mod circular;
 mod heavy;
+mod pairs;
 
 pub use circular::{
     CircularFingerprint, Environment, circular_fingerprint, circular_fingerprint_with_invariants,
@@ -399,3 +400,8 @@ impl BitFingerprint {
         total
     }
 }
+
+pub use pairs::{
+    DEFAULT_MAX_DISTANCE, atom_pair_fingerprint, atom_pair_types, pair_id,
+    topological_torsion_fingerprint, torsion_id,
+};

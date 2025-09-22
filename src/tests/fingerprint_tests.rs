@@ -291,6 +291,169 @@ mod fingerprint_tests {
     }
 }
 
+mod pair_and_torsion_tests {
+    use crate::molecule::fingerprint::{
+        DEFAULT_MAX_DISTANCE, Fingerprint, atom_pair_fingerprint, atom_pair_types,
+        topological_torsion_fingerprint,
+    };
+    use crate::prelude::*;
+
+    fn parse(smiles: &str) -> MolecularGraph {
+        MolecularGraph::from_smiles_single(smiles).expect("should parse")
+    }
+
+    fn pairs(smiles: &str) -> Fingerprint {
+        atom_pair_fingerprint(&parse(smiles), DEFAULT_MAX_DISTANCE)
+    }
+
+    fn torsions(smiles: &str) -> Fingerprint {
+        topological_torsion_fingerprint(&parse(smiles))
+    }
+
+    #[test]
+    fn every_pair_of_heavy_atoms_is_counted_once() {
+        // Six carbons make fifteen pairs, and hydrogens make none.
+        assert_eq!(pairs("CCCCCC").total_count(), 15);
+        assert_eq!(pairs("c1ccccc1").total_count(), 15);
+        // A ring is closer to itself than a chain is: benzene has only three
+        // distinct distances to a chain's five, and every carbon is alike, so
+        // three identifiers rather than the chain's many.
+        assert_eq!(pairs("c1ccccc1").len(), 3);
+        assert!(pairs("CCCCCC").len() > 3);
+    }
+
+    #[test]
+    fn a_pair_knows_what_the_atoms_are_and_how_far_apart() {
+        // Propane: two end-to-middle pairs at one bond, one end-to-end pair at
+        // two. The ends are the same type as each other and not as the middle.
+        let propane = pairs("CCC");
+        assert_eq!(propane.total_count(), 3);
+        assert_eq!(propane.len(), 2);
+        assert_eq!(
+            propane.entries().iter().map(|&(_, n)| n).max(),
+            Some(2)
+        );
+
+        // The same skeleton with a different element somewhere is a different
+        // set of pairs.
+        assert_ne!(pairs("CCC"), pairs("CCO"));
+        // And so is the same atoms at a different distance.
+        assert_ne!(pairs("CCCC"), pairs("CC(C)C"));
+    }
+
+    #[test]
+    fn the_type_is_element_pi_and_heavy_neighbours() {
+        let ethene = parse("C=C");
+        let ethane = parse("CC");
+        let types_ethene = atom_pair_types(&ethene);
+        let types_ethane = atom_pair_types(&ethane);
+        // Same element and the same one heavy neighbour, told apart by the π
+        // electron the double bond puts on each end.
+        assert_ne!(types_ethene[0], types_ethane[0]);
+        // Hydrogens have no type at all.
+        for (atom, atomic_number) in ethane.atomic_numbers().iter().enumerate() {
+            if *atomic_number == 1 {
+                assert_eq!(types_ethane[atom], 0);
+            }
+        }
+        // An aromatic carbon holds one π electron, like an alkene carbon.
+        let benzene = parse("c1ccccc1");
+        let butadiene = parse("C=CC=C");
+        let benzene_types = atom_pair_types(&benzene);
+        let diene_types = atom_pair_types(&butadiene);
+        // Benzene's carbons have two heavy neighbours; butadiene's inner ones
+        // have two as well, and both carry one π electron.
+        assert_eq!(benzene_types[0], diene_types[1]);
+    }
+
+    #[test]
+    fn distant_pairs_can_be_left_out() {
+        let decane = parse("CCCCCCCCCC");
+        let all = atom_pair_fingerprint(&decane, DEFAULT_MAX_DISTANCE);
+        let near = atom_pair_fingerprint(&decane, 3);
+        assert_eq!(all.total_count(), 45);
+        assert!(near.total_count() < all.total_count());
+        // Every identifier the short cut-off keeps is one the long one had.
+        for id in near.ids() {
+            assert!(all.count(id) > 0);
+        }
+    }
+
+    #[test]
+    fn atoms_in_different_fragments_make_no_pair() {
+        let ethanol = parse("CCO");
+        let chloride = parse("[Cl-]");
+        let salt = MolecularGraph::combine(&[&ethanol, &chloride]);
+        // Three heavy atoms in one fragment and one in the other: three pairs,
+        // not six.
+        assert_eq!(
+            atom_pair_fingerprint(&salt, DEFAULT_MAX_DISTANCE).total_count(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_torsion_needs_four_atoms_in_a_row() {
+        assert!(torsions("CC").is_empty());
+        assert!(torsions("CCC").is_empty());
+        assert_eq!(torsions("CCCC").total_count(), 1);
+        // Isobutane has a branch point and no four in a row.
+        assert!(torsions("CC(C)C").is_empty());
+        // Neopentane likewise.
+        assert!(torsions("CC(C)(C)C").is_empty());
+        // Pentane has two overlapping four-atom paths, and they are the same
+        // path read from each end of a symmetric molecule -- but not the same
+        // path, so two.
+        assert_eq!(torsions("CCCCC").total_count(), 2);
+    }
+
+    #[test]
+    fn a_ring_has_a_torsion_at_every_bond() {
+        // Six ring bonds, each the middle of exactly one four-atom path.
+        assert_eq!(torsions("c1ccccc1").total_count(), 6);
+        assert_eq!(torsions("C1CCCCC1").total_count(), 6);
+        // Every one of them is the same, so one identifier.
+        assert_eq!(torsions("c1ccccc1").len(), 1);
+        // Cyclopropane has three atoms and so no path of four distinct ones.
+        assert!(torsions("C1CC1").is_empty());
+    }
+
+    #[test]
+    fn a_torsion_reads_the_same_from_either_end() {
+        // Butanol and its mirror writing are one torsion, not two.
+        assert_eq!(torsions("CCCO"), torsions("OCCC"));
+        assert_eq!(torsions("CCCO").total_count(), 1);
+        // And a torsion with different ends is not the same as one without.
+        assert_ne!(torsions("CCCO"), torsions("CCCC"));
+    }
+
+    #[test]
+    fn neither_depends_on_how_the_molecule_was_written() {
+        for writings in [
+            ["CC(=O)Oc1ccccc1C(=O)O", "OC(=O)C1=CC=CC=C1OC(C)=O"],
+            ["O=c1cc[nH]c(=O)[nH]1", "C1=CNC(=O)NC1=O"],
+            ["CN(C(C[NH2+]CC(c1ccccc1)O)c1occc1)C", "C(C[NH2+]CC(c1ccccc1)O)(N(C)C)c1ccco1"],
+        ] {
+            assert_eq!(pairs(writings[0]), pairs(writings[1]), "{}", writings[1]);
+            assert_eq!(
+                torsions(writings[0]),
+                torsions(writings[1]),
+                "{}",
+                writings[1]
+            );
+        }
+    }
+
+    #[test]
+    fn similarity_behaves_as_it_should() {
+        let benzene = pairs("c1ccccc1");
+        let toluene = pairs("Cc1ccccc1");
+        let hexane = pairs("CCCCCC");
+        assert!(benzene.tanimoto(&toluene) > benzene.tanimoto(&hexane));
+        assert_eq!(benzene.tanimoto(&benzene), 1.0);
+    }
+}
+
 mod featurize_tests {
     use crate::molecule::featurize::{
         ATOM_FEATURE_WIDTH, BOND_FEATURE_WIDTH, Hybridization, graph_features, hybridization,

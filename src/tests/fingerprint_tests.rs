@@ -619,3 +619,103 @@ mod featurize_tests {
         }
     }
 }
+
+mod minhash_tests {
+    use crate::molecule::fingerprint::{Fingerprint, MinHash, circular_fingerprint};
+    use crate::prelude::*;
+
+    fn sketch(ids: impl IntoIterator<Item = u32>, permutations: usize) -> MinHash {
+        MinHash::of(&Fingerprint::from_ids(ids), permutations)
+    }
+
+    #[test]
+    fn a_sketch_of_a_set_agrees_with_itself() {
+        let set = sketch(0..500, 256);
+        assert_eq!(set.len(), 256);
+        assert_eq!(set.jaccard(&set), 1.0);
+        assert_eq!(set.distance(&set), 0.0);
+    }
+
+    #[test]
+    fn disjoint_sets_hardly_agree_and_nested_ones_mostly_do() {
+        let left = sketch(0..1000, 512);
+        let right = sketch(1000..2000, 512);
+        assert!(left.jaccard(&right) < 0.05, "{}", left.jaccard(&right));
+
+        // Half of one inside the other: five hundred shared out of a thousand
+        // between them.
+        let whole = sketch(0..1000, 512);
+        let part = sketch(0..500, 512);
+        let estimate = whole.jaccard(&part);
+        assert!(
+            (estimate - 0.5).abs() < 0.06,
+            "expected about a half, got {estimate}"
+        );
+    }
+
+    #[test]
+    fn a_longer_sketch_estimates_more_closely() {
+        let exact = |a: u32, b: u32| {
+            let left = Fingerprint::from_ids(0..a);
+            let right = Fingerprint::from_ids((a - b)..(2 * a - b));
+            left.tanimoto(&right)
+        };
+        let truth = exact(1000, 400);
+        let short_error = (sketch(0..1000, 32).jaccard(&sketch(600..1600, 32)) - truth).abs();
+        let long_error = (sketch(0..1000, 2048).jaccard(&sketch(600..1600, 2048)) - truth).abs();
+        assert!(
+            long_error <= short_error.max(0.02),
+            "short {short_error}, long {long_error}"
+        );
+        assert!(long_error < 0.05);
+    }
+
+    #[test]
+    fn sketches_of_different_lengths_are_not_comparable() {
+        assert_eq!(sketch(0..100, 64).jaccard(&sketch(0..100, 128)), 0.0);
+        // Two sketches of nothing say the same nothing.
+        assert_eq!(
+            MinHash::of(&Fingerprint::new(), 64).jaccard(&MinHash::of(&Fingerprint::new(), 64)),
+            1.0
+        );
+    }
+
+    #[test]
+    fn it_tracks_the_similarity_of_real_molecules() {
+        let of = |smiles: &str| {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            let fingerprint = circular_fingerprint(&molecule, 2).fingerprint;
+            (MinHash::of(&fingerprint, 1024), fingerprint)
+        };
+        let (aspirin_sketch, aspirin) = of("CC(=O)Oc1ccccc1C(=O)O");
+        let (salicylic_sketch, salicylic) = of("OC(=O)c1ccccc1O");
+        let (glucose_sketch, glucose) = of("OCC1OC(O)C(O)C(O)C1O");
+
+        // The sketch estimates the Tanimoto it was made from.
+        for (sketch, fingerprint) in [
+            (&salicylic_sketch, &salicylic),
+            (&glucose_sketch, &glucose),
+        ] {
+            let estimate = aspirin_sketch.jaccard(sketch);
+            let truth = aspirin.tanimoto(fingerprint);
+            assert!(
+                (estimate - truth).abs() < 0.06,
+                "estimate {estimate} against truth {truth}"
+            );
+        }
+        // And it keeps the ordering that matters.
+        assert!(aspirin_sketch.jaccard(&salicylic_sketch) > aspirin_sketch.jaccard(&glucose_sketch));
+    }
+
+    #[test]
+    fn a_sketch_does_not_depend_on_how_the_molecule_was_written() {
+        let of = |smiles: &str| {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            MinHash::of(&circular_fingerprint(&molecule, 2).fingerprint, 128)
+        };
+        assert_eq!(
+            of("CC(=O)Oc1ccccc1C(=O)O"),
+            of("OC(=O)C1=CC=CC=C1OC(C)=O")
+        );
+    }
+}

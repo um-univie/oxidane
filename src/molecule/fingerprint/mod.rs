@@ -30,6 +30,7 @@
 
 mod circular;
 mod heavy;
+mod minhash;
 mod pairs;
 
 pub use circular::{
@@ -400,6 +401,8 @@ impl BitFingerprint {
         total
     }
 }
+
+pub use minhash::MinHash;
 
 pub use pairs::{
     DEFAULT_MAX_DISTANCE, atom_pair_fingerprint, atom_pair_types, pair_id,

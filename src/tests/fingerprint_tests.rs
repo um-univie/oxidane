@@ -719,3 +719,130 @@ mod minhash_tests {
         );
     }
 }
+
+mod shingle_tests {
+    use crate::molecule::fingerprint::{
+        Fingerprint, MinHash, atom_pair_fingerprint, circular_fingerprint, map4_fingerprint,
+        map4_shingles, mhfp_fingerprint, shingle_id,
+    };
+    use crate::prelude::*;
+
+    fn parse(smiles: &str) -> MolecularGraph {
+        MolecularGraph::from_smiles_single(smiles).expect("should parse")
+    }
+
+    /// A peptide of the given one-letter sequence, written the obvious way.
+    fn peptide(sequence: &str) -> MolecularGraph {
+        let mut smiles = String::new();
+        for residue in sequence.chars() {
+            smiles.push_str(match residue {
+                'G' => "NCC(=O)",
+                'A' => "NC(C)C(=O)",
+                'S' => "NC(CO)C(=O)",
+                'F' => "NC(Cc1ccccc1)C(=O)",
+                _ => "NCC(=O)",
+            });
+        }
+        smiles.push('O');
+        parse(&smiles)
+    }
+
+    #[test]
+    fn there_is_one_shingle_per_pair_per_layer() {
+        // Four heavy atoms, so six pairs, and two layers each.
+        let shingles = map4_shingles(&parse("CCCC"), 2, 30);
+        assert_eq!(shingles.total_count(), 12);
+        // A butane chain has three kinds of atom pair by environment, but the
+        // ends are alike and the middles are alike, so far fewer distinct
+        // shingles than occurrences.
+        assert!(shingles.len() < 12);
+    }
+
+    #[test]
+    fn a_shingle_reads_the_same_from_either_end() {
+        assert_eq!(shingle_id(11, 97, 3, 1), shingle_id(97, 11, 3, 1));
+        // And the distance and the layer are both part of what it says.
+        assert_ne!(shingle_id(11, 97, 3, 1), shingle_id(11, 97, 4, 1));
+        assert_ne!(shingle_id(11, 97, 3, 1), shingle_id(11, 97, 3, 2));
+    }
+
+    #[test]
+    fn distant_pairs_and_separate_fragments_are_left_out() {
+        let decane = parse("CCCCCCCCCC");
+        assert!(map4_shingles(&decane, 1, 3).total_count() < map4_shingles(&decane, 1, 30).total_count());
+
+        // Two ethanes never meet, so they contribute only their own pairs: one
+        // per molecule per layer, and none of the four across.
+        let fragments = MolecularGraph::from_smiles("CC.CC").expect("should parse");
+        let apart = MolecularGraph::combine(&fragments.iter().collect::<Vec<_>>());
+        assert_eq!(map4_shingles(&apart, 1, 30).total_count(), 2);
+    }
+
+    #[test]
+    fn layer_zero_would_be_the_atom_pair_fingerprint_and_is_not_offered() {
+        assert!(map4_shingles(&parse("CCCC"), 0, 30).is_empty());
+        assert!(!atom_pair_fingerprint(&parse("CCCC"), 30).is_empty());
+    }
+
+    #[test]
+    fn neither_depends_on_how_the_molecule_was_written() {
+        let one = parse("CC(=O)Oc1ccccc1C(=O)O");
+        let other = parse("OC(=O)C1=CC=CC=C1OC(C)=O");
+        assert_eq!(map4_shingles(&one, 2, 30), map4_shingles(&other, 2, 30));
+        assert_eq!(
+            map4_fingerprint(&one, 2, 30, 256),
+            map4_fingerprint(&other, 2, 30, 256)
+        );
+        assert_eq!(mhfp_fingerprint(&one, 3, 256), mhfp_fingerprint(&other, 3, 256));
+    }
+
+    #[test]
+    fn mhfp_is_the_circular_environments_sketched() {
+        let molecule = parse("CC(=O)Oc1ccccc1C(=O)O");
+        assert_eq!(
+            mhfp_fingerprint(&molecule, 3, 128),
+            MinHash::of(&circular_fingerprint(&molecule, 3).fingerprint, 128)
+        );
+    }
+
+    #[test]
+    fn a_sketch_estimates_the_similarity_of_the_shingles_it_was_made_from() {
+        let aspirin = parse("CC(=O)Oc1ccccc1C(=O)O");
+        let salicylic = parse("OC(=O)c1ccccc1O");
+        let truth = map4_shingles(&aspirin, 2, 30).tanimoto(&map4_shingles(&salicylic, 2, 30));
+        let estimate =
+            map4_fingerprint(&aspirin, 2, 30, 2048).jaccard(&map4_fingerprint(&salicylic, 2, 30, 2048));
+        assert!(
+            (estimate - truth).abs() < 0.05,
+            "estimate {estimate} against truth {truth}"
+        );
+    }
+
+    #[test]
+    fn it_keeps_telling_peptides_apart_where_a_folded_vector_gives_up() {
+        // Two forty-residue peptides that differ in a quarter of their
+        // residues. Folded small enough, every bit that could separate them has
+        // collided with one that cannot, and they look nearly identical; the
+        // sketch is over the identifiers themselves and does not.
+        let left = peptide(&"GAFS".repeat(10));
+        let right = peptide(&"GAFG".repeat(10));
+
+        let folded = |molecule: &MolecularGraph| circular_fingerprint(molecule, 2).fingerprint.fold(256);
+        let folded_similarity = folded(&left).tanimoto(&folded(&right));
+        let sketched = map4_fingerprint(&left, 2, 30, 1024).jaccard(&map4_fingerprint(&right, 2, 30, 1024));
+        assert!(
+            sketched < folded_similarity,
+            "folded {folded_similarity}, sketched {sketched}"
+        );
+    }
+
+    #[test]
+    fn similarity_behaves_as_it_should() {
+        let of = |smiles: &str| map4_fingerprint(&parse(smiles), 2, 30, 1024);
+        let aspirin = of("CC(=O)Oc1ccccc1C(=O)O");
+        assert_eq!(aspirin.jaccard(&aspirin), 1.0);
+        assert!(aspirin.jaccard(&of("OC(=O)c1ccccc1O")) > aspirin.jaccard(&of("CCCCCCCCCCCC")));
+        // Nothing shared with nothing is still everything they agree on.
+        assert_eq!(MinHash::of(&Fingerprint::new(), 64).len(), 64);
+    }
+}

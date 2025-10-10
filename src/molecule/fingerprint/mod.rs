@@ -31,6 +31,7 @@
 mod circular;
 mod heavy;
 mod minhash;
+mod shingles;
 mod pairs;
 
 pub use circular::{
@@ -403,6 +404,10 @@ impl BitFingerprint {
 }
 
 pub use minhash::MinHash;
+
+pub use shingles::{
+    DEFAULT_MAP4_RADIUS, map4_fingerprint, map4_shingles, mhfp_fingerprint, shingle_id,
+};
 
 pub use pairs::{
     DEFAULT_MAX_DISTANCE, atom_pair_fingerprint, atom_pair_types, pair_id,

@@ -846,3 +846,155 @@ mod shingle_tests {
         assert_eq!(MinHash::of(&Fingerprint::new(), 64).len(), 64);
     }
 }
+
+mod crippen_tests {
+    use crate::molecule::crippen::{CrippenType, crippen_contributions, crippen_types};
+    use crate::molecule::descriptors::MolecularDescriptors;
+    use crate::prelude::*;
+
+    fn parse(smiles: &str) -> MolecularGraph {
+        MolecularGraph::from_smiles_single(smiles).expect("should parse")
+    }
+
+    /// The classes an atom of the given element was given, in atom order.
+    fn types_of(smiles: &str, element: u8) -> Vec<&'static str> {
+        let molecule = parse(smiles);
+        crippen_types(&molecule)
+            .into_iter()
+            .enumerate()
+            .filter(|&(atom, _)| molecule.get_atomic_number(atom) == element)
+            .map(|(_, kind)| kind.label())
+            .collect()
+    }
+
+    /// How many hydrogens of the molecule were given the named class.
+    fn count_of(smiles: &str, label: &str) -> usize {
+        types_of(smiles, 1).into_iter().filter(|&kind| kind == label).count()
+    }
+
+    #[test]
+    fn molecules_whose_values_are_published() {
+        // Every pair is what RDKit gives for the same structure, which is what
+        // every filter in the literature was drawn against.
+        for (smiles, log_p, refractivity) in [
+            ("CC(=O)Oc1ccccc1C(=O)O", 1.3101, 44.7103),
+            ("Cn1cnc2c1c(=O)n(C)c(=O)n2C", -1.0293, 51.196),
+            ("c1ccccc1", 1.6866, 26.442),
+            ("CCO", -0.0014, 12.7598),
+            ("O", -0.8247, 3.6138),
+            ("CC(C)Cc1ccc(cc1)C(C)C(=O)O", 3.0732, 61.0348),
+            ("CC(=O)[O-]", -1.2438, 10.681),
+            ("c1cc[nH]c1", 1.0147, 20.7927),
+            ("c1ccsc1", 1.7481, 24.319),
+            ("CC#N", 0.5299, 11.287),
+            ("OP(=O)(O)O", -0.9286, 14.2629),
+            ("FC(F)(F)c1ccccc1", 2.7054, 31.444),
+        ] {
+            let (ours_log_p, ours_refractivity) = parse(smiles).crippen_descriptors();
+            assert!(
+                (ours_log_p - log_p).abs() < 1e-3,
+                "{smiles}: log P {ours_log_p} against {log_p}"
+            );
+            assert!(
+                (ours_refractivity - refractivity).abs() < 1e-3,
+                "{smiles}: MR {ours_refractivity} against {refractivity}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_element_the_model_never_saw_contributes_nothing() {
+        assert_eq!(parse("[Xe]").crippen_descriptors(), (0.0, 0.0));
+        // A transition metal has a log P but no refractivity.
+        let (log_p, refractivity) = parse("[Fe]").crippen_descriptors();
+        assert!((log_p + 0.0025).abs() < 1e-6);
+        assert_eq!(refractivity, 0.0);
+    }
+
+    #[test]
+    fn a_carboxylate_oxygen_is_not_an_alkoxide() {
+        // O12 is tried before O7 for exactly this, and the two differ by more
+        // than a tenth of a log unit.
+        assert_eq!(types_of("CC(=O)[O-]", 8), vec!["O9", "O12"]);
+        assert_eq!(types_of("CC[O-]", 8), vec!["O7"]);
+    }
+
+    #[test]
+    fn a_carbon_bonded_to_a_heteroatom_is_not_a_plain_carbon() {
+        // C1 is tried first and does not fit, which is the whole of why C3
+        // exists.
+        assert_eq!(types_of("CCC", 6), vec!["C1", "C1", "C1"]);
+        assert_eq!(types_of("CCO", 6), vec!["C1", "C3"]);
+        assert_eq!(types_of("CC(C)(C)O", 6), vec!["C1", "C4", "C1", "C1"]);
+    }
+
+    #[test]
+    fn a_hydrogen_is_classified_by_what_it_hangs_off() {
+        assert_eq!(types_of("CC", 1), vec!["H1"; 6]);
+        // On a nitrogen, aromatic or not.
+        assert_eq!(count_of("CN", "H3"), 2);
+        assert_eq!(count_of("c1cc[nH]c1", "H3"), 1);
+        // On a sulfur, a phosphorus, a silicon: anything that is not carbon,
+        // nitrogen or oxygen.
+        assert_eq!(count_of("CS", "H2"), 1);
+        assert_eq!(types_of("[SiH4]", 1), vec!["H2"; 4]);
+        // On an oxygen, by what the oxygen carries: an alcohol and a phenol
+        // are one class, an acid and a peroxide another, a hydroxylamine a
+        // third, and a phosphate is back to the first.
+        assert_eq!(count_of("CCO", "H2"), 1);
+        assert_eq!(count_of("c1ccccc1O", "H2"), 1);
+        assert_eq!(count_of("OP(=O)(O)O", "H2"), 3);
+        assert_eq!(count_of("CC(=O)O", "H4"), 1);
+        assert_eq!(count_of("OO", "H4"), 2);
+        // A hydroxylamine's three hydrogens are one class, on the nitrogen and
+        // on the oxygen alike.
+        assert_eq!(count_of("NO", "H3"), 3);
+        // Water's hydrogens see each other; a hydroxide's has nothing to see
+        // and fits no rule at all.
+        assert_eq!(types_of("O", 1), vec!["H2", "H2"]);
+        assert_eq!(types_of("[OH-]", 1), vec!["HS"]);
+    }
+
+    #[test]
+    fn a_ring_carbon_is_classified_by_its_substituent() {
+        assert_eq!(types_of("c1ccccc1", 6), vec!["C18"; 6]);
+        assert_eq!(types_of("Cc1ccccc1", 6)[1], "C21");
+        assert_eq!(types_of("Nc1ccccc1", 6)[0], "C22");
+        assert_eq!(types_of("Oc1ccccc1", 6)[0], "C23");
+        assert_eq!(types_of("Sc1ccccc1", 6)[0], "C24");
+        assert_eq!(types_of("Clc1ccccc1", 6)[0], "C15");
+        assert_eq!(types_of("c1ccccc1-c1ccccc1", 6).iter().filter(|&&kind| kind == "C20").count(), 2);
+        // The bridgehead of a fused ring has three ring bonds and no
+        // substituent at all.
+        assert!(types_of("c1ccc2ccccc2c1", 6).contains(&"C19"));
+    }
+
+    #[test]
+    fn the_contributions_are_what_the_total_is_made_of() {
+        let molecule = parse("CC(=O)Oc1ccccc1C(=O)O");
+        let contributions = crippen_contributions(&molecule);
+        assert_eq!(contributions.len(), molecule.len());
+        let (log_p, refractivity) = molecule.crippen_descriptors();
+        let summed: f64 = contributions.iter().map(|&(value, _)| value).sum();
+        assert!((summed - log_p).abs() < 1e-9);
+        let summed: f64 = contributions.iter().map(|&(_, value)| value).sum();
+        assert!((summed - refractivity).abs() < 1e-9);
+        // And every one of them is a class, since aspirin has nothing exotic.
+        assert!(crippen_types(&molecule).iter().all(|&kind| kind != CrippenType::None));
+    }
+
+    #[test]
+    fn it_does_not_depend_on_how_the_molecule_was_written() {
+        for (one, other) in [
+            ("CC(=O)Oc1ccccc1C(=O)O", "OC(=O)C1=CC=CC=C1OC(C)=O"),
+            ("Cn1cnc2c1c(=O)n(C)c(=O)n2C", "CN1C=NC2=C1C(=O)N(C)C(=O)N2C"),
+            ("c1ccsc1", "C1=CC=CS1"),
+        ] {
+            let mut first = crippen_types(&parse(one));
+            let mut second = crippen_types(&parse(other));
+            first.sort_by_key(|kind| kind.label());
+            second.sort_by_key(|kind| kind.label());
+            assert_eq!(first, second, "{one} against {other}");
+        }
+    }
+}

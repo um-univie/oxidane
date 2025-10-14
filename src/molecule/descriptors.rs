@@ -59,6 +59,36 @@ pub trait MolecularDescriptors: MoleculeCore {
         }
         count
     }
+
+    /// The Wildman-Crippen log P and molar refractivity, as `(log P, MR)`.
+    ///
+    /// Both are sums of per-atom contributions; see
+    /// [`crate::molecule::crippen`] for what an atom is classified as and why
+    /// the classification is order-dependent.
+    ///
+    /// # Examples
+    /// ```
+    /// use oxidane::molecule::MolecularGraph;
+    /// use oxidane::molecule::descriptors::MolecularDescriptors;
+    /// let caffeine =
+    ///     MolecularGraph::from_smiles_single("Cn1cnc2c1c(=O)n(C)c(=O)n2C").unwrap();
+    /// let (log_p, refractivity) = caffeine.crippen_descriptors();
+    /// assert!((log_p + 1.0293).abs() < 1e-3);
+    /// assert!((refractivity - 51.196).abs() < 1e-3);
+    /// ```
+    fn crippen_descriptors(&self) -> (f64, f64) {
+        crate::molecule::crippen::crippen_descriptors(self)
+    }
+
+    /// The Wildman-Crippen log P on its own.
+    fn crippen_log_p(&self) -> f64 {
+        self.crippen_descriptors().0
+    }
+
+    /// The Wildman-Crippen molar refractivity on its own.
+    fn crippen_molar_refractivity(&self) -> f64 {
+        self.crippen_descriptors().1
+    }
 }
 
 impl<T: MoleculeCore> MolecularDescriptors for T {}

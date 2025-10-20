@@ -454,6 +454,131 @@ mod pair_and_torsion_tests {
     }
 }
 
+mod descriptor_tests {
+    use crate::molecule::descriptors::MolecularDescriptors;
+    use crate::prelude::*;
+
+    fn parse(smiles: &str) -> MolecularGraph {
+        let fragments = MolecularGraph::from_smiles(smiles).expect("should parse");
+        MolecularGraph::combine(&fragments.iter().collect::<Vec<_>>())
+    }
+
+    fn tpsa(smiles: &str) -> f64 {
+        parse(smiles).topological_polar_surface_area()
+    }
+
+    #[test]
+    fn polar_surface_of_molecules_with_published_values() {
+        // Each of these is a sum of Ertl's tabulated contributions, and each
+        // agrees with what every other implementation reports.
+        for (smiles, expected) in [
+            ("CCO", 20.23),                            // one hydroxyl
+            ("CC(=O)O", 37.30),                        // carbonyl and hydroxyl
+            ("c1ccccc1", 0.0),                         // nothing polar at all
+            ("c1ccncc1", 12.89),                       // pyridine nitrogen
+            ("c1cc[nH]c1", 15.79),                     // pyrrole nitrogen
+            ("CC(=O)Oc1ccccc1C(=O)O", 63.60),          // aspirin
+            ("CN1C=NC2=C1C(=O)N(C)C(=O)N2C", 61.82),   // caffeine
+            ("C[N+](C)(C)C", 0.0),                     // no lone pair left
+            ("CC#N", 23.79),                           // nitrile
+        ] {
+            let found = tpsa(smiles);
+            assert!(
+                (found - expected).abs() < 0.01,
+                "{smiles}: expected {expected}, found {found}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fallback_covers_what_the_table_does_not() {
+        // Ertl tabulated the states a drug-like molecule is made of and left a
+        // formula for the rest.
+        assert!((tpsa("O") - 31.50).abs() < 0.01); // water
+        assert!((tpsa("N") - 35.00).abs() < 0.01); // ammonia
+        assert!((tpsa("[NH4+]") - 36.50).abs() < 0.01);
+        assert!((tpsa("[OH-]") - 30.00).abs() < 0.01);
+        // The azide's three nitrogens: one tabulated, two from the formula.
+        assert!((tpsa("CN=[N+]=[N-]") - 48.76).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_three_membered_ring_changes_what_a_heteroatom_contributes() {
+        // Strain pulls the lone pair round, and Ertl fitted the difference.
+        assert!((tpsa("C1CO1") - 12.53).abs() < 0.01);
+        assert!((tpsa("CCOCC") - 9.23).abs() < 0.01);
+        assert!((tpsa("C1CN1") - 21.94).abs() < 0.01);
+    }
+
+    #[test]
+    fn rings_are_counted_as_the_number_of_bonds_to_cut() {
+        assert_eq!(parse("CCCC").ring_count(), 0);
+        assert_eq!(parse("C1CCCCC1").ring_count(), 1);
+        assert_eq!(parse("c1ccc2ccccc2c1").ring_count(), 2);
+        // Norbornane: two bonds have to go to leave a tree, whatever three
+        // faces one might prefer to name.
+        assert_eq!(parse("C1CC2CCC1C2").ring_count(), 2);
+        // Adamantane is three by this count and four by a symmetrised one.
+        assert_eq!(parse("C1C2CC3CC1CC(C2)C3").ring_count(), 3);
+        // Fragments do not borrow each other's bonds.
+        assert_eq!(parse("c1ccccc1.C1CC1").ring_count(), 2);
+        assert_eq!(parse("[Na+].[Cl-]").fragment_count(), 2);
+    }
+
+    #[test]
+    fn rotatable_bonds_leave_out_what_does_not_turn() {
+        assert_eq!(parse("CCCC").rotatable_bond_count(), 1);
+        assert_eq!(parse("CCCCC").rotatable_bond_count(), 2);
+        // Nothing to swing at either end.
+        assert_eq!(parse("CC").rotatable_bond_count(), 0);
+        assert_eq!(parse("c1ccccc1").rotatable_bond_count(), 0);
+        // The ring bonds do not count, and neither does the bond to a methyl.
+        assert_eq!(parse("Cc1ccccc1").rotatable_bond_count(), 0);
+        // An amide is drawn single and does not turn.
+        assert_eq!(parse("CCC(=O)NCC").rotatable_bond_count(), 2);
+        // A trifluoromethyl turns onto itself.
+        assert_eq!(parse("CCC(F)(F)F").rotatable_bond_count(), 0);
+        assert_eq!(parse("CCC(C)(C)C").rotatable_bond_count(), 0);
+        // A bond beside a triple bond is collinear with it.
+        assert_eq!(parse("CCC#CCC").rotatable_bond_count(), 0);
+    }
+
+    #[test]
+    fn saturation_and_charge() {
+        assert_eq!(parse("CCCC").fraction_saturated_carbons(), 1.0);
+        assert_eq!(parse("c1ccccc1").fraction_saturated_carbons(), 0.0);
+        assert_eq!(parse("Cc1ccccc1").fraction_saturated_carbons(), 1.0 / 7.0);
+        assert_eq!(parse("[Na+].[Cl-]").total_formal_charge(), 0);
+        assert_eq!(parse("CC(=O)[O-]").total_formal_charge(), -1);
+        assert_eq!(parse("CCO").heavy_atom_count(), 3);
+    }
+
+    #[test]
+    fn descriptors_do_not_depend_on_how_the_molecule_was_written() {
+        for writings in [
+            ["CC(=O)Oc1ccccc1C(=O)O", "OC(=O)C1=CC=CC=C1OC(C)=O"],
+            ["O=c1cc[nH]c(=O)[nH]1", "C1=CNC(=O)NC1=O"],
+            ["CN1C=NC2=C1C(=O)N(C)C(=O)N2C", "Cn1cnc2c1c(=O)n(C)c(=O)n2C"],
+        ] {
+            let first = parse(writings[0]);
+            let second = parse(writings[1]);
+            assert!(
+                (first.topological_polar_surface_area()
+                    - second.topological_polar_surface_area())
+                .abs()
+                    < 1e-9,
+                "{}", writings[1]
+            );
+            assert_eq!(first.ring_count(), second.ring_count());
+            assert_eq!(
+                first.rotatable_bond_count(),
+                second.rotatable_bond_count(),
+                "{}", writings[1]
+            );
+        }
+    }
+}
+
 mod featurize_tests {
     use crate::molecule::featurize::{
         ATOM_FEATURE_WIDTH, BOND_FEATURE_WIDTH, Hybridization, graph_features, hybridization,

@@ -1123,3 +1123,95 @@ mod crippen_tests {
         }
     }
 }
+
+mod maccs_tests {
+    use crate::molecule::fingerprint::{MACCS_KEY_COUNT, maccs_keys};
+    use crate::prelude::*;
+
+    /// The keys that are set, in order, for a SMILES that may have several
+    /// fragments.
+    fn keys_of(smiles: &str) -> Vec<usize> {
+        let fragments = MolecularGraph::from_smiles(smiles).expect("should parse");
+        let molecule = MolecularGraph::combine(&fragments.iter().collect::<Vec<_>>());
+        let keys = maccs_keys(&molecule);
+        (0..MACCS_KEY_COUNT).filter(|&bit| keys.get(bit)).collect()
+    }
+
+    #[test]
+    fn molecules_whose_keys_are_published() {
+        // The first two are RDKit's own documented examples; the rest are what
+        // it gives for the same structures.
+        assert_eq!(keys_of("CCC"), vec![74, 114, 149, 155, 160]);
+        assert_eq!(
+            keys_of("CNO"),
+            vec![24, 68, 69, 71, 93, 94, 102, 124, 131, 139, 151, 158, 160, 161, 164]
+        );
+        assert_eq!(keys_of("c1ccccc1"), vec![162, 163, 165]);
+        assert_eq!(
+            keys_of("CC(=O)Oc1ccccc1C(=O)O"),
+            vec![
+                89, 113, 123, 126, 127, 136, 139, 140, 143, 144, 146, 150, 152, 154, 157, 159, 160,
+                162, 163, 164, 165
+            ]
+        );
+    }
+
+    #[test]
+    fn the_two_keys_that_are_not_patterns() {
+        // 166 is more than one fragment, 125 more than one aromatic ring.
+        assert!(keys_of("CC.CC").contains(&166));
+        assert!(!keys_of("CCCC").contains(&166));
+        assert!(keys_of("c1ccccc1-c1ccccc1").contains(&125));
+        assert!(!keys_of("c1ccccc1").contains(&125));
+        // Naphthalene's two rings share a bond and are still two.
+        assert!(keys_of("c1ccc2ccccc2c1").contains(&125));
+    }
+
+    #[test]
+    fn the_key_nobody_ever_defined_is_never_set() {
+        for smiles in ["CCC", "[13CH4]", "c1ccccc1", "CC(=O)Oc1ccccc1C(=O)O"] {
+            assert!(!keys_of(smiles).contains(&1), "{smiles}");
+        }
+    }
+
+    #[test]
+    fn a_hydrogen_is_not_a_heavy_atom() {
+        // Key 122 is `*~[#7](~*)~*`, a nitrogen with three neighbours. With
+        // hydrogens counting as neighbours it would be every primary amine.
+        assert!(!keys_of("CN").contains(&122));
+        assert!(keys_of("CN(C)C").contains(&122));
+    }
+
+    #[test]
+    fn a_threshold_counts_substructures_and_not_the_ways_of_finding_them() {
+        // Key 145 is "more than one six-membered ring". A benzene can be laid
+        // over the pattern twelve ways and is still one ring.
+        assert!(!keys_of("c1ccccc1").contains(&145));
+        assert!(keys_of("c1ccccc1-c1ccccc1").contains(&145));
+    }
+
+    #[test]
+    fn it_does_not_depend_on_how_the_molecule_was_written() {
+        for (one, other) in [
+            ("CC(=O)Oc1ccccc1C(=O)O", "OC(=O)C1=CC=CC=C1OC(C)=O"),
+            ("Cn1cnc2c1c(=O)n(C)c(=O)n2C", "CN1C=NC2=C1C(=O)N(C)C(=O)N2C"),
+            ("c1ccc2ccccc2c1", "C1=CC2=CC=CC=C2C=C1"),
+        ] {
+            assert_eq!(keys_of(one), keys_of(other), "{one} against {other}");
+        }
+    }
+
+    #[test]
+    fn similar_molecules_share_more_keys_than_different_ones() {
+        let of = |smiles: &str| {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            maccs_keys(&molecule)
+        };
+        let aspirin = of("CC(=O)Oc1ccccc1C(=O)O");
+        assert_eq!(aspirin.len(), MACCS_KEY_COUNT);
+        assert_eq!(aspirin.tanimoto(&aspirin), 1.0);
+        assert!(
+            aspirin.tanimoto(&of("OC(=O)c1ccccc1O")) > aspirin.tanimoto(&of("CCCCCCCCCCCC"))
+        );
+    }
+}

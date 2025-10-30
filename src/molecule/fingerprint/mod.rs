@@ -30,6 +30,7 @@
 
 mod circular;
 mod heavy;
+mod maccs;
 mod minhash;
 mod shingles;
 mod pairs;
@@ -403,6 +404,7 @@ impl BitFingerprint {
     }
 }
 
+pub use maccs::{MACCS_KEY_COUNT, maccs_keys};
 pub use minhash::MinHash;
 
 pub use shingles::{

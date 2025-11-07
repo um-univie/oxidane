@@ -217,6 +217,37 @@ impl MoleculeCore for MolecularGraph {
 }
 
 impl MolecularGraph {
+    /// A graph assembled from parts a caller already holds.
+    ///
+    /// Every vector must be indexed by atom and the same length; the bonds must
+    /// be symmetric and in range. Nothing is perceived and nothing is checked,
+    /// which is why this is not public: it exists so that another representation
+    /// of the same molecule -- a [`crate::molecule::Molecule3D`], say -- can
+    /// hand over what it already has rather than being written out and read
+    /// back.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_parts(
+        atomic_numbers: Vec<u8>,
+        atom_classes: Option<Vec<usize>>,
+        charges: Vec<i8>,
+        chiral_classes: Option<Vec<ChiralClass>>,
+        isotopes: Option<Vec<u16>>,
+        partial_charges: Option<Vec<f64>>,
+        radical_states: Vec<u8>,
+        atom_bonds: Vec<ArrayVec<[BondTarget; 10]>>,
+    ) -> Self {
+        MolecularGraph {
+            atomic_numbers,
+            atom_classes,
+            charges,
+            chiral_classes,
+            isotopes,
+            partial_charges,
+            radical_states,
+            atom_bonds,
+        }
+    }
+
     pub fn from_smiles(smiles: &str) -> Result<Vec<Self>, SMILESParseError> {
         let parser = SMILESParser::parse_smiles(smiles)?;
         Ok(parser)

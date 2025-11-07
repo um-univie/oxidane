@@ -46,6 +46,26 @@ pub struct Molecule3D {
 }
 
 impl Molecule3D {
+    /// The same molecule without its coordinates.
+    ///
+    /// Everything that is a property of the constitution comes across; the
+    /// positions do not, and neither do partial charges, which a
+    /// [`Molecule3D`] does not carry. Useful wherever an interface asks for a
+    /// [`MolecularGraph`] -- substructure matching, canonization, every
+    /// fingerprint -- while the conformer is kept alongside.
+    pub fn to_graph(&self) -> MolecularGraph {
+        MolecularGraph::from_parts(
+            self.atomic_numbers.clone(),
+            self.atom_classes.clone(),
+            self.charges.clone(),
+            self.chiral_classes.clone(),
+            self.isotopes.clone(),
+            None,
+            self.radical_states.clone(),
+            self.atom_bonds.clone(),
+        )
+    }
+
     pub fn atom_bonds_mut(&mut self, atom_index: usize) -> &mut ArrayVec<[BondTarget; 10]> {
         &mut self.atom_bonds[atom_index]
     }

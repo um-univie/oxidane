@@ -1215,3 +1215,151 @@ mod maccs_tests {
         );
     }
 }
+
+mod shape_tests {
+    use crate::molecule::shape::{
+        USRCAT_LENGTH, USR_LENGTH, plane_of_best_fit, principal_moments, shape_descriptors, usr,
+        usr_reference_points, usr_score, usrcat, usrcat_score,
+    };
+    use crate::prelude::*;
+    use crate::vector::Vector3D;
+
+    fn point(x: f64, y: f64, z: f64) -> Vector3D {
+        Vector3D { x, y, z }
+    }
+
+    /// A conformer read from the one SDF the repository carries.
+    fn pentene() -> Molecule3D {
+        Molecule3D::from_sdf("tests/pentene.sdf")
+            .expect("should parse")
+            .remove(0)
+    }
+
+    #[test]
+    fn a_descriptor_has_the_length_it_claims() {
+        let molecule = pentene();
+        assert_eq!(usr(&molecule.positions).len(), USR_LENGTH);
+        assert_eq!(
+            usrcat(&molecule.to_graph(), &molecule.positions).len(),
+            USRCAT_LENGTH
+        );
+        // The first twelve of a USRCAT descriptor are the USR descriptor.
+        let first = usr(&molecule.positions);
+        let second = usrcat(&molecule.to_graph(), &molecule.positions);
+        assert_eq!(first, second[..USR_LENGTH]);
+    }
+
+    #[test]
+    fn the_reference_points_are_where_they_should_be() {
+        // Four points on a line: the centroid sits in the middle, the nearest
+        // atom is one of the inner two, and the two furthest are the ends.
+        let line = [
+            point(0.0, 0.0, 0.0),
+            point(1.0, 0.0, 0.0),
+            point(2.0, 0.0, 0.0),
+            point(9.0, 0.0, 0.0),
+        ];
+        let [centroid, nearest, furthest, opposite] = usr_reference_points(&line);
+        assert!((centroid.x - 3.0).abs() < 1e-12);
+        assert_eq!(nearest.x, 2.0);
+        assert_eq!(furthest.x, 9.0);
+        assert_eq!(opposite.x, 0.0);
+    }
+
+    #[test]
+    fn a_shape_is_the_same_as_itself_and_not_as_another() {
+        let molecule = pentene();
+        let descriptor = usr(&molecule.positions);
+        assert_eq!(usr_score(&descriptor, &descriptor), 1.0);
+
+        // Move every atom a long way along one axis and the shape is unchanged:
+        // the descriptor is of the arrangement, not of where it sits.
+        let moved: Vec<Vector3D> = molecule
+            .positions
+            .iter()
+            .map(|position| point(position.x + 100.0, position.y, position.z))
+            .collect();
+        let shifted = usr(&moved);
+        for (ours, theirs) in descriptor.iter().zip(shifted.iter()) {
+            assert!((ours - theirs).abs() < 1e-9);
+        }
+
+        // A different arrangement of the same atoms is a different shape.
+        let stretched: Vec<Vector3D> = molecule
+            .positions
+            .iter()
+            .map(|position| point(position.x * 3.0, position.y, position.z))
+            .collect();
+        assert!(usr_score(&descriptor, &usr(&stretched)) < 0.5);
+    }
+
+    #[test]
+    fn a_score_needs_one_weight_for_each_block() {
+        let molecule = pentene();
+        let descriptor = usrcat(&molecule.to_graph(), &molecule.positions);
+        assert_eq!(usrcat_score(&descriptor, &descriptor, &[1.0; 5]), 1.0);
+        // Four weights for five blocks says nothing at all.
+        assert_eq!(usrcat_score(&descriptor, &descriptor, &[1.0; 4]), 0.0);
+        // And so does comparing descriptors of different lengths.
+        assert_eq!(usr_score(&descriptor, &usr(&molecule.positions)), 0.0);
+    }
+
+    #[test]
+    fn the_moments_of_shapes_whose_moments_are_known() {
+        // Four atoms at the corners of a square in the xy plane, equal weights.
+        // Two of the three moments are equal, and the third is their sum.
+        let square = [
+            point(1.0, 1.0, 0.0),
+            point(1.0, -1.0, 0.0),
+            point(-1.0, 1.0, 0.0),
+            point(-1.0, -1.0, 0.0),
+        ];
+        // The closed-form eigenvalue solve loses a few digits where two of the
+        // three are equal, which a square is exactly the case of.
+        let [first, second, third] = principal_moments(&square, &[1.0; 4]);
+        assert!((first - 4.0).abs() < 1e-6, "{first}");
+        assert!((second - 4.0).abs() < 1e-6, "{second}");
+        assert!((third - 8.0).abs() < 1e-6, "{third}");
+
+        // And it is flat, so nothing is off its plane of best fit.
+        assert!(plane_of_best_fit(&square) < 1e-9);
+    }
+
+    #[test]
+    fn a_flat_molecule_and_a_round_one() {
+        let benzene = embedded("c1ccccc1");
+        let adamantane = embedded("C1C2CC3CC1CC(C2)C3");
+
+        let flat = shape_descriptors(&benzene.to_graph(), &benzene.positions);
+        let round = shape_descriptors(&adamantane.to_graph(), &adamantane.positions);
+
+        // Benzene lies in a plane; adamantane does not.
+        assert!(flat.plane_of_best_fit < 0.1, "{}", flat.plane_of_best_fit);
+        assert!(round.plane_of_best_fit > 0.3, "{}", round.plane_of_best_fit);
+        // A disc has no spread along its normal; a ball has the same in every
+        // direction.
+        assert!(flat.spherocity_index < 0.05, "{}", flat.spherocity_index);
+        assert!(round.spherocity_index > 0.8, "{}", round.spherocity_index);
+        // A disc's largest moment is twice each of the others; a ball's three
+        // are alike, so it is far less aspherical.
+        assert!(flat.asphericity > round.asphericity);
+        assert!(round.first_ratio > 0.9 && round.second_ratio > 0.9);
+    }
+
+    /// A molecule with coordinates, embedded from its SMILES.
+    fn embedded(smiles: &str) -> Molecule3D {
+        use crate::molecule::embed::Embed3D;
+        MolecularGraph::from_smiles_single(smiles)
+            .expect("should parse")
+            .embed_3d()
+            .expect("should embed")
+    }
+
+    #[test]
+    fn a_molecule_with_no_atoms_says_nothing_rather_than_crashing() {
+        assert_eq!(usr(&[]).len(), USR_LENGTH);
+        assert!(usr(&[]).iter().all(|&value| value == 0.0));
+        assert_eq!(principal_moments(&[], &[]), [0.0; 3]);
+        assert_eq!(plane_of_best_fit(&[]), 0.0);
+    }
+}

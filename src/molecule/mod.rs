@@ -17,6 +17,7 @@ pub mod pi_system;
 pub mod topology;
 pub mod molecular_system;
 pub mod reaction;
+pub mod shape;
 pub mod molecule3d;
 pub mod traits;
 pub mod utils;

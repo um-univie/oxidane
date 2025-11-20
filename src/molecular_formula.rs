@@ -4,7 +4,6 @@ use core::{
     fmt::{Display, Formatter},
     str::FromStr,
 };
-use ndarray::{Array1, s};
 use nohash_hasher::IntMap;
 use rustfft::{FftPlanner, num_complex::Complex64};
 
@@ -158,12 +157,19 @@ impl IsotopicPattern {
     /// pattern.add(&other);
     /// // The two patterns share no mass bucket, so merging keeps all four.
     /// assert_eq!(pattern.buckets.len(), 4);
+    ///
+    /// // A shared bucket keeps one entry, and its abundances add.
+    /// let mut pattern = IsotopicPattern::new(&vec![0.5], &vec![1.0]);
+    /// pattern.add(&IsotopicPattern::new(&vec![0.25], &vec![1.0]));
+    /// assert_eq!(pattern.buckets.len(), 1);
+    /// assert!((pattern.buckets.values().next().unwrap().1 - 0.75).abs() < 1e-12);
     /// ```
     pub fn add(&mut self, other: &IsotopicPattern) {
         for (mass_index, &(mass, abundance)) in other.buckets.iter() {
-            let mut bucket = *self.buckets.entry(*mass_index).or_insert((mass, 0.0));
-            bucket.1 += abundance;
-            bucket.0 = (bucket.0 * bucket.1 + mass * abundance) / bucket.1;
+            let bucket = self.buckets.entry(*mass_index).or_insert((mass, 0.0));
+            let new_abundance = bucket.1 + abundance;
+            bucket.0 = (bucket.0 * bucket.1 + mass * abundance) / new_abundance;
+            bucket.1 = new_abundance;
         }
     }
 

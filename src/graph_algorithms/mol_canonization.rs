@@ -1,9 +1,8 @@
 use crate::io::SMILESParseError;
 use crate::molecule::aromaticity::{AromaticityModel, Aromatizer};
 use crate::molecule::chirality::*;
-use crate::molecule::graph::{AtomInvariant, AtomLabel, AtomLabelImplicitHydrogens};
+use crate::molecule::graph::AtomInvariant;
 use crate::prelude::*;
-use bit_set::BitSet;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -33,38 +32,17 @@ fn collect_automorphism_generator(
 //         create_canonical_adjacency_matrix_edge_labeled, graph_canon_labeled,
 //     },
 // };
-use itertools::{Itertools, max};
 //use nauty_pet::autom::AutomGroup;
-use nohash_hasher::IntMap;
-use petgraph::adj::Neighbors;
-use petgraph::algo::connected_components;
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::{EdgeRef, GetAdjacencyMatrix};
 use rustc_hash::FxHashMap;
 
 use graphcanon::{
-    refine::{DISPATCH_GRAPH, GraphContext},
+    refine::GraphContext,
     search::canonicalize,
-    structs::{CanonautOptions, DispatchVec, Statistics},
+    structs::{CanonautOptions, Statistics},
 };
 
-use std::ffi::c_void;
 
 pub type BitMatrix = Vec<usize>;
-
-fn print_matrix(matrix: &[usize], words_per_vertex: usize, number_of_vertices: usize) {
-    for i in 0..number_of_vertices {
-        for j in 0..words_per_vertex {
-            let word = matrix[i * words_per_vertex + j];
-            for i in 0..number_of_vertices {
-                let bit_index = 1 << (64 - 1 - i);
-                let bit = (word & bit_index) != 0;
-                print!("{:} ", bit as u8);
-            }
-        }
-        println!();
-    }
-}
 
 /// The working buffers one canonization needs, beside the aromaticity ones.
 ///
@@ -342,7 +320,6 @@ pub fn canonical_chiral_classes<T: Molecule + Clone + ToSMILES>(mol: &T) -> Vec<
 #[derive(Debug, PartialEq, Eq)]
 enum CanonizationError {
     InvalidInput,
-    InternalError,
 }
 
 fn run_canonization<T: Molecule + ToSMILES + Clone>(
@@ -360,18 +337,18 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     sorted_labels.clear();
     sorted_labels.extend(indices.iter().map(|&i| labels[i].clone()));
 
-    let Some((mut adjacency_matrix, mut partition, number_of_heavy_atoms)) =
+    let Some((adjacency_matrix, mut partition, number_of_heavy_atoms)) =
         molecule.prepare_canonization(sorted_labels)
     else {
         return Err(CanonizationError::InvalidInput);
     };
 
-    let mut words_per_vertex = adjacency_matrix.words_per_vertex;
-    let mut number_of_vertices = adjacency_matrix.number_of_vertices;
+    let words_per_vertex = adjacency_matrix.words_per_vertex;
+    let number_of_vertices = adjacency_matrix.number_of_vertices;
     let labeling = &mut scratch.labeling;
     labeling.clear();
     labeling.extend((0..number_of_vertices).map(|x| x as u32));
-    let mut matrix = adjacency_matrix.matrix;
+    let matrix = adjacency_matrix.matrix;
 
     let canong = &mut scratch.canong;
     canong.clear();
@@ -596,7 +573,7 @@ fn prepare_and_sort_indices_and_labels<T: Molecule>(mol: &T) -> (Vec<usize>, Vec
 }
 
 /// Reorders the atoms in a molecule according to a given labeling
-pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, mut labeling: &[usize]) {
+pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, labeling: &[usize]) {
     // Nothing to permute, and the bond-table rebuild below seeds itself from
     // `atom_bonds()[0]`, which does not exist for an empty molecule.
     if mol.len() == 0 {
@@ -981,17 +958,6 @@ fn has_inversion(old_neighbors: &[usize], new_neighbors: &[usize]) -> bool {
     inversions % 2 == 1
 }
 
-/// Gets the neighboring atoms in the SMILES path for a given position
-fn get_path_neighbors(path: &[usize], neighbor_set: &BitSet) -> Vec<usize> {
-    let mut neighbors = Vec::with_capacity(10);
-    for atom in path {
-        if neighbor_set.contains(*atom) {
-            neighbors.push(*atom);
-        }
-    }
-    neighbors
-}
-
 /// Compares two strings and returns a formatted comparison using ANSI color codes.
 /// Matching characters are shown in green, differences in red.
 ///
@@ -1077,7 +1043,7 @@ pub fn compare_strings_formatted(s1: &str, s2: &str) -> String {
 /// ```
 pub fn canonicalize_and_sort_smiles(
     smiles: &str,
-    with_sorting: bool,
+    _with_sorting: bool,
 ) -> Result<String, SMILESParseError> {
     // Parsed with the default options, so aromaticity is already perceived;
     // `canonize_mol` would do it a second time.
@@ -1118,16 +1084,11 @@ fn update_oh_chirality(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph_algorithms::mol_canonization::{
-        canonicalize_and_sort_smiles,
-        compare_strings_formatted,
-        // mol_canonization,
-        // to_canonical_smiles,
-    };
-    use crate::prelude::*;
+    use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+    
     use rayon::prelude::*;
     use std::fs::File;
-    use std::fs::OpenOptions;
+    
     use std::io::Write;
     use std::io::{BufRead, BufReader};
     use std::sync::Mutex;
@@ -1543,12 +1504,12 @@ mod tests {
             .take(limit)
             .collect::<Vec<_>>();
         let wrong_smiles_file = Mutex::new(File::create("tests/wrong_smiles.txt").unwrap());
-        let log_file = Mutex::new(File::create("tests/canonization_log.txt").unwrap());
+        let _log_file = Mutex::new(File::create("tests/canonization_log.txt").unwrap());
 
         // Record the start time
         let start_time = Instant::now();
         // Build thread pool
-        let pool = rayon::ThreadPoolBuilder::new()
+        let _pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
             .unwrap();

@@ -420,9 +420,9 @@ impl Vector3D {
     /// ```
     ///
     pub fn random_unit_vector() -> Self {
-        let mut rng = rand::thread_rng();
-        let theta = rng.gen_range(0.0..std::f64::consts::PI);
-        let phi = rng.gen_range(0.0..2.0 * std::f64::consts::PI);
+        let mut rng = rand::rng();
+        let theta = rng.random_range(0.0..std::f64::consts::PI);
+        let phi = rng.random_range(0.0..2.0 * std::f64::consts::PI);
 
         let x = theta.sin() * phi.cos();
         let y = theta.sin() * phi.sin();

@@ -286,7 +286,7 @@ impl Bond {
         if line.len() < 9 {
             return Err("Bond line too short".into());
         }
-        let field = |range: std::ops::Range<usize>| -> Result<usize, Box<dyn std::error::Error>> {
+        let _field = |range: std::ops::Range<usize>| -> Result<usize, Box<dyn std::error::Error>> {
             Ok(line[range].trim().parse::<usize>()?)
         };
 
@@ -324,16 +324,6 @@ impl Bond {
             .unwrap_or(0);
         Ok((bond, stereo))
     }
-}
-
-fn parse_counts_line(line: &str) -> Result<(usize, usize), Box<dyn std::error::Error>> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 2 {
-        return Err("Invalid line length".into());
-    }
-    let num_atoms = parts[0].parse()?;
-    let num_bonds = parts[1].parse()?;
-    Ok((num_atoms, num_bonds))
 }
 
 impl std::str::FromStr for CountsLine {

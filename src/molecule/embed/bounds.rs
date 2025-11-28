@@ -407,7 +407,7 @@ mod tests {
         let bond_lower = get_lower(&bounds, 0, 1);
         let bond_upper = get_upper(&bounds, 0, 1);
 
-        let lower13 = get_lower(&bounds, 0, 2);
+        let _lower13 = get_lower(&bounds, 0, 2);
         let upper13 = get_upper(&bounds, 0, 2);
 
         // 90 deg (+-3 deg ring-override tolerance) -> diagonal close to

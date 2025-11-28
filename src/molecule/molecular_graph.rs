@@ -9,9 +9,7 @@ use crate::{
     },
 };
 use bit_set::BitSet;
-use chemistry_consts::ElementProperties;
 use nohash_hasher::IntMap;
-use rustc_hash::{FxHashMap, FxHashSet};
 use std::fmt;
 use tinyvec::ArrayVec;
 
@@ -347,40 +345,6 @@ impl MolecularGraph {
     ) -> Result<Self, SMILESParseError> {
         SMILESParser::parse_smiles_single_with(smiles, options)
     }
-    fn count_atom_pi_electrons(&self, atom_idx: usize) -> usize {
-        // Count pi electrons from multiple bonds
-        let pi_electrons = self.atom_bonds()[atom_idx]
-            .iter()
-            .map(|bond| match bond.bond_order() {
-                BondOrder::Double => 1, // One pi electron per double bond
-                BondOrder::Triple => 2, // Two pi electrons per triple bond
-                _ => 0,
-            })
-            .sum();
-
-        // Add electrons from lone pairs for certain atoms
-        let atomic_number = self.atomic_numbers()[atom_idx];
-        match atomic_number {
-            7 => {
-                // Nitrogen
-                if self.get_atom_charge(atom_idx) == 0 && pi_electrons == 0 {
-                    2 // Neutral N with no pi bonds contributes lone pair
-                } else {
-                    pi_electrons
-                }
-            }
-            8 | 16 => {
-                // Oxygen or Sulfur
-                if self.get_atom_charge(atom_idx) == 0 && pi_electrons == 0 {
-                    2 // Neutral O/S with no pi bonds contributes lone pair
-                } else {
-                    pi_electrons
-                }
-            }
-            _ => pi_electrons,
-        }
-    }
-
     /// Split the molecule into multiple molecules based on atom indices.
     ///
     /// This method creates separate molecules from groups of atoms, but only if the split
@@ -489,6 +453,33 @@ impl MolecularGraph {
     }
 
     /// Creates a new molecule from a subset of atoms
+    /// The subgraph induced on `atoms`: those atoms, in the order given, and
+    /// only the bonds that run between them.
+    ///
+    /// Unlike [`MolecularGraph::split`] this makes no claim that the cut is
+    /// clean -- a bond to an atom left out is simply dropped, and the atom it
+    /// left behind keeps whatever valence that gives it. The caller is saying
+    /// which atoms it wants to reason about, not that the rest were never
+    /// there.
+    pub fn subgraph(&self, atoms: &[usize]) -> Result<Self, SplitError> {
+        self.create_molecule_from_atoms(atoms)
+    }
+
+    /// A copy with every hydrogen dropped.
+    ///
+    /// Hydrogens are atoms in this crate, and most of what a caller wants to
+    /// do with a molecular graph -- count its heavy atoms, draw it, compare its
+    /// skeleton against another -- does not want them. Note that the count is
+    /// then gone rather than made implicit: nothing in the result records that
+    /// a carbon used to carry three hydrogens.
+    pub fn without_hydrogens(&self) -> Self {
+        let heavy: Vec<usize> = (0..self.atomic_numbers.len())
+            .filter(|&atom| self.atomic_numbers[atom] != 1)
+            .collect();
+        self.create_molecule_from_atoms(&heavy)
+            .unwrap_or_else(|_| MolecularGraph::default())
+    }
+
     fn create_molecule_from_atoms(
         &self,
         atom_indices: &[usize],

@@ -54,11 +54,11 @@ pub trait Draw<M: Molecule> {
         );
 
         // Draw bonds
-        for (atom_idx) in 0..self.len() {
+        for atom_idx in 0..self.len() {
             let (x1, y1) =
                 self.scale_coordinate(coordinates[atom_idx], (min_x, min_y), scale_factor, MARGIN);
 
-            let bonds = self.get_atom_bonds(atom_idx).unwrap().clone();
+            let bonds = self.get_atom_bonds(atom_idx).unwrap();
 
             for bond in bonds {
                 let target = bond.target();
@@ -182,9 +182,9 @@ pub trait Draw<M: Molecule> {
         }
 
         // Initialize random positions
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut positions: Vec<(f64, f64)> = (0..n_atoms)
-            .map(|_| (rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0)))
+            .map(|_| (rng.random_range(-1.0..1.0), rng.random_range(-1.0..1.0)))
             .collect();
 
         let mut temp = TEMPERATURE;

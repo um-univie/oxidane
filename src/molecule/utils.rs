@@ -1,6 +1,5 @@
 use crate::molecule::bond::{BondOrder, BondTarget};
 use nohash_hasher::IntMap;
-use rustc_hash::FxHashSet;
 
 /// A faster alternative to HashSet<(usize,usize)> using a flat array with bit packing
 pub fn decrease_bond(bond: &mut BondTarget) {

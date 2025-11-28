@@ -67,7 +67,6 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
 /// One end of a bond as the CIP code sees it.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CipBond {
-    pub(super) index: usize,
     pub(super) other: usize,
     /// Kekulé bond order; 0 for coordinate/dative bonds, which CIP treats as
     /// contributing no duplicated atoms.
@@ -147,7 +146,6 @@ impl CipMol {
                 };
                 let key = (atom.min(other), atom.max(other));
                 list.push(CipBond {
-                    index: list.len(),
                     other,
                     order,
                     in_ring: ring_bonds.contains(&key),

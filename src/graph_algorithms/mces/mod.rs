@@ -38,7 +38,6 @@ mod search;
 mod types;
 
 use crate::molecule::base::Molecule;
-use crate::molecule::graph::MoleculeGraph;
 use std::rc::Rc;
 use types::{AlgorithmState, McesGraph};
 

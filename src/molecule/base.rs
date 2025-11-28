@@ -1,24 +1,18 @@
 use crate::{
-    atom::{self, Atom},
+    atom::Atom,
     molecular_formula::MolecularFormula,
     molecule::{
         bond::{Bond, BondOrder, BondTarget},
         chirality::{ChiralClass, ChiralType},
-        graph::{AtomLabel, AtomLabelImplicitHydrogens, Node},
+        graph::Node,
         traits::*,
-        utils::{is_hueckel_satisfied, order_tuple},
+        utils::order_tuple,
     },
 };
 use bit_set::BitSet;
 use bitvec::prelude::*;
 use chemistry_consts::ElementProperties;
-use itertools::CircularTupleWindows;
-use nohash_hasher::{IntMap, IntSet};
-use petgraph::{
-    algo::subgraph_isomorphisms_iter,
-    graph::{NodeIndex, UnGraph},
-};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use tinyvec::{ArrayVec, array_vec};
 
 pub trait Molecule:
@@ -835,7 +829,7 @@ pub trait MoleculeCore {
             };
 
             for _ in 0..number_of_hydrogens {
-                let hydrogen_index = self.atomic_numbers().len();
+                let _hydrogen_index = self.atomic_numbers().len();
                 let atom = Atom::new(1)
                     .with_charge(0)
                     .with_radical(0)
@@ -911,7 +905,7 @@ pub trait MoleculeCore {
         })
     }
 
-    fn aromatize_metallocenic_system(&mut self, system: &BitSet) {
+    fn aromatize_metallocenic_system(&mut self, _system: &BitSet) {
         // // First, identify the metal center
         // let metal_center = system.iter()
         //     .flat_map(|cycle| cycle.iter())

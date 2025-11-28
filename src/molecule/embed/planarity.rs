@@ -46,12 +46,6 @@ pub(super) struct RingPlane {
 }
 
 impl RingPlane {
-    /// Ring membership, in cyclic order - exposed so [`super::forcefield`]
-    /// can skip generating a redundant torsion restraint for bonds this
-    /// (stronger, whole-ring) restraint already governs.
-    pub(super) fn atoms(&self) -> &[usize] {
-        &self.atoms
-    }
 }
 
 fn is_sp2_atom<T: MoleculeCore>(mol: &T, atom: usize) -> bool {

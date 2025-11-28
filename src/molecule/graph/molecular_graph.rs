@@ -1,15 +1,9 @@
 use crate::graph_algorithms::monomorphism::Monomorphism;
-use crate::io::ToSMILES;
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::bond::BondOrder;
 use crate::molecule::chirality::ChiralType;
 use nohash_hasher::IntMap;
-use petgraph::{
-    algo::subgraph_isomorphisms_iter,
-    dot::Dot,
-    graph::{NodeIndex, UnGraph},
-    visit::IntoNodeReferences,
-};
+use petgraph::graph::{NodeIndex, UnGraph};
 use rustc_hash::FxHashMap;
 use std::hash::{Hash, Hasher};
 

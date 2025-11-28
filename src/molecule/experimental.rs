@@ -431,7 +431,7 @@ pub trait MoleculeExperimental: MoleculeCore {
         is_hueckel_satisfied(pi_electrons)
     }
 
-    fn check_moebius_topology(&self, system: &BitSet) -> bool {
+    fn check_moebius_topology(&self, _system: &BitSet) -> bool {
         false // Placeholder
     }
 

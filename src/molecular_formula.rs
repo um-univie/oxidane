@@ -219,26 +219,6 @@ impl IsotopicPattern {
         self.buckets.is_empty()
     }
 
-    fn combine(&self, other: &Self, n_peaks: usize) -> Self {
-        let mut combined = IsotopicPattern::default();
-        let min_mass = (self.buckets.keys().min().unwrap() + other.buckets.keys().min().unwrap())
-            as f64
-            / PRECISION;
-        let max_mass = min_mass + n_peaks as f64;
-
-        for (&_, &(mass_self, abundance_self)) in &self.buckets {
-            for (&_, &(mass_other, abundance_other)) in &other.buckets {
-                let combined_mass = mass_self + mass_other;
-                if combined_mass <= max_mass {
-                    let combined_prob = abundance_self * abundance_other;
-                    combined.add_entry(combined_mass, combined_prob);
-                }
-            }
-        }
-
-        combined
-    }
-
     pub fn shift(&mut self, shift: f64) {
         let mut new_buckets = IntMap::default();
         for bucket in self.buckets.values_mut() {

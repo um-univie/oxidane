@@ -1,8 +1,8 @@
 use super::CipConfigs;
-use crate::molecule::base::{Molecule, MoleculeCore};
+use crate::molecule::base::Molecule;
 use crate::molecule::bond::BondOrder;
 use crate::molecule::cip::CipConfig;
-use crate::molecule::graph::{AtomLabel, MoleculeGraph};
+use crate::molecule::graph::AtomLabel;
 use bit_set::BitSet;
 use rustc_hash::FxHashMap;
 

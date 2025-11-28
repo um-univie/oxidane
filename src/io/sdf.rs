@@ -3,17 +3,14 @@ use crate::molecule::aromaticity::{AromaticityModel, MoleculeAromaticity};
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::chirality::{ChiralClass, ChiralClassifier};
 use crate::{
-    molecule::bond::{Bond, BondOrder, BondTarget},
+    molecule::bond::{BondOrder, BondTarget},
     molecule::molecule3d::Molecule3D,
     vector::Vector3D,
 };
 use chemistry_consts::ElementProperties;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::io::{self, BufRead, BufReader};
-use std::num::ParseFloatError;
-use std::num::ParseIntError;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::str::FromStr;
 use tinyvec::ArrayVec;
 
 #[derive(Debug)]

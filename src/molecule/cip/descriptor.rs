@@ -18,6 +18,9 @@
 /// found to have no configuration, as distinct from `Unknown` ("the rules ran
 /// out before deciding") and `None` ("nothing assigned").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+// The axial descriptors below are part of the modelled domain rather than of
+// any code path yet; see the note on `M`.
+#[allow(dead_code)]
 pub(super) enum Descriptor {
     #[default]
     None,
@@ -34,11 +37,17 @@ pub(super) enum Descriptor {
     SeqCis,
     E,
     Z,
+    /// Axial *M*. Nothing assigns the axial descriptors yet -- helicenes,
+    /// atropisomeric biaryls and the like are not perceived as stereogenic --
+    /// but [`Descriptor::pair_ref`] already pairs them the way the rules
+    /// require, and dropping them would mean re-deriving that pairing when
+    /// axial perception lands.
     M,
+    /// Axial *P*. See [`Descriptor::M`].
     P,
-    /// Pseudo-asymmetric *m*.
+    /// Pseudo-asymmetric *m*. See [`Descriptor::M`].
     LowerM,
-    /// Pseudo-asymmetric *p*.
+    /// Pseudo-asymmetric *p*. See [`Descriptor::M`].
     LowerP,
 }
 

@@ -167,11 +167,6 @@ impl Aromatizer {
         )
     }
 
-
-    /// The buffers, for a caller assembling a larger scratch of its own.
-    pub(crate) fn scratch_mut(&mut self) -> &mut AromaticityScratch {
-        &mut self.scratch
-    }
 }
 
 thread_local! {

@@ -141,10 +141,6 @@ impl Digraph {
         &self.edges[id]
     }
 
-    pub(super) fn edge_mut(&mut self, id: EdgeId) -> &mut Edge {
-        &mut self.edges[id]
-    }
-
     pub(super) fn origin(&self) -> NodeId {
         self.origin
     }

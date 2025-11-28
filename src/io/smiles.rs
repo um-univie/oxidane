@@ -1,10 +1,8 @@
 use std::fmt::Write as _;
 
 use crate::atom::Atom;
-use std::collections::HashMap;
-use crate::molecule::aromaticity::{AromaticityModel, MoleculeAromaticity};
+use crate::molecule::aromaticity::AromaticityModel;
 use crate::atom::{BOND_CAPACITY, WILDCARD_ATOMIC_NUMBER, WILDCARD_SYMBOL};
-use crate::molecule::Molecule;
 use crate::molecule::graph::Node;
 pub use crate::{
     molecule::bond::{BondOrder, BondTarget},
@@ -206,7 +204,7 @@ impl<'a> SMILESParser<'a> {
         for (molecule, written) in molecules.iter_mut().zip(write_orders.iter()) {
             molecule.add_hydrogens();
 
-            Self::assign_proper_chirality(molecule);
+            Self::assign_proper_chirality(molecule)?;
             crate::molecule::cip::normalize_tetrahedral_references(molecule, written);
             crate::molecule::cip::normalize_allene_references(molecule, written);
             molecule.convert_directional_bonds_to_chiral();
@@ -2292,7 +2290,7 @@ mod tests {
         for smile in smiles.lines() {
             println!("Parsing: {}", smile);
             match SMILESParser::parse_smiles(smile) {
-                Ok(molecules) => {
+                Ok(_molecules) => {
                     // println!("{:?}", molecules);
                 }
                 Err(e) => {

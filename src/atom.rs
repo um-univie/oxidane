@@ -122,26 +122,6 @@ impl Atom {
         }
     }
 
-    fn from_sdf_line(line: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 {
-            return Err("Invalid atom line".into());
-        }
-        let position_vector = Some(Vector3D {
-            x: parts[0].parse()?,
-            y: parts[1].parse()?,
-            z: parts[2].parse()?,
-        });
-        let atomic_number = parts[3]
-            .atomic_number()
-            .ok_or("Could not find atomic number")?;
-        Ok(Atom {
-            position_vector,
-            atomic_number,
-            ..Default::default()
-        })
-    }
-
     /// Returns the expected valency of the atom based on its atomic number
     ///
     /// # Examples

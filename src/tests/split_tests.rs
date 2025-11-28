@@ -7,7 +7,7 @@ mod tests {
         molecular_graph::MolecularGraph,
         traits::*,
     };
-    use tinyvec::{ArrayVec, array_vec};
+    
 
     /// Helper function to create a simple test molecule
     /// Creates a linear chain: 0-1-2-3

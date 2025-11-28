@@ -8,7 +8,7 @@ mod tests {
 
     #[test]
     fn test_is_chiral() {
-        let mut mols = Molecule3D::from_xyz("tests/ethane.xyz").unwrap();
+        let mols = Molecule3D::from_xyz("tests/ethane.xyz").unwrap();
         let mut mol = mols.into_iter().next().unwrap();
         mol.identify_chiral_classes();
         assert!(!mol.is_chiral());
@@ -39,22 +39,22 @@ mod tests {
 
     #[test]
     fn test_square_planar_chirality() {
-        let mut mols = Molecule3D::from_xyz("tests/cisplatin_sp2.xyz").unwrap();
+        let mols = Molecule3D::from_xyz("tests/cisplatin_sp2.xyz").unwrap();
         let mut cisplatin = mols.into_iter().next().unwrap();
         cisplatin.identify_chiral_classes();
         assert_eq!(cisplatin.chiral_classes().unwrap()[0], ChiralClass::SP(3));
 
-        let mut mols = Molecule3D::from_xyz("tests/transplatin_sp1.xyz").unwrap();
+        let mols = Molecule3D::from_xyz("tests/transplatin_sp1.xyz").unwrap();
         let mut transplatin = mols.into_iter().next().unwrap();
         transplatin.identify_chiral_classes();
         assert_eq!(transplatin.chiral_classes().unwrap()[0], ChiralClass::SP(1));
 
-        let mut mols = Molecule3D::from_xyz("tests/transplatin_sp2.xyz").unwrap();
+        let mols = Molecule3D::from_xyz("tests/transplatin_sp2.xyz").unwrap();
         let mut transplatin = mols.into_iter().next().unwrap();
         transplatin.identify_chiral_classes();
         assert_eq!(transplatin.chiral_classes().unwrap()[0], ChiralClass::SP(2));
 
-        let mut mols = Molecule3D::from_xyz("tests/transplatin_sp3.xyz").unwrap();
+        let mols = Molecule3D::from_xyz("tests/transplatin_sp3.xyz").unwrap();
         let mut transplatin = mols.into_iter().next().unwrap();
         transplatin.identify_chiral_classes();
         assert_eq!(transplatin.chiral_classes().unwrap()[0], ChiralClass::SP(3));

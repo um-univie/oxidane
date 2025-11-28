@@ -1,11 +1,5 @@
 use crate::molecule::Molecule;
 use chemistry_consts::ElementProperties;
-use std::collections::HashMap;
-use petgraph::graph::{Graph, NodeIndex, UnGraph};
-use std::str::FromStr;
-use std::collections::HashSet;
-use petgraph::visit::EdgeRef;
-use petgraph::Undirected;
 //use nauty_pet::prelude::*;
 
 pub trait ToGml {

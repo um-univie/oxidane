@@ -552,7 +552,7 @@ pub enum AxisDirection {
 
 /// Represents the orientation of the viewing axis in an octahedral configuration.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum AxisOrientation {
+pub enum AxisOrientation {
     Normal,
     Reversed,
     None,
@@ -1592,8 +1592,8 @@ pub fn update_chirality_after_relabeling_in_place(mol: &mut impl Molecule, label
                     .count();
                 let number_of_bonds = neighbors.len();
 
-                let mut old_order: Vec<usize>;
-                let mut new_order: Vec<usize>;
+                let old_order: Vec<usize>;
+                let new_order: Vec<usize>;
 
                 if number_of_double_bonds == 2 && number_of_bonds == 2 {
                     // Allene-like structure
@@ -1661,7 +1661,7 @@ pub fn update_chirality_after_relabeling_in_place(mol: &mut impl Molecule, label
         };
     }
 
-    let mut chiral_classes = mol.chiral_classes_mut().unwrap();
+    let chiral_classes = mol.chiral_classes_mut().unwrap();
     chiral_classes.copy_from_slice(&temp_classes);
 }
 

@@ -435,7 +435,6 @@ mod chiral_canonization_tests {
         );
     }
 
-    #[test]
     /// Writing an allene from the other end reverses the order of all four
     /// carriers, which is an odd permutation, so the equivalent spelling
     /// carries the opposite tag.

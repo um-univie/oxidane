@@ -364,7 +364,7 @@ mod aromatization_tests {
     fn test_pyridine_aromatization() {
         let molecule = MolecularGraph::from_smiles("C1=CC=CN=C1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule.to_smiles(), "c1cccnc1");
     }
@@ -374,7 +374,7 @@ mod aromatization_tests {
         let molecule = MolecularGraph::from_smiles("C1=CC=C2C=CC=CC2=C1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule.to_smiles(), "c1ccc2ccccc2c1");
     }
@@ -384,7 +384,7 @@ mod aromatization_tests {
         let molecule = MolecularGraph::from_smiles("C1=CC=C[CH-]1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule.to_smiles(), "c1ccc[cH-]1");
     }
@@ -395,7 +395,7 @@ mod aromatization_tests {
         let molecule = MolecularGraph::from_smiles("C1=CC=CC=CC=C1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule.to_smiles(), "C1=CC=CC=CC=C1");
     }
@@ -404,7 +404,7 @@ mod aromatization_tests {
     fn test_furan_aromatization() {
         let molecule = MolecularGraph::from_smiles("C1=COC=C1").unwrap();
         let mut molecule1 = molecule.first().unwrap().clone();
-        molecule1.aromatize_opensmiles();
+        molecule1.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule1.to_smiles(), "c1cocc1");
     }
@@ -415,7 +415,7 @@ mod aromatization_tests {
         let molecule = MolecularGraph::from_smiles("C=C").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         // Check that the double bond remains unchanged
         assert_eq!(molecule.atom_bonds()[0][0].bond_order(), BondOrder::Double);
@@ -501,7 +501,7 @@ mod new_aromatization {
     fn test_furan_aromatization() {
         let molecule = MolecularGraph::from_smiles("C1=COC=C1").unwrap();
         let mut molecule1 = molecule.first().unwrap().clone();
-        molecule1.aromatize_opensmiles();
+        molecule1.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule1.to_smiles(), "c1cocc1");
     }
@@ -511,7 +511,7 @@ mod new_aromatization {
         let molecule = MolecularGraph::from_smiles("C1=CC=C2C=CC=CC2=C1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule.to_smiles(), "c1ccc2ccccc2c1");
     }
@@ -521,7 +521,7 @@ mod new_aromatization {
         let molecule = MolecularGraph::from_smiles("C1=CC=C[CH-]1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
 
         assert_eq!(molecule.to_smiles(), "c1ccc[cH-]1");
     }
@@ -531,7 +531,7 @@ mod new_aromatization {
         // Cyclooctatetraene is not aromatic (8 electrons, not 4n+2)
         let mut molecule = MolecularGraph::from_smiles_single("C1=CC=CC=CC=C1").unwrap();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
     }
 
     #[test]
@@ -541,7 +541,7 @@ mod new_aromatization {
     fn test_big_systems() {
         let mut molecule = MolecularGraph::from_smiles_single("C12=C3C4=C5C6=C1C7=C8C9=C1C%10=C%11C(=C29)C3=C2C3=C4C4=C5C5=C9C6=C7C6=C7C8=C1C1=C8C%10=C%10C%11=C2C2=C3C3=C4C4=C5C5=C%11C%12=C(C6=C95)C7=C1C1=C%12C5=C%11C4=C3C3=C5C(=C81)C%10=C23").unwrap();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
@@ -550,7 +550,7 @@ mod new_aromatization {
 
         let mut molecule = MolecularGraph::from_smiles_single("[BH]1C=CC=CC=C1").unwrap();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
@@ -559,7 +559,7 @@ mod new_aromatization {
 
         let mut molecule = MolecularGraph::from_smiles_single("[BH]1C=CC=CC=C1").unwrap();
 
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
@@ -570,7 +570,7 @@ mod new_aromatization {
             "C1=CC2=CC3=CC=C(N3)C=C4C=CC(=N4)C=C5C=CC(=N5)C=C1N2",
         )
         .unwrap();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         println!("{}", molecule.to_smiles());
         let mut number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
@@ -583,7 +583,7 @@ mod new_aromatization {
         // [22]annulene
         let mut molecule =
             MolecularGraph::from_smiles_single("C1=CC=CC=CC=CC=CC=CC=CC=CC=CC=CC=C1").unwrap();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         let _number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
@@ -593,7 +593,7 @@ mod new_aromatization {
 
         // Graphene
         let mut molecule = MolecularGraph::from_smiles_single("C1=CC2=CC3=CC4=C5C6=C3C7=C2C(=C1)C8=C9C7=C1C6=C2C3=C6C1=C1C9=C(C=CC1=CC6=CC1=C3C3=C6C(=C1)C=C1C=CC=C7C1=C6C1=C6C3=C2C5=C2C6=C3C(=CC2=C4)C=CC2=C3C1=C7C=C2)C=C8").unwrap();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         println!("{}", molecule.to_smiles());
         let _number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
@@ -608,14 +608,14 @@ mod new_aromatization {
             "C1=CC2=CC3=CC=C(N3)C=C4C=CC(=N4)C=C5C=CC(=N5)C=C1N2",
         )
         .unwrap();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         println!("{}", molecule.to_smiles());
 
         let mut molecule = MolecularGraph::from_smiles_single(
             "C1=CC2=CC5=CC=C(C=C4C=CC(C=C3C=CC(=CC1=N2)N3)=N4)N5",
         )
         .unwrap();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         println!("{}", molecule.to_smiles());
     }
 }
@@ -634,12 +634,12 @@ mod chirality_tests {
         let mut molecule = molecule.first().unwrap().clone();
 
         println!("{:?}", molecule.chiral_classes());
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         assert_eq!(molecule.to_smiles(), "C[C@H](C)C");
 
         let molecule = MolecularGraph::from_smiles("N1[C@H](Cl)[C@@H](Cl)C(Cl)CC1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         assert_eq!(molecule.to_smiles(), "N1[C@H](Cl)[C@@H](Cl)C(Cl)CC1");
 
         let molecule = MolecularGraph::from_smiles_single("C/C=C/C").unwrap();
@@ -648,21 +648,21 @@ mod chirality_tests {
         // assert_eq!(canonized.to_smiles(), "C[C@@H]=[C@H]C");
 
         let mut molecule = MolecularGraph::from_smiles_single("CC/C=C/C").unwrap();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         // let canonized = mol_canonization(&molecule);
         assert_eq!(molecule.to_smiles(), "CC/C=C/C");
         // assert_eq!(canonized.to_smiles(), "C[C@@H]=[C@H]CC");
 
         let molecule = MolecularGraph::from_smiles("CC/C=C/CC/C=C\\C").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         // let canonized = mol_canonization(&molecule);
         assert_eq!(molecule.to_smiles(), "CC/C=C/CC/C=C\\C");
         // assert_eq!(canonized.to_smiles(), "CC[C@@H]=[C@H]CC[C@@H]=[C@@H]C");
 
         let molecule = MolecularGraph::from_smiles("CC(\\C)=C/CC/C=C\\C").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
-        molecule.aromatize_opensmiles();
+        molecule.aromatize_opensmiles().unwrap();
         // let canonized = mol_canonization(&molecule);
         assert_eq!(molecule.to_smiles(), "C/C(C)=C\\CC/C=C\\C");
         // TODO: This fail as we need to switch up to down if the order changes

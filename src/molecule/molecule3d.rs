@@ -1,7 +1,7 @@
 use crate::{
     atom::{Atom, XYZParserError},
     consts::BOND_TOLERANCE,
-    molecule::chirality::{ChiralClass, ChiralClassifier},
+    molecule::chirality::ChiralClass,
     molecule::{
         bond::{BondAngle, BondOrder, BondTarget},
         traits::*,
@@ -608,12 +608,6 @@ impl Molecule3D {
         }
     }
 
-    fn to_smiles_with_preprocessing(&mut self) -> String {
-        if self.chiral_classes().is_none() {
-            self.identify_chiral_classes();
-        }
-        self.to_smiles()
-    }
     /// Finds the shortest path of a set of atoms
     ///
     /// # Examples

@@ -111,7 +111,7 @@ impl BondTarget {
             bond_order: BondOrder::Triple,
         }
     }
-    fn aromatic(target: usize) -> BondTarget {
+    pub fn aromatic(target: usize) -> BondTarget {
         BondTarget {
             target,
             bond_order: BondOrder::Aromatic,

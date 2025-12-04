@@ -997,22 +997,29 @@ impl<'a> SMILESParser<'a> {
         if bytes[*position] == b'+' || bytes[*position] == b'-' {
             let sign = bytes[*position];
             *position += 1;
-            if bytes[*position].is_ascii_digit() {
-                match sign {
-                    b'+' => self.current_atom_charge = Some(byte_to_number(bytes[*position]) as i8),
-                    b'-' => {
-                        self.current_atom_charge = Some(-(byte_to_number(bytes[*position]) as i8))
-                    }
-                    _ => (), // This cant happen
+            // A charge is written either as a signed number -- `[Ca+2]` -- or
+            // as the sign repeated, `[Ca++]`. The second is the older spelling
+            // and the one catalogues and vendor files are still full of, so a
+            // reader that only takes the first rejects a calcium salt.
+            let magnitude = if *position < bytes.len() && bytes[*position].is_ascii_digit() {
+                let mut magnitude: i32 = 0;
+                while *position < bytes.len() && bytes[*position].is_ascii_digit() {
+                    magnitude = magnitude
+                        .saturating_mul(10)
+                        .saturating_add(byte_to_number(bytes[*position]) as i32);
+                    *position += 1;
                 }
-                *position += 1;
+                magnitude
             } else {
-                match sign {
-                    b'+' => self.current_atom_charge = Some(1),
-                    b'-' => self.current_atom_charge = Some(-1),
-                    _ => (), // This cant happen
+                let mut magnitude: i32 = 1;
+                while *position < bytes.len() && bytes[*position] == sign {
+                    magnitude += 1;
+                    *position += 1;
                 }
-            }
+                magnitude
+            };
+            let magnitude = magnitude.clamp(0, i8::MAX as i32) as i8;
+            self.current_atom_charge = Some(if sign == b'+' { magnitude } else { -magnitude });
         }
 
         if bytes[*position] == b':' {

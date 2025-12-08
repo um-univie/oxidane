@@ -504,16 +504,21 @@ impl<'a> SMILESParser<'a> {
                                 ChiralClass::AL(1)
                             }
                         }
-                        (0, 4) => {
+                        // Four neighbours is tetrahedral however they are
+                        // bonded. A sulfoximine's sulfur carries `=O` and `=N`
+                        // and is still a stereocentre -- a configurationally
+                        // stable one, which is the point of the class -- and so
+                        // is the phosphorus of a phosphorothioate. Requiring
+                        // four single bonds rejected both.
+                        (_, 4) => {
                             if *chiral_class == ChiralClass::Clockwise {
                                 ChiralClass::TH(2)
                             } else {
                                 ChiralClass::TH(1)
                             }
                         }
-                        (0, 5) => {
+                        (_, 5) => {
                             // Trigonal bipyramidal
-                            // This should never happen but we'll handle it anyway
                             if *chiral_class == ChiralClass::Clockwise {
                                 ChiralClass::TB(2)
                             } else {
@@ -553,9 +558,8 @@ impl<'a> SMILESParser<'a> {
                                 (false, false) => ChiralClass::TH(1),
                             }
                         }
-                        (0, 6) => {
+                        (_, 6) => {
                             // Octahedral
-                            // This should never happen but we'll handle it anyway
                             if *chiral_class == ChiralClass::Clockwise {
                                 ChiralClass::OH(2)
                             } else {

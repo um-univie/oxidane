@@ -797,6 +797,70 @@ pub trait MoleculeCore {
     /// molecule.add_hydrogens();
     /// assert_eq!(molecule.number_of_bonded_element(0, 1), 4);
     /// ```
+    /// Rewrites a neutral hypervalent nitrogen's double bond to a terminal
+    /// chalcogen as the charge-separated pair it stands for.
+    ///
+    /// `c1ccn(=O)cc1` and `CN(C)=O` both put four bonds on a neutral nitrogen,
+    /// which nitrogen does not have. What is meant is the N-oxide,
+    /// `[n+]([O-])`, and until it is written that way the ring cannot be
+    /// kekulized at all -- pyridine N-oxide's five carbons have nothing to
+    /// pair the odd one with, because the nitrogen is offering no p orbital.
+    ///
+    /// The transform is the one RDKit's normaliser applies, and it is not a
+    /// guess: a neutral tetravalent nitrogen has no other reading.
+    ///
+    /// ```
+    /// use oxidane::prelude::*;
+    ///
+    /// // Written as a hypervalent nitrogen, read as the N-oxide.
+    /// let oxide = MolecularGraph::from_smiles_single("c1ccn(=O)cc1").unwrap();
+    /// assert_eq!(oxide.formal_charge(), 0);
+    /// assert_eq!(oxide.molecular_formula().to_string(), "C5H5N1O1");
+    /// ```
+    fn charge_separate_hypervalent_nitrogen(&mut self) {
+        let mut changes: Vec<(usize, usize)> = Vec::new();
+        for atom in 0..self.len() {
+            if self.get_atomic_number(atom) != 7 || self.get_atom_charge(atom) != 0 {
+                continue;
+            }
+            let Some(bonds) = self.get_atom_bonds(atom) else {
+                continue;
+            };
+            if self.actual_valency(atom) <= 3 {
+                continue;
+            }
+            // Only a *terminal* chalcogen: a double bond to anything that
+            // carries further bonds is part of a larger system, and moving its
+            // electrons would be a claim about that system rather than about
+            // this nitrogen.
+            let partner = bonds.iter().find(|bond| {
+                bond.bond_order() == BondOrder::Double
+                    && matches!(self.get_atomic_number(bond.target()), 8 | 16)
+                    && self.get_atom_charge(bond.target()) == 0
+                    && self
+                        .get_atom_bonds(bond.target())
+                        .is_some_and(|other| other.len() == 1)
+            });
+            if let Some(bond) = partner {
+                changes.push((atom, bond.target()));
+            }
+        }
+
+        for (nitrogen, chalcogen) in changes {
+            for (first, second) in [(nitrogen, chalcogen), (chalcogen, nitrogen)] {
+                if let Some(bonds) = self.get_atom_bonds_mut(first) {
+                    for bond in bonds.iter_mut() {
+                        if bond.target() == second {
+                            bond.bond_order = BondOrder::Single;
+                        }
+                    }
+                }
+            }
+            self.set_atom_charge(nitrogen, 1);
+            self.set_atom_charge(chalcogen, -1);
+        }
+    }
+
     fn add_hydrogens(&mut self) {
         self.add_hydrogens_with_valences(&[]);
     }

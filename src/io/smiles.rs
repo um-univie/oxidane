@@ -202,6 +202,7 @@ impl<'a> SMILESParser<'a> {
     ) -> Result<Vec<MolecularGraph>, SMILESParseError> {
         let (mut molecules, write_orders) = SMILESParser::parse_fragments(smiles)?;
         for (molecule, written) in molecules.iter_mut().zip(write_orders.iter()) {
+            molecule.charge_separate_hypervalent_nitrogen();
             molecule.add_hydrogens();
 
             Self::assign_proper_chirality(molecule)?;

@@ -6,6 +6,7 @@ mod embed_tests;
 mod fingerprint_tests;
 mod matching_tests;
 mod mces_tests;
+mod ml_tests;
 mod mcsplit_tests;
 mod reaction_tests;
 mod sdf_tests;

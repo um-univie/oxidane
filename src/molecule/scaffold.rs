@@ -224,8 +224,8 @@ pub fn murcko_framework(molecule: &MolecularGraph) -> MolecularGraph {
 /// The key two molecules share when they share a scaffold: the canonical
 /// SMILES of [`murcko_scaffold`], or the empty string for an acyclic molecule.
 ///
-/// Group a dataset by this and everything sharing a skeleton is in one group,
-/// which is what a split that means anything has to keep together.
+/// Group a dataset by this and you have the groups
+/// [`crate::ml::split::scaffold_split`] keeps on one side of the split.
 pub fn scaffold_key(molecule: &MolecularGraph) -> String {
     let scaffold = murcko_scaffold(molecule);
     if scaffold.is_empty() {

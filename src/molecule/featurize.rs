@@ -54,6 +54,14 @@ pub const ATOM_FEATURE_WIDTH: usize = FEATURED_ELEMENTS.len()
     + 4  // chirality
     + 1; // mass
 
+/// Which atom columns hold a quantity rather than an indicator.
+///
+/// Everything else is one hot, and means what it means at the scale it is
+/// already on. These are the columns [`crate::ml::normalize::FeatureStats`]
+/// standardises; the positions are part of the schema, so a column added here
+/// is a schema change like any other.
+pub const ATOM_CONTINUOUS_COLUMNS: [usize; 1] = [ATOM_FEATURE_WIDTH - 1]; // mass
+
 /// How many numbers describe one bond.
 pub const BOND_FEATURE_WIDTH: usize = 4  // order
     + 1  // conjugated

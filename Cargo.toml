@@ -15,7 +15,18 @@ exclude = ["tests/smiles_tree_permutations.txt", "notes/", "*.svg"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = []
+# The neural-network half: tensors, autodiff and optimizers. Everything under
+# `ml` that only shapes data -- batching, splitting, normalization -- is
+# dependency-free and always compiled; this feature adds the parts that need a
+# tensor library. candle's default feature set is pure Rust on the CPU, so
+# enabling it pulls in no BLAS, CUDA or Metal unless the dependent asks.
+ml = ["dep:candle-core", "dep:candle-nn"]
+
 [dependencies]
+candle-core = { version = "0.11", optional = true }
+candle-nn = { version = "0.11", optional = true }
 chemistry_consts = "0.3"
 itertools = "0.14.0"
 kiddo = "5.3.3"

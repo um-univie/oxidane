@@ -7,6 +7,8 @@ mod fingerprint_tests;
 mod matching_tests;
 mod mces_tests;
 mod ml_tests;
+#[cfg(feature = "ml")]
+mod nn_tests;
 mod mcsplit_tests;
 mod reaction_tests;
 mod sdf_tests;

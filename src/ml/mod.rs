@@ -13,6 +13,8 @@
 
 pub mod batch;
 pub mod dataset;
+#[cfg(feature = "ml")]
+pub mod nn;
 pub mod normalize;
 pub mod split;
 

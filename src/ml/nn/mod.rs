@@ -19,13 +19,14 @@
 //! [`crate::molecule::featurize`] does the first arrow, [`crate::ml::batch`]
 //! the second, and [`tensors`] the third. From there it is
 //! [`mpnn::Encoder`] and [`model::MolecularNet`], with [`loss`] and [`train`]
-//! around them.
+//! around them, and [`autoencoder`] for the unsupervised case.
 //!
 //! The device is the caller's choice throughout. candle's default build is
 //! pure Rust on the CPU; a dependent that wants a GPU turns on candle's own
 //! `cuda` or `metal` feature and passes a different [`candle_core::Device`],
 //! and nothing here changes.
 
+pub mod autoencoder;
 pub mod layers;
 pub mod loss;
 pub mod model;

@@ -1,10 +1,11 @@
 //! The neural half. Behind the `ml` feature, like the code it exercises.
 
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{VarBuilder, VarMap};
+use candle_nn::{Optimizer, VarBuilder, VarMap};
 
 use crate::ml::batch::GraphBatch;
 use crate::ml::dataset::Dataset;
+use crate::ml::nn::autoencoder::{AutoencoderConfig, GraphAutoencoder};
 use crate::ml::nn::layers::{Activation, Mlp, MlpConfig};
 use crate::ml::nn::loss::{mask_from_flags, masked_bce_with_logits, masked_mse};
 use crate::ml::nn::model::{ModelConfig, MolecularNet, bond_predictions};
@@ -683,4 +684,179 @@ fn normalization_travels_with_the_trainer() {
     let predictions = trainer.predict(&dataset, &split.train).unwrap();
     assert_eq!(predictions.len(), dataset.len());
     assert!(predictions.iter().all(|row| row[0].is_finite()));
+}
+
+// ------------------------------------------------------------ autoencoder --
+
+fn autoencoder_config() -> AutoencoderConfig {
+    AutoencoderConfig {
+        encoder: small_encoder(),
+        kind: EncoderKind::Gine,
+        latent: 8,
+        variational: false,
+    }
+}
+
+#[test]
+fn an_autoencoder_encodes_every_atom() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let autoencoder = GraphAutoencoder::new(autoencoder_config(), vb).unwrap();
+
+    let batch = batch_of(&["c1ccccc1O", "CCO"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = autoencoder.encode(&graph, false).unwrap();
+
+    assert_eq!(latent.mean.dims(), &[batch.atom_count, 8]);
+    assert!(latent.log_variance.is_none());
+    assert_eq!(
+        autoencoder
+            .kl_divergence(&latent)
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap(),
+        0.0
+    );
+}
+
+#[test]
+fn a_variational_autoencoder_has_a_spread_and_pays_for_it() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let autoencoder = GraphAutoencoder::variational(autoencoder_config(), vb).unwrap();
+
+    let batch = batch_of(&["c1ccccc1O"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = autoencoder.encode(&graph, false).unwrap();
+
+    assert!(latent.log_variance.is_some());
+    let kl = autoencoder.kl_divergence(&latent).unwrap().to_scalar::<f32>().unwrap();
+    assert!(kl.is_finite() && kl >= 0.0, "{kl}");
+
+    // Sampling adds noise while training and does not while evaluating.
+    assert_eq!(
+        to_vec(&autoencoder.sample(&latent, false).unwrap()),
+        to_vec(&latent.mean)
+    );
+    assert_ne!(
+        to_vec(&autoencoder.sample(&latent, true).unwrap()),
+        to_vec(&latent.mean)
+    );
+}
+
+#[test]
+fn an_autoencoder_learns_which_atoms_are_bonded() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let autoencoder = GraphAutoencoder::new(
+        AutoencoderConfig {
+            encoder: EncoderConfig { hidden: 32, depth: 3, ..small_encoder() },
+            latent: 16,
+            ..autoencoder_config()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let batch = batch_of(&[
+        "CC(=O)Oc1ccccc1C(=O)O",
+        "c1ccc2ccccc2c1",
+        "CCCCCCO",
+        "C1CCCCC1N",
+    ]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+
+    let mut optimizer = candle_nn::AdamW::new(
+        varmap.all_vars(),
+        candle_nn::ParamsAdamW {
+            lr: 0.02,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let mut first = None;
+    let mut last = 0.0;
+    for _ in 0..150 {
+        let latent = autoencoder.encode(&graph, true).unwrap();
+        let sampled = autoencoder.sample(&latent, true).unwrap();
+        let loss = autoencoder
+            .reconstruction_loss(&sampled, &batch, &device, 1)
+            .unwrap();
+        last = loss.to_scalar::<f32>().unwrap();
+        first.get_or_insert(last);
+        optimizer.backward_step(&loss).unwrap();
+    }
+
+    let first = first.unwrap();
+    assert!(last < first * 0.5, "reconstruction loss {first} -> {last}");
+
+    // And the decoder now separates bonded pairs from unbonded ones.
+    let latent = autoencoder.encode(&graph, false).unwrap();
+    let bonded: Vec<(usize, usize)> = (0..batch.edge_count).map(|e| batch.edge(e)).collect();
+    let mut unbonded = Vec::new();
+    let known: std::collections::HashSet<(usize, usize)> = bonded.iter().copied().collect();
+    for a in 0..batch.atom_count {
+        for b in 0..batch.atom_count {
+            if a != b && !known.contains(&(a, b)) && batch.batch[a] == batch.batch[b] {
+                unbonded.push((a, b));
+            }
+        }
+    }
+
+    let mean = |pairs: &[(usize, usize)]| {
+        let values = autoencoder.bond_probabilities(&latent.mean, pairs).unwrap();
+        values.iter().sum::<f32>() / values.len() as f32
+    };
+    let bonded_mean = mean(&bonded);
+    let unbonded_mean = mean(&unbonded);
+    assert!(
+        bonded_mean > unbonded_mean + 0.1,
+        "bonded {bonded_mean} vs unbonded {unbonded_mean}"
+    );
+}
+
+#[test]
+fn an_autoencoder_on_a_lone_atom_has_nothing_to_reconstruct() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let autoencoder = GraphAutoencoder::new(autoencoder_config(), vb).unwrap();
+
+    let batch = batch_of(&["C"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = autoencoder.encode(&graph, false).unwrap();
+    let loss = autoencoder
+        .reconstruction_loss(&latent.mean, &batch, &device, 1)
+        .unwrap();
+    assert_eq!(loss.to_scalar::<f32>().unwrap(), 0.0);
+}
+
+#[test]
+fn the_same_batch_draws_the_same_negatives() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let autoencoder = GraphAutoencoder::new(autoencoder_config(), vb).unwrap();
+
+    let batch = batch_of(&["c1ccc2ccccc2c1", "CCCO"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = autoencoder.encode(&graph, false).unwrap();
+
+    let once = autoencoder
+        .reconstruction_loss(&latent.mean, &batch, &device, 1)
+        .unwrap()
+        .to_scalar::<f32>()
+        .unwrap();
+    for _ in 0..5 {
+        let again = autoencoder
+            .reconstruction_loss(&latent.mean, &batch, &device, 1)
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert_eq!(once, again);
+    }
 }

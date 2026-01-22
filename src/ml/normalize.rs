@@ -196,3 +196,74 @@ impl StatsAccumulator {
         }
     }
 }
+
+/// The mean and deviation of every whole-molecule descriptor column.
+///
+/// Unlike the atom features, *all* of these are quantities -- a molecular
+/// weight, a polar surface area, a count of rings -- so all of them are
+/// scaled. A model handed molecular weight beside a fraction between zero and
+/// one spends its first layer undoing the difference in size.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GlobalStats {
+    pub schema_version: u32,
+    pub mean: Vec<f32>,
+    pub deviation: Vec<f32>,
+}
+
+impl GlobalStats {
+    /// Measures the descriptor rows of a batch. Empty if it carried none.
+    pub fn fit(batch: &GraphBatch) -> Self {
+        Self::fit_rows(&batch.global_features, batch.global_width)
+    }
+
+    /// [`GlobalStats::fit`] over a raw matrix and its width.
+    pub fn fit_rows(rows: &[f32], width: usize) -> Self {
+        if width == 0 || rows.is_empty() {
+            return Self {
+                schema_version: FEATURE_SCHEMA_VERSION,
+                ..Default::default()
+            };
+        }
+        let count = rows.len() / width;
+        let mut mean = vec![0.0f64; width];
+        let mut sum_squares = vec![0.0f64; width];
+        for (seen, row) in rows.chunks_exact(width).enumerate() {
+            let weight = 1.0 / (seen + 1) as f64;
+            for column in 0..width {
+                let value = row[column] as f64;
+                let previous = mean[column];
+                mean[column] += (value - previous) * weight;
+                sum_squares[column] += (value - previous) * (value - mean[column]);
+            }
+        }
+        Self {
+            schema_version: FEATURE_SCHEMA_VERSION,
+            mean: mean.iter().map(|&value| value as f32).collect(),
+            deviation: (0..width)
+                .map(|column| {
+                    let value = (sum_squares[column] / count.max(1) as f64).sqrt() as f32;
+                    if value > f32::EPSILON { value } else { 1.0 }
+                })
+                .collect(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.mean.is_empty()
+    }
+
+    /// Standardises a descriptor matrix in place.
+    pub fn apply(&self, rows: &mut [f32]) {
+        if self.mean.is_empty() {
+            return;
+        }
+        let width = self.mean.len();
+        for row in rows.chunks_exact_mut(width) {
+            for ((value, mean), deviation) in
+                row.iter_mut().zip(&self.mean).zip(&self.deviation)
+            {
+                *value = (*value - mean) / deviation;
+            }
+        }
+    }
+}

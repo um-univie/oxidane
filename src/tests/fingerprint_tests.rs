@@ -291,6 +291,7 @@ mod fingerprint_tests {
     }
 }
 
+#[cfg(test)]
 mod pair_and_torsion_tests {
     use crate::molecule::fingerprint::{
         DEFAULT_MAX_DISTANCE, Fingerprint, atom_pair_fingerprint, atom_pair_types,
@@ -454,6 +455,7 @@ mod pair_and_torsion_tests {
     }
 }
 
+#[cfg(test)]
 mod descriptor_tests {
     use crate::molecule::descriptors::MolecularDescriptors;
     use crate::prelude::*;
@@ -579,6 +581,7 @@ mod descriptor_tests {
     }
 }
 
+#[cfg(test)]
 mod featurize_tests {
     use crate::molecule::featurize::{
         ATOM_FEATURE_WIDTH, BOND_FEATURE_WIDTH, Hybridization, graph_features, hybridization,
@@ -745,6 +748,7 @@ mod featurize_tests {
     }
 }
 
+#[cfg(test)]
 mod minhash_tests {
     use crate::molecule::fingerprint::{Fingerprint, MinHash, circular_fingerprint};
     use crate::prelude::*;
@@ -845,6 +849,7 @@ mod minhash_tests {
     }
 }
 
+#[cfg(test)]
 mod shingle_tests {
     use crate::molecule::fingerprint::{
         Fingerprint, MinHash, atom_pair_fingerprint, circular_fingerprint, map4_fingerprint,
@@ -972,6 +977,7 @@ mod shingle_tests {
     }
 }
 
+#[cfg(test)]
 mod crippen_tests {
     use crate::molecule::crippen::{CrippenType, crippen_contributions, crippen_types};
     use crate::molecule::descriptors::MolecularDescriptors;
@@ -1124,6 +1130,7 @@ mod crippen_tests {
     }
 }
 
+#[cfg(test)]
 mod maccs_tests {
     use crate::molecule::fingerprint::{MACCS_KEY_COUNT, maccs_keys};
     use crate::prelude::*;
@@ -1216,6 +1223,7 @@ mod maccs_tests {
     }
 }
 
+#[cfg(test)]
 mod shape_tests {
     use crate::molecule::shape::{
         USRCAT_LENGTH, USR_LENGTH, plane_of_best_fit, principal_moments, shape_descriptors, usr,

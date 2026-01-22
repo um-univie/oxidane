@@ -35,6 +35,16 @@ pub struct ModelConfig {
     pub atom_head: Vec<usize>,
     /// The same, per bond.
     pub bond_head: Vec<usize>,
+    /// How wide a row of whole-molecule descriptors is, or zero for none.
+    ///
+    /// When it is not zero the graph head reads the pooled atom vectors with
+    /// that row concatenated on. Message passing sees a neighbourhood at a
+    /// time, so a property that turns on the size or the polarity of the whole
+    /// molecule reaches the readout the long way round or not at all;
+    /// [`crate::molecule::featurize::molecule_features`] hands it over
+    /// directly. It changes only the graph head -- an atom's prediction is
+    /// still about that atom.
+    pub global_width: usize,
     pub head: MlpConfig,
 }
 
@@ -129,7 +139,7 @@ impl MolecularNet {
         };
 
         Ok(Self {
-            graph_head: head(&config.graph_head, "graph_head", width)?,
+            graph_head: head(&config.graph_head, "graph_head", width + config.global_width)?,
             atom_head: head(&config.atom_head, "atom_head", width)?,
             // A bond sees the two atoms it joins, symmetrically: their sum and
             // the size of their difference. Concatenating the two atom vectors
@@ -172,7 +182,16 @@ impl MolecularNet {
         train: bool,
     ) -> Result<Predictions> {
         let graph_predictions = match &self.graph_head {
-            Some(head) => Some(head.forward(&graph.pool(atoms, self.config.pooling)?, train)?),
+            Some(head) => {
+                let pooled = graph.pool(atoms, self.config.pooling)?;
+                let read = match (&graph.global_features, self.config.global_width) {
+                    (Some(globals), width) if width > 0 => {
+                        Tensor::cat(&[&pooled, &globals.to_dtype(pooled.dtype())?], 1)?
+                    }
+                    _ => pooled,
+                };
+                Some(head.forward(&read, train)?)
+            }
             None => None,
         };
         let atom_predictions = match &self.atom_head {

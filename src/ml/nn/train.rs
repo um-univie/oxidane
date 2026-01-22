@@ -8,7 +8,7 @@ use crate::ml::dataset::{Batch, Dataset};
 use crate::ml::nn::loss::{mask_from_flags, masked_l1, masked_mse};
 use crate::ml::nn::model::MolecularNet;
 use crate::ml::nn::tensors::GraphTensors;
-use crate::ml::normalize::FeatureStats;
+use crate::ml::normalize::{FeatureStats, GlobalStats};
 use crate::ml::split::{Side, Split};
 
 /// Which loss a graph-level task is trained against.
@@ -90,6 +90,7 @@ pub struct Trainer<'a> {
     optimizer: AdamW,
     config: TrainConfig,
     stats: Option<FeatureStats>,
+    global_stats: Option<GlobalStats>,
     device: Device,
 }
 
@@ -115,6 +116,7 @@ impl<'a> Trainer<'a> {
             optimizer,
             config,
             stats: None,
+            global_stats: None,
             device: device.clone(),
         })
     }
@@ -127,6 +129,15 @@ impl<'a> Trainer<'a> {
     /// so.
     pub fn with_normalization(mut self, stats: FeatureStats) -> Self {
         self.stats = Some(stats);
+        self
+    }
+
+    /// Scales the whole-molecule descriptors the same way.
+    ///
+    /// Every one of them is a quantity, so all of them are scaled -- see
+    /// [`GlobalStats`]. Keep these with the weights too.
+    pub fn with_global_normalization(mut self, stats: GlobalStats) -> Self {
+        self.global_stats = Some(stats);
         self
     }
 
@@ -252,14 +263,23 @@ impl<'a> Trainer<'a> {
     }
 
     fn upload(&self, batch: &Batch) -> Result<GraphTensors> {
-        match &self.stats {
+        let atoms = match &self.stats {
             Some(stats) => {
                 let mut features = batch.graph.atom_features.clone();
                 stats.apply(&mut features);
-                GraphTensors::with_atom_features(&batch.graph, &features, &self.device)
+                std::borrow::Cow::Owned(features)
             }
-            None => GraphTensors::new(&batch.graph, &self.device),
-        }
+            None => std::borrow::Cow::Borrowed(batch.graph.atom_features.as_slice()),
+        };
+        let globals = match &self.global_stats {
+            Some(stats) if !stats.is_empty() => {
+                let mut features = batch.graph.global_features.clone();
+                stats.apply(&mut features);
+                std::borrow::Cow::Owned(features)
+            }
+            _ => std::borrow::Cow::Borrowed(batch.graph.global_features.as_slice()),
+        };
+        GraphTensors::with_features(&batch.graph, &atoms, &globals, &self.device)
     }
 }
 

@@ -35,6 +35,9 @@ pub struct GraphTensors {
     /// `[graph_count, 1]`, how many atoms each molecule has, floored at one so
     /// that a mean never divides by zero.
     pub atom_counts: Tensor,
+    /// `[graph_count, global_width]`, or `None` when the batch carried no
+    /// whole-molecule descriptors.
+    pub global_features: Option<Tensor>,
     pub atom_count: usize,
     pub edge_count: usize,
     pub graph_count: usize,
@@ -56,6 +59,17 @@ impl GraphTensors {
     pub fn with_atom_features(
         batch: &GraphBatch,
         atom_features: &[f32],
+        device: &Device,
+    ) -> Result<Self> {
+        Self::with_features(batch, atom_features, &batch.global_features, device)
+    }
+
+    /// [`GraphTensors::with_atom_features`] with the whole-molecule
+    /// descriptors scaled by the caller as well.
+    pub fn with_features(
+        batch: &GraphBatch,
+        atom_features: &[f32],
+        global_features: &[f32],
         device: &Device,
     ) -> Result<Self> {
         let (reverse, present) = batch.reverse_edges();
@@ -84,6 +98,15 @@ impl GraphTensors {
             reverse_mask: Tensor::from_slice(&mask, (batch.edge_count, 1), device)?,
             batch: Tensor::from_slice(batch.batch.as_slice(), batch.atom_count, device)?,
             atom_counts: Tensor::from_slice(&counts, (batch.graph_count, 1), device)?,
+            global_features: if batch.global_width == 0 || global_features.is_empty() {
+                None
+            } else {
+                Some(Tensor::from_slice(
+                    global_features,
+                    (batch.graph_count, batch.global_width),
+                    device,
+                )?)
+            },
             atom_count: batch.atom_count,
             edge_count: batch.edge_count,
             graph_count: batch.graph_count,

@@ -860,3 +860,182 @@ fn the_same_batch_draws_the_same_negatives() {
         assert_eq!(once, again);
     }
 }
+
+#[test]
+fn descriptors_reach_the_graph_head_and_only_the_graph_head() {
+    let device = Device::Cpu;
+    let mut dataset = Dataset::new(1);
+    for smiles in ["CCO", "c1ccccc1O", "CC(=O)Oc1ccccc1C(=O)O"] {
+        dataset.push_with_globals(&parse(smiles), &[Some(0.0)]);
+    }
+    let batch = dataset.batch(&[0, 1, 2]);
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            atom_head: vec![16, 1],
+            global_width: dataset.global_width(),
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let graph = GraphTensors::new(&batch.graph, &device).unwrap();
+    assert!(graph.global_features.is_some());
+    let predictions = model.forward(&graph, false).unwrap();
+    assert_eq!(predictions.graph.unwrap().dims(), &[3, 1]);
+    assert_eq!(predictions.atom.unwrap().dims(), &[batch.graph.atom_count, 1]);
+}
+
+#[test]
+fn changing_a_descriptor_changes_the_molecule_prediction_and_not_its_atoms() {
+    // The descriptors are read by the graph head alone, so an atom's
+    // prediction has to be untouched by them -- a per-atom answer is about
+    // that atom.
+    let device = Device::Cpu;
+    let mut dataset = Dataset::new(1);
+    for smiles in ["CCO", "c1ccccc1O"] {
+        dataset.push_with_globals(&parse(smiles), &[Some(0.0)]);
+    }
+    let batch = dataset.batch(&[0, 1]);
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            atom_head: vec![16, 1],
+            global_width: dataset.global_width(),
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let before = GraphTensors::new(&batch.graph, &device).unwrap();
+    let before = model.forward(&before, false).unwrap();
+
+    let mut altered = batch.graph.global_features.clone();
+    for value in altered.iter_mut() {
+        *value += 1.0;
+    }
+    let after = GraphTensors::with_features(
+        &batch.graph,
+        &batch.graph.atom_features,
+        &altered,
+        &device,
+    )
+    .unwrap();
+    let after = model.forward(&after, false).unwrap();
+
+    assert_ne!(
+        to_vec(&before.graph.unwrap()),
+        to_vec(&after.graph.unwrap()),
+        "the graph head ignored its descriptors"
+    );
+    assert_eq!(
+        to_vec(&before.atom.unwrap()),
+        to_vec(&after.atom.unwrap()),
+        "the atom head read the molecule's descriptors"
+    );
+}
+
+#[test]
+fn a_model_without_descriptors_ignores_a_batch_that_has_them() {
+    // `global_width` of zero is the model saying it was not built to read
+    // them, and a batch that happens to carry some must not change its answer.
+    let device = Device::Cpu;
+    let mut with = Dataset::new(1);
+    let mut without = Dataset::new(1);
+    for smiles in ["CCO", "c1ccccc1O"] {
+        with.push_with_globals(&parse(smiles), &[Some(0.0)]);
+        without.push(&parse(smiles), &[Some(0.0)]);
+    }
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let a = model
+        .forward(
+            &GraphTensors::new(&with.batch(&[0, 1]).graph, &device).unwrap(),
+            false,
+        )
+        .unwrap();
+    let b = model
+        .forward(
+            &GraphTensors::new(&without.batch(&[0, 1]).graph, &device).unwrap(),
+            false,
+        )
+        .unwrap();
+    assert_eq!(to_vec(&a.graph.unwrap()), to_vec(&b.graph.unwrap()));
+}
+
+#[test]
+fn descriptors_travel_through_the_trainer() {
+    let device = Device::Cpu;
+    let mut dataset = Dataset::new(1);
+    for smiles in TRAINING_SET {
+        let molecule = parse(smiles);
+        let heavy = (0..molecule.len())
+            .filter(|&atom| molecule.get_atomic_number(atom) != 1)
+            .count();
+        dataset.push_with_globals(&molecule, &[Some(heavy as f64)]);
+    }
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+    let training = dataset.batch(&split.train);
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            global_width: dataset.global_width(),
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            learning_rate: 0.02,
+            epochs: 150,
+            batch_size: 8,
+            patience: None,
+            seed: 3,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap()
+    .with_normalization(crate::ml::normalize::FeatureStats::fit(&training.graph))
+    .with_global_normalization(crate::ml::normalize::GlobalStats::fit(&training.graph));
+
+    let history = trainer.fit(&dataset, &split).unwrap();
+    let last = *history.train_loss.last().unwrap();
+    // The heavy-atom count is literally one of the descriptors, so a model
+    // that can read them should get this essentially exactly. Trained long
+    // enough that an unlucky weight initialisation cannot decide the outcome:
+    // candle seeds its own initialiser, not this test.
+    assert!(last < 0.05, "final mean squared error {last}");
+}

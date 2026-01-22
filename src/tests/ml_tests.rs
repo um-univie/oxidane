@@ -11,11 +11,16 @@ use crate::graph_algorithms::mol_canonization::canonize_mol;
 use crate::io::ToSMILES;
 use crate::ml::batch::GraphBatch;
 use crate::ml::dataset::Dataset;
-use crate::ml::normalize::FeatureStats;
-use crate::ml::split::{Fractions, Side, grouped_split, hashed_side, random_split, scaffold_split};
+use crate::ml::normalize::{FeatureStats, GlobalStats};
+use crate::ml::split::{
+    Fractions, Side, grouped_split, hashed_side, random_split, scaffold_split,
+    scaffold_split_balanced,
+};
 use crate::molecule::base::MoleculeCore;
+use crate::molecule::descriptors::MolecularDescriptors;
 use crate::molecule::featurize::{
-    ATOM_CONTINUOUS_COLUMNS, ATOM_FEATURE_WIDTH, FEATURE_SCHEMA_VERSION, graph_features,
+    ATOM_CONTINUOUS_COLUMNS, ATOM_FEATURE_WIDTH, FEATURE_SCHEMA_VERSION, MOLECULE_FEATURE_WIDTH,
+    graph_features, molecule_features,
 };
 use crate::molecule::scaffold::{
     framework_key, murcko_scaffold, murcko_scaffold_atoms, scaffold_key,
@@ -473,4 +478,147 @@ fn a_dataset_iterates_only_the_side_it_was_given() {
 fn a_ragged_target_row_is_refused() {
     let mut dataset = Dataset::new(3);
     dataset.push(&parse("CCO"), &[Some(1.0)]);
+}
+
+#[test]
+fn a_balanced_scaffold_split_still_keeps_its_groups_together() {
+    let smiles: Vec<String> = (0..40)
+        .map(|index| {
+            let core = ["c1ccccc1", "c1ccncc1", "C1CCCCC1", "C1CCCC1", "c1ccc2ccccc2c1"]
+                [index % 5];
+            format!("{}{}", core, "C".repeat(index / 5 + 1))
+        })
+        .collect();
+    let keys: Vec<String> = smiles.iter().map(|s| scaffold_key(&parse(s))).collect();
+
+    for seed in 0..4 {
+        let split = scaffold_split_balanced(&keys, Fractions::default(), seed);
+        assert_eq!(split.len(), keys.len(), "seed {seed}");
+        for (a, key_a) in keys.iter().enumerate() {
+            for (b, key_b) in keys.iter().enumerate() {
+                if key_a == key_b && !key_a.is_empty() {
+                    assert_eq!(split.side_of(a), split.side_of(b), "seed {seed}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_balanced_scaffold_split_moves_with_its_seed_and_not_otherwise() {
+    let smiles: Vec<String> = (0..200)
+        .map(|index| {
+            let core = [
+                "c1ccccc1", "c1ccncc1", "C1CCCCC1", "C1CCCC1", "c1ccc2ccccc2c1", "C1CC1",
+                "c1cscc1", "c1ccoc1", "C1CCNCC1", "c1cnc2ccccc2c1",
+            ][index % 10];
+            format!("{}{}", core, "C".repeat(index / 10 + 1))
+        })
+        .collect();
+    let keys: Vec<String> = smiles.iter().map(|s| scaffold_key(&parse(s))).collect();
+
+    let first = scaffold_split_balanced(&keys, Fractions::default(), 0);
+    assert_eq!(first, scaffold_split_balanced(&keys, Fractions::default(), 0));
+
+    let moved = (1..6)
+        .any(|seed| scaffold_split_balanced(&keys, Fractions::default(), seed) != first);
+    assert!(moved, "every seed gave the same split");
+}
+
+#[test]
+fn molecule_features_are_the_descriptors_the_crate_already_computes() {
+    let caffeine = parse("Cn1cnc2c1c(=O)n(C)c(=O)n2C");
+    let row = molecule_features(&caffeine);
+    assert_eq!(row.len(), MOLECULE_FEATURE_WIDTH);
+    assert_eq!(row[0], caffeine.heavy_atom_count() as f32);
+    assert!((row[1] - caffeine.molecular_weight() as f32).abs() < 1e-3);
+    assert!((row[2] - caffeine.crippen_log_p() as f32).abs() < 1e-4);
+    assert!((row[4] - caffeine.topological_polar_surface_area() as f32).abs() < 1e-3);
+    assert_eq!(row[8], caffeine.ring_count() as f32);
+    assert!(row.iter().all(|value| value.is_finite()));
+}
+
+#[test]
+fn molecule_features_do_not_depend_on_how_the_molecule_was_written() {
+    let writings = [
+        "CC(=O)Oc1ccccc1C(=O)O",
+        "O=C(C)Oc1ccccc1C(O)=O",
+        "OC(=O)c1ccccc1OC(C)=O",
+    ];
+    let rows: Vec<Vec<f32>> = writings
+        .iter()
+        .map(|s| molecule_features(&parse(s)))
+        .collect();
+    for other in &rows[1..] {
+        for (a, b) in rows[0].iter().zip(other) {
+            assert!((a - b).abs() < 1e-4, "{a} != {b}");
+        }
+    }
+}
+
+#[test]
+fn a_dataset_carries_descriptors_through_to_the_batch() {
+    let mut dataset = Dataset::new(1);
+    for smiles in ["CCO", "c1ccccc1", "CC(=O)Oc1ccccc1C(=O)O"] {
+        dataset.push_with_globals(&parse(smiles), &[Some(1.0)]);
+    }
+    assert_eq!(dataset.global_width(), MOLECULE_FEATURE_WIDTH);
+
+    let batch = dataset.batch(&[2, 0]);
+    assert_eq!(batch.graph.global_width, MOLECULE_FEATURE_WIDTH);
+    assert_eq!(
+        batch.graph.global_features.len(),
+        2 * MOLECULE_FEATURE_WIDTH
+    );
+    // In the order asked for, not the order stored.
+    assert_eq!(
+        &batch.graph.global_features[..MOLECULE_FEATURE_WIDTH],
+        dataset.globals(2)
+    );
+}
+
+#[test]
+fn a_dataset_without_descriptors_has_none() {
+    let mut dataset = Dataset::new(1);
+    dataset.push(&parse("CCO"), &[Some(1.0)]);
+    assert_eq!(dataset.global_width(), 0);
+    assert!(dataset.globals(0).is_empty());
+    assert!(dataset.batch(&[0]).graph.global_features.is_empty());
+}
+
+#[test]
+fn descriptor_scaling_centres_every_column() {
+    let mut dataset = Dataset::new(1);
+    for smiles in [
+        "CCO", "c1ccccc1", "CC(=O)Oc1ccccc1C(=O)O", "CCCCCCCCCC", "c1ccc2ccccc2c1O",
+        "CN(C)CCOC(c1ccccc1)c1ccccc1",
+    ] {
+        dataset.push_with_globals(&parse(smiles), &[Some(0.0)]);
+    }
+    let batch = dataset.batch(&(0..dataset.len()).collect::<Vec<_>>());
+    let stats = GlobalStats::fit(&batch.graph);
+    assert!(!stats.is_empty());
+
+    let mut scaled = batch.graph.global_features.clone();
+    stats.apply(&mut scaled);
+    for column in 0..MOLECULE_FEATURE_WIDTH {
+        let values: Vec<f32> = scaled
+            .chunks_exact(MOLECULE_FEATURE_WIDTH)
+            .map(|row| row[column])
+            .collect();
+        let mean = values.iter().sum::<f32>() / values.len() as f32;
+        assert!(mean.abs() < 1e-3, "column {column} mean {mean}");
+        assert!(values.iter().all(|value| value.is_finite()));
+    }
+}
+
+#[test]
+fn descriptor_scaling_of_an_empty_batch_does_nothing() {
+    let mut dataset = Dataset::new(1);
+    dataset.push(&parse("CCO"), &[Some(0.0)]);
+    let stats = GlobalStats::fit(&dataset.batch(&[0]).graph);
+    assert!(stats.is_empty());
+    let mut nothing: Vec<f32> = Vec::new();
+    stats.apply(&mut nothing);
+    assert!(nothing.is_empty());
 }

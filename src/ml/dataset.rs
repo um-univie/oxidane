@@ -32,7 +32,8 @@ use crate::ml::batch::GraphBatch;
 use crate::ml::shuffle;
 use crate::ml::split::{Side, Split};
 use crate::molecule::base::MoleculeCore;
-use crate::molecule::featurize::{GraphFeatures, graph_features};
+use crate::molecule::descriptors::MolecularDescriptors;
+use crate::molecule::featurize::{GraphFeatures, graph_features, molecule_features};
 
 /// Featurised molecules and their targets.
 ///
@@ -41,6 +42,8 @@ use crate::molecule::featurize::{GraphFeatures, graph_features};
 #[derive(Debug, Clone, Default)]
 pub struct Dataset {
     features: Vec<GraphFeatures>,
+    globals: Vec<f32>,
+    global_width: usize,
     targets: Vec<f32>,
     mask: Vec<bool>,
     task_count: usize,
@@ -67,6 +70,59 @@ impl Dataset {
     /// that trains but does not learn.
     pub fn push<M: MoleculeCore + ?Sized>(&mut self, molecule: &M, targets: &[Option<f64>]) {
         self.push_features(graph_features(molecule), targets);
+    }
+
+    /// [`Dataset::push`] with a row of whole-molecule descriptors as well.
+    ///
+    /// Message passing only sees a neighbourhood at a time, so a property that
+    /// depends on the size or the polarity of the whole molecule has to travel
+    /// far to reach the readout. Handing those to the readout directly is what
+    /// [`crate::molecule::featurize::molecule_features`] is for.
+    ///
+    /// # Panics
+    ///
+    /// If the row is a different width from the ones already stored.
+    pub fn push_with_globals<M: MolecularDescriptors + ?Sized>(
+        &mut self,
+        molecule: &M,
+        targets: &[Option<f64>],
+    ) {
+        let globals = molecule_features(molecule);
+        self.push_features_with_globals(graph_features(molecule), &globals, targets);
+    }
+
+    /// [`Dataset::push_with_globals`] for a molecule already featurised.
+    pub fn push_features_with_globals(
+        &mut self,
+        features: GraphFeatures,
+        globals: &[f32],
+        targets: &[Option<f64>],
+    ) {
+        if self.features.is_empty() {
+            self.global_width = globals.len();
+        }
+        assert_eq!(
+            globals.len(),
+            self.global_width,
+            "a molecule was given {} descriptors in a dataset of {}",
+            globals.len(),
+            self.global_width
+        );
+        self.globals.extend_from_slice(globals);
+        self.push_features(features, targets);
+    }
+
+    /// How wide a row of whole-molecule descriptors is; zero if there are none.
+    pub fn global_width(&self) -> usize {
+        self.global_width
+    }
+
+    /// One molecule's whole-molecule descriptors.
+    pub fn globals(&self, index: usize) -> &[f32] {
+        if self.global_width == 0 {
+            return &[];
+        }
+        &self.globals[index * self.global_width..(index + 1) * self.global_width]
     }
 
     /// [`Dataset::push`] for a molecule already featurised.
@@ -110,7 +166,14 @@ impl Dataset {
 
     /// The molecules named by `indices`, collated into one batch.
     pub fn batch(&self, indices: &[usize]) -> Batch {
-        let graph = GraphBatch::collate_iter(indices.iter().map(|&index| &self.features[index]));
+        let mut graph = GraphBatch::collate_iter(indices.iter().map(|&index| &self.features[index]));
+        if self.global_width > 0 {
+            graph.global_width = self.global_width;
+            graph.global_features = Vec::with_capacity(indices.len() * self.global_width);
+            for &index in indices {
+                graph.global_features.extend_from_slice(self.globals(index));
+            }
+        }
         let mut targets = Vec::with_capacity(indices.len() * self.task_count);
         let mut mask = Vec::with_capacity(indices.len() * self.task_count);
         for &index in indices {

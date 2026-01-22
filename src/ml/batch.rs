@@ -58,12 +58,36 @@ pub struct GraphBatch {
     /// Where each molecule's edges start, with a final entry equal to
     /// `edge_count`. Length `graph_count + 1`.
     pub edge_offsets: Vec<u32>,
+    /// `graph_count` rows of whole-molecule descriptors, or empty if none were
+    /// supplied. See [`crate::molecule::featurize::molecule_features`].
+    pub global_features: Vec<f32>,
+    /// How wide one of those rows is; zero when there are none.
+    pub global_width: usize,
 }
 
 impl GraphBatch {
     /// Lays out molecules side by side as one graph.
     pub fn collate(graphs: &[GraphFeatures]) -> Self {
         Self::collate_iter(graphs.iter())
+    }
+
+    /// [`GraphBatch::collate`] with a row of whole-molecule descriptors beside
+    /// each graph.
+    ///
+    /// The rows must all be the same width, and there must be one per graph.
+    pub fn collate_with_globals<'a, I>(graphs: I, globals: &[&[f32]]) -> Self
+    where
+        I: IntoIterator<Item = &'a GraphFeatures>,
+    {
+        let mut batch = Self::collate_iter(graphs);
+        batch.global_width = globals.first().map_or(0, |row| row.len());
+        batch.global_features = Vec::with_capacity(globals.len() * batch.global_width);
+        for row in globals {
+            debug_assert_eq!(row.len(), batch.global_width);
+            batch.global_features.extend_from_slice(row);
+        }
+        debug_assert_eq!(globals.len(), batch.graph_count);
+        batch
     }
 
     /// [`GraphBatch::collate`] without needing the molecules in a slice first.

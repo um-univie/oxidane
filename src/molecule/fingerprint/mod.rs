@@ -32,8 +32,20 @@ mod circular;
 mod heavy;
 mod maccs;
 mod minhash;
-mod shingles;
 mod pairs;
+mod shingles;
+
+pub use maccs::{MACCS_KEY_COUNT, maccs_keys};
+pub use minhash::MinHash;
+
+pub use shingles::{
+    DEFAULT_MAP4_RADIUS, map4_fingerprint, map4_shingles, mhfp_fingerprint, shingle_id,
+};
+
+pub use pairs::{
+    DEFAULT_MAX_DISTANCE, atom_pair_fingerprint, atom_pair_types, pair_id,
+    topological_torsion_fingerprint, torsion_id,
+};
 
 pub use circular::{
     CircularFingerprint, Environment, circular_fingerprint, circular_fingerprint_with_invariants,
@@ -403,15 +415,3 @@ impl BitFingerprint {
         total
     }
 }
-
-pub use maccs::{MACCS_KEY_COUNT, maccs_keys};
-pub use minhash::MinHash;
-
-pub use shingles::{
-    DEFAULT_MAP4_RADIUS, map4_fingerprint, map4_shingles, mhfp_fingerprint, shingle_id,
-};
-
-pub use pairs::{
-    DEFAULT_MAX_DISTANCE, atom_pair_fingerprint, atom_pair_types, pair_id,
-    topological_torsion_fingerprint, torsion_id,
-};

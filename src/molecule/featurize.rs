@@ -32,6 +32,7 @@
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::bond::BondOrder;
 use crate::molecule::chirality::ChiralClass;
+use crate::molecule::descriptors::MolecularDescriptors;
 
 /// The version of the column layout below.
 ///
@@ -244,6 +245,58 @@ pub fn graph_features<M: MoleculeCore + ?Sized>(molecule: &M) -> GraphFeatures {
         edge_index,
         atoms,
     }
+}
+
+/// How many numbers describe a whole molecule. See [`molecule_features`].
+pub const MOLECULE_FEATURE_WIDTH: usize = 12;
+
+/// One row of numbers for the molecule as a whole.
+///
+/// Message passing sees a neighbourhood at a time. Some of what a property
+/// depends on is not in any neighbourhood -- how large the molecule is, how
+/// much of its surface is polar, how many bonds it can turn about -- and
+/// reaching it by message passing means enough rounds that every atom's vector
+/// has converged on every other's. Handing those quantities to the readout
+/// directly is cheaper and works better, and it is what the strongest
+/// published variants of this architecture do.
+///
+/// Nothing here is new chemistry: every entry is a descriptor the crate
+/// already computes. The point is the fixed order, which is part of
+/// [`FEATURE_SCHEMA_VERSION`] like the atom columns are.
+///
+/// The columns, in order: heavy atoms, molecular weight, Crippen logP, Crippen
+/// molar refractivity, topological polar surface area, hydrogen-bond donors,
+/// hydrogen-bond acceptors, rotatable bonds, rings, fragments, fraction of
+/// saturated carbons, total formal charge.
+///
+/// Every one is a quantity rather than an indicator, so all of them want
+/// scaling -- see [`crate::ml::normalize::GlobalStats`].
+///
+/// ```
+/// use oxidane::prelude::*;
+/// use oxidane::molecule::featurize::{MOLECULE_FEATURE_WIDTH, molecule_features};
+///
+/// let caffeine = MolecularGraph::from_smiles_single("Cn1cnc2c1c(=O)n(C)c(=O)n2C").unwrap();
+/// let row = molecule_features(&caffeine);
+/// assert_eq!(row.len(), MOLECULE_FEATURE_WIDTH);
+/// assert_eq!(row[0], 14.0); // heavy atoms
+/// ```
+pub fn molecule_features<M: MolecularDescriptors + ?Sized>(molecule: &M) -> Vec<f32> {
+    let (log_p, refractivity) = molecule.crippen_descriptors();
+    vec![
+        molecule.heavy_atom_count() as f32,
+        molecule.molecular_weight() as f32,
+        log_p as f32,
+        refractivity as f32,
+        molecule.topological_polar_surface_area() as f32,
+        molecule.number_of_hydrogen_bond_donors() as f32,
+        molecule.number_of_hydrogen_bond_acceptors() as f32,
+        molecule.rotatable_bond_count() as f32,
+        molecule.ring_count() as f32,
+        molecule.fragment_count() as f32,
+        molecule.fraction_saturated_carbons() as f32,
+        molecule.total_formal_charge() as f32,
+    ]
 }
 
 /// Fills one atom's row. See the module documentation for what the columns are.

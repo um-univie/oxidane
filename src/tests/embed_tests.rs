@@ -974,6 +974,125 @@ mod tests {
         );
     }
 
+    /// The distance bounds, against frozen reality.
+    ///
+    /// `tests/bounds_reference_geometry.tsv` records what each short-range
+    /// pair of 26 molecules actually does over validated MMFF-relaxed
+    /// conformers. The 1-2 centre carries three constants fitted against
+    /// exactly that kind of geometry -- `MMFF_MINIMUM_OFFSET`,
+    /// `MMFF_ANGLE_OFFSET` and `crowding_correction`'s coefficient -- and
+    /// without this nothing in the suite would notice if a change to the
+    /// relaxation, to MMFF's parameters or to the typing quietly
+    /// invalidated them. `tests/bounds_quality.py` would, but it needs
+    /// RDKit and does not run here.
+    ///
+    /// The thresholds are the measured rates plus a little room, not
+    /// targets: the fixture is deliberately rich in crowded and strained
+    /// bonds, so its rates are far above a drug-like corpus's and are
+    /// supposed to be. If these move, find out why before moving them.
+    #[test]
+    fn the_bounds_still_contain_the_geometry_they_were_calibrated_on() {
+        /// Measured 24.4% of 205 bonds and 4.0% of 274 1-3 pairs on
+        /// 2026-10-09, with the crowding correction in and the width
+        /// correction out.
+        const BOND_LIMIT: f64 = 0.27;
+        const ANGLE_LIMIT: f64 = 0.06;
+
+        /// One fixture row: the two atoms, their topological distance, and
+        /// the range the pair covers over the reference conformers.
+        type Pair = (usize, usize, usize, f64, f64);
+        let mut by_molecule: Vec<(String, Vec<Pair>)> = Vec::new();
+        for line in include_str!("../../tests/bounds_reference_geometry.tsv").lines() {
+            if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            let fields: Vec<&str> = line.split('\t').collect();
+            assert_eq!(fields.len(), 7, "malformed fixture line: {line}");
+            let smiles = fields[1].to_string();
+            let record = (
+                fields[2].parse().unwrap(),
+                fields[3].parse().unwrap(),
+                fields[4].parse().unwrap(),
+                fields[5].parse().unwrap(),
+                fields[6].parse().unwrap(),
+            );
+            match by_molecule.last_mut() {
+                Some((last, pairs)) if *last == smiles => pairs.push(record),
+                _ => by_molecule.push((smiles, vec![record])),
+            }
+        }
+        assert!(by_molecule.len() >= 20, "fixture lost molecules");
+
+        let mut counted = [0usize; 3];
+        let mut excluded = [0usize; 3];
+        for (smiles, pairs) in &by_molecule {
+            let molecule = MolecularGraph::from_smiles_single(smiles).expect("should parse");
+            let (_atoms, bounds) = crate::molecule::embed::bounds_for_dump(&molecule)
+                .expect("should build bounds");
+            let mut lookup = std::collections::HashMap::new();
+            for (i, j, lower, upper) in bounds {
+                lookup.insert((i, j), (lower, upper));
+            }
+            for &(i, j, path, low, high) in pairs {
+                let Some(&(lower, upper)) = lookup.get(&(i, j)) else {
+                    panic!("{smiles}: no bound for {i}-{j}");
+                };
+                counted[path] += 1;
+                if low < lower - 1e-6 || high > upper + 1e-6 {
+                    excluded[path] += 1;
+                }
+            }
+        }
+
+        let bonds = excluded[1] as f64 / counted[1] as f64;
+        let angles = excluded[2] as f64 / counted[2] as f64;
+        assert!(
+            bonds <= BOND_LIMIT,
+            "bonds excluding real geometry: {:.1}% of {} (limit {:.0}%)",
+            bonds * 100.0,
+            counted[1],
+            BOND_LIMIT * 100.0
+        );
+        assert!(
+            angles <= ANGLE_LIMIT,
+            "1-3 pairs excluding real geometry: {:.1}% of {} (limit {:.0}%)",
+            angles * 100.0,
+            counted[2],
+            ANGLE_LIMIT * 100.0
+        );
+    }
+
+    /// A bond between crowded atoms has to be allowed to be long.
+    ///
+    /// The guard on `crowding_correction` specifically: a *tert*-butyl
+    /// dimethylsilyl ether's Si-C bond sits at 2.08 A because the two
+    /// groups' methyls push it there, and a window around MMFF's
+    /// equilibrium length alone stops at 1.868. Zeroing the correction
+    /// fails this; the aggregate test above would also move, but this says
+    /// which constant.
+    #[test]
+    fn a_crowded_bond_is_allowed_to_be_long() {
+        let molecule = MolecularGraph::from_smiles_single("CO[Si](C)(C)C(C)(C)C")
+            .expect("should parse");
+        let (_atoms, bounds) = crate::molecule::embed::bounds_for_dump(&molecule)
+            .expect("should build bounds");
+        // Si2 to the quaternary C5: four heavy neighbours on the silicon and
+        // four on the carbon, which is the top of the crowding scale.
+        let (lower, upper) = bounds
+            .iter()
+            .find(|(i, j, _, _)| (*i, *j) == (2, 5))
+            .map(|&(_, _, lower, upper)| (lower, upper))
+            .expect("the Si-C bond should have a bound");
+        assert!(
+            upper > 1.94,
+            "the crowded Si-C bound tops out at {upper:.3}, which excludes the 2.08 it sits at"
+        );
+        assert!(
+            lower > 1.85,
+            "and it should not have been widened downwards: lower is {lower:.3}"
+        );
+    }
+
     /// Morpholine's N-H has two places to be and only one of them is right.
     ///
     /// Which one is decided by the pyramidalisation at the nitrogen, not by

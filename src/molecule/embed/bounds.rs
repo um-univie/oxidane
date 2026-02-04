@@ -22,9 +22,31 @@ const DEFAULT_UPPER: f64 = 100.0;
 /// MMFF-relaxed conformers a C=O at `k` = 10 holds to 0.006 A where a C-C
 /// single at 4.3 wanders 0.0138, the same factor as their force constants.
 ///
-/// Scaling the window by MMFF's own `k`, normalised so a C-C single keeps
-/// this value, is therefore the obvious move and is worse: 1-2 violations
-/// went from 12.9% to 21.6% and the whole matrix from 2.2% to 3.4%. Two
+/// Widening it where the spread is *measured* to be large is the better
+/// version of that idea and is also rejected, 2026-10-09. The spread grows
+/// with crowding exactly as [`crowding_correction`]'s centre shift does
+/// (0.004 A at three heavy neighbours, 0.079 at eight), so the window was
+/// made `BOND_TOLERANCE + share * crowding_correction` and the share swept.
+/// The probe liked it monotonically -- at a share of one, curated
+/// violations fell from 123 to 103, large natural products' 1-2 rate from
+/// 24.9% to 18.0%, and an unseen corpus's from 19.8% to 14.3% -- and the
+/// conformers did not:
+///
+/// | share | held out 400 | PubChem 287 |
+/// |---|---|---|
+/// | 0 | 365, -1.78 | 270, -2.24 |
+/// | 0.5 | 366, -1.75 | 268, -2.21 |
+/// | 1.0 | 358, -1.70 | 268, -2.27 |
+///
+/// Nine molecules for nothing at a share of one, net one for nothing at a
+/// half. The asymmetry is the point: the probe rewards a bound for
+/// admitting the truth, but a window admits *everything* between its ends,
+/// and the freedom costs more in bad starts than the missing truth costs in
+/// bias. The centre was worth correcting and the width is not.
+///
+/// Scaling the window by MMFF's own `k` instead, normalised so a C-C single
+/// keeps this value, is worse still: 1-2 violations went from 12.9% to
+/// 21.6% and the whole matrix from 2.2% to 3.4%. Two
 /// reasons, both visible in the same data. Most common bonds -- aromatic,
 /// C=O, C-N -- are *stiffer* than a C-C single, so the model tightens
 /// almost everything. And what is left over after
@@ -615,6 +637,54 @@ fn planar_ring_angles<T: MoleculeCore>(
     table
 }
 
+/// How much further a bond sits from its equilibrium length when the atoms
+/// at its ends are crowded, in angstrom, as a function of the heavy
+/// neighbours the two of them have between them.
+///
+/// [`MMFF_MINIMUM_OFFSET`] is a mean, and a mean is the wrong model here:
+/// what pushes a bond past `r0` is the other terms' force, and that force
+/// is small for an ethane and large for a bond between two quaternary
+/// carbons. Measured over 6810 heavy-atom bonds against validated
+/// MMFF-relaxed conformers, by the number of heavy neighbours at the two
+/// ends:
+///
+/// | heavy neighbours | bonds | residual past `r0 + 0.018` | outside the window |
+/// |---|---|---|---|
+/// | 3 | 221 | -0.0098 | 0% |
+/// | 4 | 2205 | -0.0027 | 1% |
+/// | 5 | 2751 | +0.0036 | 9% |
+/// | 6 | 1403 | +0.0144 | 36% |
+/// | 7 | 200 | +0.0403 | 81% |
+/// | 8 | 30 | +0.0954 | 90% |
+///
+/// Monotone, mechanical, and worth about a tenth of an angstrom at the top
+/// -- which is why a crowded silyl ether's Si-C sits at 2.07 where a window
+/// around `r0` stops at 1.868, and why a taxane's cage carries C-C bonds of
+/// 1.65. Both were "violations" of ours against geometry that RDKit's own
+/// MMFF prefers.
+///
+/// One constant, not the six measured numbers: a quadratic above five
+/// neighbours, giving 0.0105, 0.042 and 0.095 against the measured 0.0144,
+/// 0.0403 and 0.0954. A table of six invites reading noise as signal, and
+/// the shape here is a steric one.
+///
+/// Nothing below five neighbours. The measurement says those bonds sit
+/// slightly *under* `r0 + 0.018` (-0.0098 at three, -0.0027 at four) and a
+/// linear relief fitted to that is tempting and wrong: it extrapolates to
+/// -0.012 at two neighbours, where there was no data, and ethane's C-C
+/// actually sits 0.005 *above*. The correction only moves bonds the
+/// measurement covers, in the direction it measured.
+fn crowding_correction(heavy_neighbours: usize) -> f64 {
+    const QUADRATIC: f64 = 0.0105;
+    const PIVOT: usize = 5;
+    const CEILING: usize = 8;
+    if heavy_neighbours <= PIVOT {
+        return 0.0;
+    }
+    let excess = (heavy_neighbours.min(CEILING) - PIVOT) as f64;
+    QUADRATIC * excess * excess
+}
+
 /// Where every bond length and bond angle comes from: MMFF94's own
 /// equilibrium values where it can type the molecule, and the covalent-radii
 /// sum and the hybridisation heuristic where it cannot.
@@ -686,8 +756,19 @@ impl Geometry {
         let mut lengths = rustc_hash::FxHashMap::default();
         let mut angles = rustc_hash::FxHashMap::default();
         lengths.reserve(measured_lengths.len());
+        let heavy_degree = |atom: usize| -> usize {
+            mol.get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .filter(|bond| mol.atomic_numbers()[bond.target()] != 1)
+                .count()
+        };
         for (first, second, length, _stiffness) in measured_lengths {
-            lengths.insert((first as u32, second as u32), length + MMFF_MINIMUM_OFFSET);
+            let crowding = heavy_degree(first) + heavy_degree(second);
+            lengths.insert(
+                (first as u32, second as u32),
+                length + MMFF_MINIMUM_OFFSET + crowding_correction(crowding),
+            );
         }
         angles.reserve(measured_angles.len());
         for (first, centre, last, degrees) in measured_angles {

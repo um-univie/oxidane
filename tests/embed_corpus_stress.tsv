@@ -1,0 +1,81 @@
+# A corpus for hunting conformer-search failure modes: `group name SMILES`.
+#
+# Not a sample of anything. Every line carries a feature that the search
+# either has a move for or does not, chosen after `scratchpad/floor.py`
+# found that our search's only real gaps were features rather than breadth:
+# a hydroxyl whose hydrogen was never turned, a nitrogen that could not
+# invert, a ring whose chair could not flip. The instrument compares our
+# best of eight against a long MMFF-minimised ETKDGv3 search, so a line
+# earns its place by being a geometry one side can find and the other
+# might not.
+#
+# Spent as a discovery set, not a tuning set: anything found here is fixed
+# against it and then confirmed on PubChem and the held-out draw.
+polyol    glycerol            OCC(O)CO
+polyol    erythritol          OC[C@H](O)[C@H](O)CO
+polyol    xylitol             OC[C@H](O)[C@H](O)[C@H](O)CO
+polyol    sorbitol            OC[C@H](O)[C@@H](O)[C@H](O)[C@H](O)CO
+polyol    inositol            O[C@H]1[C@H](O)[C@@H](O)[C@H](O)[C@H](O)[C@@H]1O
+sugar     fructose            OC[C@H]1O[C@](O)(CO)[C@@H](O)[C@@H]1O
+sugar     ribose              OC[C@H]1O[C@H](O)[C@H](O)[C@H]1O
+sugar     galactose           OC[C@H]1O[C@@H](O)[C@H](O)[C@@H](O)[C@H]1O
+sugar     mannitol-frag       OC[C@@H](O)[C@@H](O)CO
+sugar     deoxyribose         OC[C@H]1O[C@H](O)C[C@H]1O
+aminol    ethanolamine        OCCN
+aminol    serinol             OCC(N)CO
+aminol    propranolol-frag    CC(C)NCC(O)COc1ccccc1
+aminol    ephedrine           C[C@@H](NC)[C@H](O)c1ccccc1
+aminol    tris                OCC(N)(CO)CO
+ringamine piperazine          C1CNCCN1
+ringamine pyrrolidine         C1CCNC1
+ringamine azepane             C1CCCNCC1
+ringamine nipecotamide        NC(=O)C1CCCNC1
+ringamine prolinol            OC[C@@H]1CCCN1
+ringamine piperidinol         OC1CCNCC1
+ringamine thiomorpholine      C1CSCCN1
+thiol     ethanethiol         CCS
+thiol     cysteamine          SCCN
+thiol     mercaptoethanol     OCCS
+thiol     dithiothreitol      OC[C@H](S)[C@@H](S)CO
+acid      malic               OC(CC(=O)O)C(=O)O
+acid      citric              OC(CC(=O)O)(CC(=O)O)C(=O)O
+acid      tartaric            O[C@H](C(=O)O)[C@@H](O)C(=O)O
+acid      gluconic-frag       OC[C@H](O)[C@H](O)C(=O)O
+zwitter   glycine-zwitter     [NH3+]CC(=O)[O-]
+zwitter   betaine             C[N+](C)(C)CC(=O)[O-]
+zwitter   taurine             [NH3+]CCS(=O)(=O)[O-]
+zwitter   arginine            N[C@@H](CCCNC(N)=N)C(=O)O
+phosphate glycerophosphate    OCC(O)COP(=O)(O)O
+phosphate amp-frag            OC[C@H]1O[C@H](n2cnc3c(N)ncnc32)[C@H](O)[C@@H]1OP(=O)(O)O
+phosphate etidronate          CC(O)(P(=O)(O)O)P(=O)(O)O
+sulfon    sulfanilamide       Nc1ccc(S(N)(=O)=O)cc1
+sulfon    methanesulfonamide  CS(=O)(=O)N
+sulfon    hydrochlorothiazide NS(=O)(=O)c1cc2c(cc1Cl)NCNS2(=O)=O
+peptide   gly-gly             NCC(=O)NCC(=O)O
+peptide   ala-ser             C[C@H](N)C(=O)N[C@@H](CO)C(=O)O
+peptide   ser-ser-ser         OC[C@H](N)C(=O)N[C@@H](CO)C(=O)N[C@@H](CO)C(=O)O
+peptide   thr-tyr             C[C@@H](O)[C@H](N)C(=O)N[C@@H](Cc1ccc(O)cc1)C(=O)O
+peptide   cyclic-tetra        O=C1NCC(=O)NCC(=O)NCC(=O)NC1
+macro     cyclododecane       C1CCCCCCCCCCC1
+macro     crown-12            C1COCCOCCOCCO1
+macro     crown-15            C1COCCOCCOCCOCCO1
+macro     lactone-11          O=C1CCCCCCCCCCO1
+macro     muscone-like        CC1CCCCCCCCCCCCC1=O
+strained  bicyclo221          C1CC2CCC1CC2
+strained  spiro-55            C1CCC2(CC1)CCCC2
+strained  cubane              C12C3C4C1C1C4C3C12
+strained  adamantanol         OC1C2CC3CC1CC(C2)C3
+chain     octane              CCCCCCCC
+chain     dodecane            CCCCCCCCCCCC
+chain     peg4                OCCOCCOCCOCCO
+chain     dodecanediol        OCCCCCCCCCCCCO
+chain     oleate-frag         CCCCC/C=C\\CCCCC(=O)O
+biaryl    ortho-biphenyl      Cc1ccccc1-c1ccccc1C
+biaryl    binaphthyl          c1ccc2c(c1)ccc1c2cccc1-c1ccc2ccccc2c1
+biaryl    nifedipine-frag     COC(=O)C1=C(C)NC(C)=C(C(=O)OC)C1c1ccccc1[N+](=O)[O-]
+drug      atenolol            CC(C)NCC(O)COc1ccc(CC(N)=O)cc1
+drug      metformin           CN(C)C(=N)NC(N)=N
+drug      captopril           C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O
+drug      dopamine            NCCc1ccc(O)c(O)c1
+drug      salbutamol          CC(C)(C)NC[C@H](O)c1ccc(O)c(CO)c1
+drug      amoxicillin-frag    CC1(C)S[C@@H]2[C@H](NC(=O)[C@H](N)c3ccc(O)cc3)C(=O)N2[C@H]1C(=O)O

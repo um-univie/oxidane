@@ -546,9 +546,14 @@ impl Molecule3D {
     }
 
     pub fn split_components(&self) -> Vec<Molecule3D> {
-        let components = self.get_components();
+        let mut components = self.get_components();
         if components.len() == 1 {
             return vec![self.clone()];
+        }
+        // Stereo tags are stored against index-sorted carriers. Preserve their
+        // relative order when assigning the fragment's local atom indices.
+        for component in &mut components {
+            component.sort_unstable();
         }
         let mut new_atom_indices: IntMap<usize, usize> = IntMap::default();
         for component in &components {
@@ -574,7 +579,6 @@ impl Molecule3D {
                 .map(|&index| self.radical_states[index])
                 .collect();
 
-            // TODO: Properly implement thi
             for &index in component.iter() {
                 let mut bonds = self.atom_bonds[index];
                 bonds
@@ -583,18 +587,21 @@ impl Molecule3D {
                 new_bonds.push(bonds);
             }
 
-            // TODO: Not sure if this is the right way to handle this
-            if component.len() == 2 && atomic_numbers.iter().all(|&atom| atom == 7) {
-                continue;
-            }
-
             let molecule = Molecule3D {
                 atomic_numbers,
+                atom_classes: self.atom_classes.as_ref().map(|values| {
+                    component.iter().map(|&index| values[index]).collect()
+                }),
+                chiral_classes: self.chiral_classes.as_ref().map(|values| {
+                    component.iter().map(|&index| values[index]).collect()
+                }),
+                isotopes: self.isotopes.as_ref().map(|values| {
+                    component.iter().map(|&index| values[index]).collect()
+                }),
                 charges: new_charges,
                 radical_states: new_is_radical,
                 atom_bonds: new_bonds,
                 positions: new_positions,
-                ..Default::default()
             };
             molecules.push(molecule);
         }

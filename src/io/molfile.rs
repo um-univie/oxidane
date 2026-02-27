@@ -61,6 +61,9 @@ impl From<std::io::Error> for MOLParseError {
 pub enum MOLParseError {
     IoError(std::io::Error),
     UnexpectedEndOfFile,
+    TruncatedRecord(&'static str),
+    InvalidCounts(String),
+    UnsupportedVersion(String),
     ParseFloatError(std::num::ParseFloatError),
     ParseIntError(std::num::ParseIntError),
     InvalidAtom(String),
@@ -80,7 +83,7 @@ impl std::str::FromStr for AtomV2000 {
     ///
     /// Returns an error if the input string is too short or if parsing fails.
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        if input.len() < 69 {
+        if input.len() < 69 || !input.is_ascii() {
             return Err(MOLParseError::InvalidAtom("Atom string too short".into()));
         }
 
@@ -283,7 +286,7 @@ impl Bond {
         // connection table came apart -- a 116-atom peptide read back as a
         // heap of loose methanes. Molecules that large are ordinary: peptides,
         // natural products and much of any vendor catalogue.
-        if line.len() < 9 {
+        if line.len() < 9 || !line.is_ascii() {
             return Err("Bond line too short".into());
         }
         let _field = |range: std::ops::Range<usize>| -> Result<usize, Box<dyn std::error::Error>> {
@@ -301,7 +304,7 @@ impl Bond {
     /// record of tetrahedral configuration there is. [`Bond`] has nowhere to
     /// keep it, so it comes back alongside.
     pub fn from_mol_line_with_stereo(line: &str) -> Result<(Self, u8), Box<dyn std::error::Error>> {
-        if line.len() < 9 {
+        if line.len() < 9 || !line.is_ascii() {
             return Err("Bond line too short".into());
         }
         let field = |range: std::ops::Range<usize>| -> Result<usize, Box<dyn std::error::Error>> {
@@ -459,13 +462,6 @@ impl MOLFile {
     }
 }
 
-enum ParserState {
-    Header(usize),
-    Atoms,
-    Bonds,
-    Properties,
-}
-
 #[derive(Debug, Default)]
 pub struct BondV2000 {
     pub atom1: usize,
@@ -505,71 +501,56 @@ pub fn parse_mol_file<I>(lines: &mut I) -> Result<MOLFile, MOLParseError>
 where
     I: Iterator<Item = Result<String, std::io::Error>>,
 {
+    // Only EOF before the first header line is a clean end of the SDF stream.
+    let Some(first) = lines.next() else {
+        return Err(MOLParseError::UnexpectedEndOfFile);
+    };
     let mut mol_file = MOLFile::default();
-    let mut state = ParserState::Header(0);
-
-    for line in lines.by_ref() {
-        let line = line.map_err(MOLParseError::IoError)?;
-        state = match state {
-            ParserState::Header(count) if count < 3 => {
-                mol_file.header.push(line);
-                ParserState::Header(count + 1)
-            }
-            ParserState::Header(_) => {
-                mol_file.counts_line = line;
-                ParserState::Atoms
-            }
-            ParserState::Atoms => match AtomV2000::from_str(&line) {
-                Ok(atom) => {
-                    mol_file.atoms.push(atom);
-                    ParserState::Atoms
-                }
-                Err(_) => match Bond::from_mol_line_with_stereo(&line) {
-                    Ok((bond, stereo)) => {
-                        mol_file.bonds.push(bond);
-                        mol_file.bond_stereo.push(stereo);
-                        ParserState::Bonds
-                    }
-                    Err(_) => {
-                        if line.trim() == "M  END" {
-                            return Ok(mol_file);
-                        } else {
-                            // The line that ends the block is itself the first
-                            // property line, so it has to be recorded here.
-                            // Falling through to the Properties state without
-                            // doing so silently dropped it -- and in a real
-                            // file that line is the `M  CHG`.
-                            mol_file.push_property(line);
-                            ParserState::Properties
-                        }
-                    }
-                },
-            },
-            ParserState::Bonds => match Bond::from_mol_line_with_stereo(&line) {
-                Ok((bond, stereo)) => {
-                    mol_file.bonds.push(bond);
-                    mol_file.bond_stereo.push(stereo);
-                    ParserState::Bonds
-                }
-                Err(_) => {
-                    if line.trim() == "M  END" {
-                        return Ok(mol_file);
-                    } else {
-                        mol_file.push_property(line);
-                        ParserState::Properties
-                    }
-                }
-            },
-            ParserState::Properties => {
-                if line.trim() == "M  END" {
-                    return Ok(mol_file);
-                } else {
-                    mol_file.push_property(line);
-                    ParserState::Properties
-                }
-            }
-        };
+    mol_file.header.push(first?);
+    let mut required = |stage| {
+        lines.next().ok_or(MOLParseError::TruncatedRecord(stage))?
+            .map_err(MOLParseError::IoError)
+    };
+    for _ in 0..2 {
+        mol_file.header.push(required("header")?);
     }
-
-    Err(MOLParseError::UnexpectedEndOfFile)
+    mol_file.counts_line = required("counts")?;
+    let counts = &mol_file.counts_line;
+    if !counts.is_ascii() || counts.len() < 39 {
+        return Err(MOLParseError::InvalidCounts(counts.clone()));
+    }
+    let version = counts[33..39].trim();
+    if version != "V2000" {
+        return Err(MOLParseError::UnsupportedVersion(version.to_string()));
+    }
+    let atom_count: usize = counts[0..3].trim().parse()
+        .map_err(|_| MOLParseError::InvalidCounts(counts.clone()))?;
+    let bond_count: usize = counts[3..6].trim().parse()
+        .map_err(|_| MOLParseError::InvalidCounts(counts.clone()))?;
+    for _ in 0..atom_count {
+        mol_file.atoms.push(AtomV2000::from_str(&required("atoms")?)?);
+    }
+    for _ in 0..bond_count {
+        let (bond, stereo) = Bond::from_mol_line_with_stereo(&required("bonds")?)
+            .map_err(|_| MOLParseError::InvalidBond)?;
+        if bond.atom1 >= atom_count || bond.atom2 >= atom_count || bond.atom1 == bond.atom2 {
+            return Err(MOLParseError::InvalidBond);
+        }
+        mol_file.bonds.push(bond);
+        mol_file.bond_stereo.push(stereo);
+    }
+    loop {
+        let line = required("properties")?;
+        if line.trim() == "M  END" {
+            return Ok(mol_file);
+        }
+        // Understated counts must not turn leftover structure into properties.
+        if AtomV2000::from_str(&line).is_ok()
+            || Bond::from_mol_line_with_stereo(&line).is_ok()
+            || line.trim() == "$$$$"
+        {
+            return Err(MOLParseError::InvalidCounts(mol_file.counts_line));
+        }
+        mol_file.push_property(line);
+    }
 }

@@ -46,7 +46,7 @@ pub(super) fn find_blue_connected_components(
     let mut results: Vec<ModularProductGraph> = Vec::new();
 
     for curr_vertices in &components {
-        if curr_vertices.len() == 1 || curr_vertices.len() < maximum {
+        if curr_vertices.len() < maximum {
             continue;
         }
 
@@ -186,7 +186,7 @@ impl CliqueIterator {
                 // never affected by that ambiguity and is safe to use
                 // immediately, which is what lets pruning kick in during the
                 // same search pass instead of only on the next one.
-                if clique.len() > state.maximum && clique.len() != 3 {
+                if !state.enumerate_all && clique.len() > state.maximum && clique.len() != 3 {
                     state.maximum = clique.len();
                 }
                 return Some(clique.iter().map(NodeIndex::new).collect());

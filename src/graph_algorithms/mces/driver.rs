@@ -12,6 +12,10 @@ use std::rc::Rc;
 /// combine with the third, and so on), following the same approach the
 /// original algorithm uses for combining more than two structures.
 pub(super) fn find_maximum_common_subgraph(graphs: &mut [LineGraph], state: &mut AlgorithmState) {
+    if graphs.len() < 2 {
+        return;
+    }
+    state.enumerate_all = graphs.len() > 2;
     if !state.not_first {
         state.maximum = 0;
         state.num_cliques_found = 0;
@@ -22,7 +26,7 @@ pub(super) fn find_maximum_common_subgraph(graphs: &mut [LineGraph], state: &mut
         state.not_first = true;
     }
 
-    if graphs[0].graph.node_count() < state.maximum || graphs.len() < 2 {
+    if graphs[0].graph.node_count() < state.maximum {
         return;
     }
 
@@ -39,16 +43,21 @@ pub(super) fn find_maximum_common_subgraph(graphs: &mut [LineGraph], state: &mut
         return;
     }
 
+    let mut best = AlgorithmState::default();
     while let Some(resolved) = iter.next(state) {
-        let edge_count = resolved.bond_pairs.len();
-        if edge_count < state.maximum {
-            continue;
-        }
         let pattern_line = molecular_graph_to_line_graph(&Rc::new(resolved.pattern));
         let mut remaining = vec![pattern_line];
         remaining.extend_from_slice(&graphs[2..]);
-        find_maximum_common_subgraph(&mut remaining, state);
+        // Bond ids and coverage belong to this new pair, and a bound for the
+        // previous pair says nothing about what the remaining molecules share.
+        let mut branch = AlgorithmState::default();
+        find_maximum_common_subgraph(&mut remaining, &mut branch);
+        for result in branch.all_maximum_graphs {
+            record_if_maximum(&mut best, result);
+        }
     }
+    state.maximum = best.maximum;
+    state.all_maximum_graphs = best.all_maximum_graphs;
 }
 
 fn record_if_maximum(state: &mut AlgorithmState, resolved: Resolved) {
@@ -81,7 +90,7 @@ impl MaximalCommonSubgraphIterator {
             .filter_map(|n| g1.clique_map.get(&n).copied())
             .collect();
         clique_set_prime.sort_unstable();
-        if state.clique_vectors.first().is_some_and(|vectors| {
+        if !state.enumerate_all && state.clique_vectors.first().is_some_and(|vectors| {
             vectors.iter().any(|covered| is_subset(&clique_set_prime, covered))
         }) {
             return None;
@@ -95,7 +104,7 @@ impl MaximalCommonSubgraphIterator {
         // case where the greedy clique turns out to be a "bad triangle" that
         // shrinks once resolved, so the true bound is never overshot.
         let greedy_bound = greedy_clique_lower_bound(&modular_product).saturating_sub(1);
-        if greedy_bound > state.maximum {
+        if !state.enumerate_all && greedy_bound > state.maximum {
             state.maximum = greedy_bound;
         }
 
@@ -214,14 +223,14 @@ impl MCSIterator {
 
         let g2_num = subgraph.g2.num;
 
-        if state.clique_vectors[0]
+        if !state.enumerate_all && state.clique_vectors[0]
             .iter()
             .any(|covered| is_subset(&clique_set, covered))
         {
             state.clique_vectors[g2_num].push(clique_set2);
             return None;
         }
-        if state.clique_vectors[g2_num]
+        if !state.enumerate_all && state.clique_vectors[g2_num]
             .iter()
             .any(|covered| is_subset(&clique_set2, covered))
         {

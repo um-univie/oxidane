@@ -96,6 +96,9 @@ pub(super) type Clique = Vec<NodeIndex>;
 /// used to skip cliques that are subsets of an already-found maximal one.
 #[derive(Default)]
 pub(super) struct AlgorithmState {
+    /// Intermediate N-way reductions must retain smaller maximal candidates:
+    /// the best match of a pair need not contain the best match of all inputs.
+    pub enumerate_all: bool,
     pub maximum: usize,
     pub num_cliques_found: usize,
     pub clique_vectors: Vec<Vec<Vec<usize>>>,

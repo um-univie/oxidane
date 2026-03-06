@@ -204,22 +204,22 @@ impl<'a> Trainer<'a> {
         loss.to_dtype(DType::F32)?.to_scalar::<f32>()
     }
 
-    /// The mean loss over one side of the split, without training on it.
+    /// Sum of the per-head mean losses over the observed targets in a split.
+    /// Each head is normalized once over the whole split, so missing labels,
+    /// different molecule sizes and a short final batch do not change its weight.
     pub fn evaluate(&self, dataset: &Dataset, split: &Split, side: Side) -> Result<f32> {
-        let mut total = 0.0;
-        let mut batches = 0;
+        let mut sums = [0.0f64; 3];
+        let mut counts = [0usize; 3];
         for batch in dataset.epoch_side(split, side, self.config.batch_size, 0) {
-            total += self
-                .batch_loss(&batch, false)?
-                .to_dtype(DType::F32)?
-                .to_scalar::<f32>()?;
-            batches += 1;
+            for (head, loss) in self.head_losses(&batch, false)?.into_iter().enumerate() {
+                if let Some((loss, count)) = loss && count > 0 {
+                    sums[head] += loss.to_dtype(DType::F64)?.to_scalar::<f64>()? * count as f64;
+                    counts[head] += count;
+                }
+            }
         }
-        Ok(if batches > 0 {
-            total / batches as f32
-        } else {
-            0.0
-        })
+        Ok(sums.into_iter().zip(counts).filter(|&(_, count)| count > 0)
+            .map(|(sum, count)| sum / count as f64).sum::<f64>() as f32)
     }
 
     /// One prediction per molecule for every molecule of a side, in the order
@@ -239,6 +239,11 @@ impl<'a> Trainer<'a> {
             }
         }
         Ok(out)
+    }
+
+    fn head_losses(&self, batch: &Batch, train: bool) -> Result<[Option<(Tensor, usize)>; 3]> {
+        let count = batch.target_mask.iter().filter(|&&measured| measured).count();
+        Ok([Some((self.batch_loss(batch, train)?, count)), None, None])
     }
 
     fn batch_loss(&self, batch: &Batch, train: bool) -> Result<Tensor> {

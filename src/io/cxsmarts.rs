@@ -289,6 +289,10 @@ pub struct CxSMARTSPattern {
     pub atoms: Vec<AtomExpression>,
     /// The bonds between atoms
     pub bonds: Vec<(usize, usize, BondExpression)>,
+    /// Neighbours in query traversal order, including ring-closure positions.
+    pub neighbor_order: Vec<Vec<usize>>,
+    /// The atom from which each query atom was reached, or none at a root.
+    pub incoming: Vec<Option<usize>>,
     /// Ring closures
     pub ring_closures: HashMap<usize, Vec<usize>>,
     /// Component groupings
@@ -310,6 +314,8 @@ pub struct CxSMARTSParser {
     position: usize,
     atoms: Vec<AtomExpression>,
     bonds: Vec<(usize, usize, BondExpression)>,
+    neighbor_order: Vec<Vec<usize>>,
+    incoming: Vec<Option<usize>>,
     ring_closures: HashMap<usize, Vec<usize>>,
     components: Vec<Vec<usize>>,
     atom_classes: HashMap<usize, usize>,
@@ -328,7 +334,7 @@ pub struct CxSMARTSParser {
     pending_bond: Option<BondExpression>,
     /// Ring-closure digits seen once, waiting for their partner: number ->
     /// (atom that opened it, bond symbol written with it).
-    open_ring_closures: HashMap<usize, (usize, Option<BondExpression>)>,
+    open_ring_closures: HashMap<usize, (usize, Option<BondExpression>, usize)>,
 }
 
 impl CxSMARTSParser {
@@ -348,6 +354,8 @@ impl CxSMARTSParser {
         self.position = 0;
         self.atoms.clear();
         self.bonds.clear();
+        self.neighbor_order.clear();
+        self.incoming.clear();
         self.ring_closures.clear();
         self.components.clear();
         self.atom_classes.clear();
@@ -389,6 +397,8 @@ impl CxSMARTSParser {
             Ok(CxSMARTSPattern {
                 atoms: self.atoms.clone(),
                 bonds: self.bonds.clone(),
+                neighbor_order: self.neighbor_order.clone(),
+                incoming: self.incoming.clone(),
                 ring_closures: self.ring_closures.clone(),
                 components: self.components.clone(),
                 atom_classes: self.atom_classes.clone(),
@@ -412,6 +422,8 @@ impl CxSMARTSParser {
         Ok(CxSMARTSPattern {
             atoms: self.atoms.clone(),
             bonds: self.bonds.clone(),
+            neighbor_order: self.neighbor_order.clone(),
+            incoming: self.incoming.clone(),
             ring_closures: self.ring_closures.clone(),
             components: self.components.clone(),
             atom_classes: self.atom_classes.clone(),
@@ -1005,12 +1017,16 @@ impl CxSMARTSParser {
     /// atoms are parsed but never joined, so `CC` describes two unconnected
     /// carbons rather than a C-C bond, and a molecule does not match itself.
     fn attach_atom(&mut self, atom_index: usize) {
+        self.neighbor_order.push(Vec::new());
+        self.incoming.push(self.previous_atom);
         if let Some(previous) = self.previous_atom {
             let bond = self
                 .pending_bond
                 .take()
                 .unwrap_or(BondExpression::SingleOrAromatic);
             self.bonds.push((previous, atom_index, bond));
+            self.neighbor_order[previous].push(atom_index);
+            self.neighbor_order[atom_index].push(previous);
         } else {
             // No atom to bond back to; a bond symbol here has nothing to apply
             // to and is dropped rather than mis-attached.
@@ -1057,17 +1073,22 @@ impl CxSMARTSParser {
         // only place the ring bond can be created — the two atoms are not
         // adjacent in the string, so nothing else would ever join them.
         match self.open_ring_closures.remove(&ring_number) {
-            Some((opening_atom, opening_bond)) => {
+            Some((opening_atom, opening_bond, slot)) => {
+                self.neighbor_order[opening_atom][slot] = atom;
+                self.neighbor_order[atom].push(opening_atom);
                 let bond = self
                     .pending_bond
                     .take()
+                    .map(super::smarts_stereo::reverse_bond)
                     .or(opening_bond)
                     .unwrap_or(BondExpression::SingleOrAromatic);
                 self.bonds.push((opening_atom, atom, bond));
             }
             None => {
+                let slot = self.neighbor_order[atom].len();
+                self.neighbor_order[atom].push(usize::MAX);
                 self.open_ring_closures
-                    .insert(ring_number, (atom, self.pending_bond.take()));
+                    .insert(ring_number, (atom, self.pending_bond.take(), slot));
             }
         }
 

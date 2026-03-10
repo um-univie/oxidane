@@ -67,7 +67,7 @@ where
 
     /// Drives the search, reporting each mapping to `found`, which returns
     /// whether to keep looking.
-    fn run(&self, found: &mut impl FnMut(&[usize]) -> bool) {
+    pub(crate) fn run(&self, found: &mut impl FnMut(&[usize]) -> bool) {
         if self.pattern_node_count == 0 || self.pattern_node_count > self.target_node_count {
             return;
         }

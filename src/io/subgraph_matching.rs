@@ -631,16 +631,43 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     /// [`crate::graph_algorithms::monomorphism`] for why that is not what
     /// petgraph's `subgraph_isomorphisms_iter` provides.
     pub fn find_all_matches(&self) -> Vec<HashMap<usize, usize>> {
-        self.monomorphism()
-            .all()
-            .into_iter()
-            .map(|assignment| assignment.into_iter().enumerate().collect())
-            .collect()
+        let mut matches = Vec::new();
+        self.monomorphism().run(&mut |assignment| {
+            if self.stereo_matches(assignment) {
+                matches.push(assignment.iter().copied().enumerate().collect());
+            }
+            true
+        });
+        matches
     }
 
-    /// Whether the pattern matches anywhere.
+    /// Whether the pattern matches anywhere, stopping at the first complete
+    /// mapping that satisfies both constitution and stereochemistry.
     pub fn has_match(&self) -> bool {
-        self.monomorphism().any()
+        if !super::smarts_stereo::has_stereo(self.pattern) {
+            return self.monomorphism().any();
+        }
+        let mut found = false;
+        self.monomorphism().run(&mut |assignment| {
+            found = self.stereo_matches(assignment);
+            !found
+        });
+        found
+    }
+
+    fn stereo_matches(&self, assignment: &[usize]) -> bool {
+        if !super::smarts_stereo::has_stereo(self.pattern) {
+            return true;
+        }
+        self.pattern.atoms.iter().enumerate().all(|(atom, expression)| {
+            super::smarts_stereo::atom_matches(
+                expression, self.pattern, self.molecule, atom, assignment,
+                &|expr| self.evaluate_atom_expression(expr, assignment[atom]),
+            )
+        }) && super::smarts_stereo::bonds_match(
+            self.pattern, self.molecule, assignment,
+            &|expr, a, b| self.evaluate_bond_expression(expr, a, b),
+        )
     }
 
     /// The pattern and the three questions the search asks about it.
@@ -662,13 +689,15 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
                     .collect()
             },
             node_match: |pattern_atom: usize, molecule_atom: usize| {
-                self.evaluate_atom_expression(&self.pattern.atoms[pattern_atom], molecule_atom)
+                super::smarts_stereo::has_atom_stereo(&self.pattern.atoms[pattern_atom])
+                    || self.evaluate_atom_expression(&self.pattern.atoms[pattern_atom], molecule_atom)
             },
             edge_match: |edge_index: usize, first: usize, second: usize| {
                 if self.get_bond_order(first, second).is_none() {
                     return false;
                 }
-                self.evaluate_bond_expression(&self.pattern.bonds[edge_index].2, first, second)
+                let expr = &self.pattern.bonds[edge_index].2;
+                super::smarts_stereo::bond_candidate(expr, &|expr| self.evaluate_bond_expression(expr, first, second))
             },
         }
     }
@@ -827,8 +856,8 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
                 self.evaluate_logical_expression(operator, operands, molecule_atom)
             }
 
-            // TODO: Implement other expressions
-            _ => true, // Placeholder for unimplemented expressions
+            // Stereo needs a complete atom mapping; checked in stereo_matches.
+            AtomExpression::Chirality(_) => true,
         }
     }
 
@@ -916,8 +945,10 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
                     .any(|operand| self.evaluate_bond_expression(operand, atom1, atom2)),
             },
 
-            // TODO: Implement directional bonds
-            _ => true, // Placeholder for unimplemented expressions
+            BondExpression::DirectionalUp | BondExpression::DirectionalDown
+            | BondExpression::DirectionalUpOrUnspec | BondExpression::DirectionalDownOrUnspec => {
+                self.get_bond_order(atom1, atom2) == Some(BondOrder::Single)
+            }
         }
     }
 

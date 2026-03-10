@@ -5,6 +5,7 @@ mod molfile;
 mod sdf;
 mod smiles;
 mod subgraph_matching;
+mod smarts_stereo;
 
 pub use cxsmarts::*;
 pub use dot::*;

@@ -84,18 +84,6 @@ struct MaximalCommonSubgraphIterator {
 
 impl MaximalCommonSubgraphIterator {
     fn new(g1: Rc<LineGraph>, g2: Rc<LineGraph>, state: &mut AlgorithmState) -> Option<Self> {
-        let mut clique_set_prime: Vec<usize> = g1
-            .graph
-            .node_indices()
-            .filter_map(|n| g1.clique_map.get(&n).copied())
-            .collect();
-        clique_set_prime.sort_unstable();
-        if !state.enumerate_all && state.clique_vectors.first().is_some_and(|vectors| {
-            vectors.iter().any(|covered| is_subset(&clique_set_prime, covered))
-        }) {
-            return None;
-        }
-
         let modular_product = modular_graph_product(&g1, &g2);
 
         // Seed a lower bound so branch-and-bound pruning has something to
@@ -223,18 +211,16 @@ impl MCSIterator {
 
         let g2_num = subgraph.g2.num;
 
-        if !state.enumerate_all && state.clique_vectors[0]
+        // The two sides must be covered by the *same* previous result.
+        // Independent membership tests discard unseen combinations when a
+        // component on either side has already matched a different partner.
+        let covered_pair = state.clique_vectors[0]
             .iter()
-            .any(|covered| is_subset(&clique_set, covered))
-        {
-            state.clique_vectors[g2_num].push(clique_set2);
-            return None;
-        }
-        if !state.enumerate_all && state.clique_vectors[g2_num]
-            .iter()
-            .any(|covered| is_subset(&clique_set2, covered))
-        {
-            state.clique_vectors[0].push(clique_set);
+            .zip(&state.clique_vectors[g2_num])
+            .any(|(left, right)| {
+                is_subset(&clique_set, left) && is_subset(&clique_set2, right)
+            });
+        if !state.enumerate_all && covered_pair {
             return None;
         }
 

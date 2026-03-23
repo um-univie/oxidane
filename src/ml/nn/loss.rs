@@ -60,7 +60,7 @@ pub fn masked_cross_entropy(logits: &Tensor, target: &Tensor, mask: &Tensor) -> 
 /// `mask` broadcasts against `values`, so a per-row mask can weight a per-class
 /// tensor.
 pub fn masked_mean(values: &Tensor, mask: &Tensor) -> Result<Tensor> {
-    let mask = mask.to_dtype(values.dtype())?;
+    let mask = mask.to_dtype(values.dtype())?.broadcast_as(values.shape())?;
     let kept = values.broadcast_mul(&mask)?.sum_all()?;
     let count = mask.sum_all()?.broadcast_as(kept.shape())?;
     // Dividing by a floored count rather than branching on it: an empty batch

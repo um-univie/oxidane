@@ -312,6 +312,7 @@ pub fn parse_sdf_file<R: BufRead>(reader: R) -> Result<Vec<SDFEntry>, SDFParseEr
                         if let Some(entry) = entries.last_mut() {
                             entry.data_fields = std::mem::take(&mut current_data_fields);
                         }
+                        current_data_field_name.clear();
                         in_mol_block = true;
                     } else if let Some(stripped) = line.strip_prefix("> ") {
                         // Remove < and > from the data field name
@@ -320,11 +321,21 @@ pub fn parse_sdf_file<R: BufRead>(reader: R) -> Result<Vec<SDFEntry>, SDFParseEr
                             .replace(">", "")
                             .trim()
                             .to_string();
-                    } else if !current_data_field_name.is_empty() {
                         current_data_fields
                             .entry(current_data_field_name.clone())
-                            .or_insert(String::new())
-                            .push_str(line.trim());
+                            .or_insert_with(String::new);
+                    } else if line.is_empty() {
+                        // A blank line terminates a data value; it is not part
+                        // of the value and must not attach later stray text.
+                        current_data_field_name.clear();
+                    } else if !current_data_field_name.is_empty() {
+                        let value = current_data_fields
+                            .entry(current_data_field_name.clone())
+                            .or_insert_with(String::new);
+                        if !value.is_empty() {
+                            value.push('\n');
+                        }
+                        value.push_str(&line);
                     }
                 }
                 Some(Err(e)) => {

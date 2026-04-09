@@ -879,6 +879,20 @@ impl<'a> SMILESParser<'a> {
 
         let entry = self.ring_bonds.entry(ring).or_insert((None, None, None));
 
+        // A bond symbol may be written at either end of a ring closure, and the
+        // two ends do not mean the same thing. A directional mark describes the
+        // bond running from the atom it is attached to *toward* its partner, so
+        // one written at the closing digit points backwards against the written
+        // order of the atoms -- and everything downstream
+        // (`convert_directional_bonds_to_chiral`) reads a bond's direction from
+        // the written order of its two atoms. Flipping it here is what lets a
+        // closing mark mean what it says: without it `C1CCCC/C=C\\1` parsed as
+        // trans when it is cis.
+        let closing_order = |order: Option<BondOrder>| match order {
+            Some(BondOrder::Up) => Some(BondOrder::Down),
+            Some(BondOrder::Down) => Some(BondOrder::Up),
+            other => other,
+        };
         match (entry.0, entry.1) {
             (None, _) => {
                 entry.0 = Some(self.current_atom_index);
@@ -886,7 +900,11 @@ impl<'a> SMILESParser<'a> {
             }
             (Some(_), None) => {
                 entry.1 = Some(self.current_atom_index);
-                entry.2 = self.last_bond_type;
+                // A closing end with no symbol of its own says nothing, and must
+                // not erase what the opening end said.
+                if self.last_bond_type.is_some() {
+                    entry.2 = closing_order(self.last_bond_type);
+                }
             }
             _ => {
                 // Ring closure is complete, create new entry

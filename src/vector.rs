@@ -169,6 +169,160 @@ impl<'a> Div<f64> for &'a Vector3D {
     }
 }
 
+/// `cos(phi)` and `sin(phi)` for the signed dihedral `i-b-c-j`, and, from
+/// [`dihedral_and_gradient`], `d(phi)/dp` for its four points in that order.
+///
+/// The angle itself is never formed. Every energy built on a dihedral is a
+/// sum of `cos(n phi)` and its derivative a sum of `sin(n phi)`, and both
+/// follow from `cos(phi)` and `sin(phi)` by [`multiple_angle`]'s recurrence
+/// -- so computing `phi = atan2(...)` and then calling `cos` and `sin` on it
+/// again is a round trip through three libm calls per torsion per
+/// evaluation. Dropping it takes MMFF's torsion term from 32 to 12 ns per
+/// torsion.
+///
+/// The sign convention is the usual one: looking down `b -> c`, the angle
+/// from the `b -> i` direction to the `c -> j` direction, positive
+/// clockwise -- so an eclipsed arrangement is 0 and an anti one is 180, and
+/// it agrees with what RDKit's `GetDihedralDeg` reports for the same four
+/// points. Taking `i - b` rather than `b - i` is the whole of that
+/// convention, and getting it backwards costs exactly 180 degrees: an
+/// energy in `cos(2 phi)` never notices, one in `cos(3 phi)` inverts, and
+/// UFF's ethane then minimises eclipsed.
+///
+/// `None` where the angle is undefined: a collinear i-b-c or b-c-j, or a
+/// zero-length central bond.
+pub(crate) fn dihedral_cosine_sine(
+    i: Vector3D,
+    b: Vector3D,
+    c: Vector3D,
+    j: Vector3D,
+) -> Option<(f64, f64)> {
+    let axis = c - b;
+    let axis_sq = axis.dot(&axis);
+    if axis_sq < 1e-16 {
+        return None;
+    }
+    let axis_hat = axis * (1.0 / axis_sq.sqrt());
+    let from_b = i - b;
+    let trailing = j - c;
+    let perpendicular_in = from_b - axis_hat * from_b.dot(&axis_hat);
+    let perpendicular_out = trailing - axis_hat * trailing.dot(&axis_hat);
+
+    // `x` and `y` are what `atan2` would have been given: both components
+    // are perpendicular to the axis, so their magnitudes divide out and
+    // `hypot(x, y)` is the product of the two lengths.
+    let x = perpendicular_in.dot(&perpendicular_out);
+    let y = axis_hat.cross(&perpendicular_in).dot(&perpendicular_out);
+    let radius = (x * x + y * y).sqrt();
+    if radius < 1e-16 {
+        return None;
+    }
+    Some((x / radius, y / radius))
+}
+
+/// `cos(n phi)` and `sin(n phi)` from `cos(phi)` and `sin(phi)`, by the
+/// Chebyshev recurrence `f(n) = 2 cos(phi) f(n-1) - f(n-2)`. Exact, and two
+/// multiplications per fold against a libm call each.
+pub(crate) fn multiple_angle(cosine: f64, sine: f64, fold: usize) -> (f64, f64) {
+    let (mut previous, mut current) = ((1.0, 0.0), (cosine, sine));
+    if fold == 0 {
+        return previous;
+    }
+    for _ in 1..fold {
+        let next = (
+            2.0 * cosine * current.0 - previous.0,
+            2.0 * cosine * current.1 - previous.1,
+        );
+        previous = current;
+        current = next;
+    }
+    current
+}
+
+/// [`dihedral_cosine_sine`], with `d(phi)/dp` for the four points.
+pub(crate) fn dihedral_and_gradient(
+    i: Vector3D,
+    b: Vector3D,
+    c: Vector3D,
+    j: Vector3D,
+) -> Option<(f64, f64, [Vector3D; 4])> {
+    let leading = b - i;
+    let axis = c - b;
+    let trailing = j - c;
+
+    let normal_in = leading.cross(&axis);
+    let normal_out = axis.cross(&trailing);
+    let (in_sq, out_sq) = (normal_in.dot(&normal_in), normal_out.dot(&normal_out));
+    let axis_sq = axis.dot(&axis);
+    if in_sq < 1e-16 || out_sq < 1e-16 || axis_sq < 1e-16 {
+        return None;
+    }
+    let axis_length = axis_sq.sqrt();
+
+    // The *signed* angle's cosine and sine. The derivative below is derived
+    // for the signed angle, and pairing it with an unsigned one flips the
+    // gradient wherever the true dihedral is negative -- which leaves an
+    // energy in `cos(n phi)` right and its gradient wrong by a sign on half
+    // of every structure.
+    let (cosine, sine) = dihedral_cosine_sine(i, b, c, j)?;
+
+    // The two end points move the dihedral only by swinging about the
+    // central bond, so their derivatives lie along their own plane normals.
+    // The two central ones take what is left, weighted by how far each end
+    // bond projects onto the axis -- and `phi` is invariant under
+    // translating all four, so the fourth derivative is fixed by the three
+    // summing to zero.
+    let d_i = normal_in * (-axis_length / in_sq);
+    let d_j = normal_out * (axis_length / out_sq);
+    let lead_projection = leading.dot(&axis) / axis_sq;
+    let trail_projection = trailing.dot(&axis) / axis_sq;
+    let d_b = d_i * -(1.0 + lead_projection) + d_j * trail_projection;
+    let d_c = -(d_i + d_j + d_b);
+    Some((cosine, sine, cap_derivatives([d_i, d_b, d_c, d_j])))
+}
+
+/// The largest `d(angle)/d(position)`, in radians per Angstrom, that a
+/// geometric derivative is allowed to report.
+///
+/// An end atom one bond length out swings the dihedral at about
+/// `1 / 1.5 A`, so a hundred is already two orders of magnitude past
+/// anything a real geometry produces.
+pub(crate) const MAX_GEOMETRIC_DERIVATIVE: f64 = 100.0;
+
+/// Scales a set of derivatives down together if the largest exceeds
+/// [`MAX_GEOMETRIC_DERIVATIVE`], leaving the direction alone.
+///
+/// A dihedral's derivative carries `1 / sin(theta)` at each end: as either
+/// end angle straightens, the four positions stop pinning the dihedral down
+/// and the derivative diverges, while the angle itself and the energy built
+/// on it stay perfectly bounded. The divergence is in the coordinate, not in
+/// the physics, and handing it to a minimiser is what a minimiser cannot
+/// survive: Armijo's acceptance test asks each trial step for a decrease
+/// proportional to `|g|^2`, no step can deliver `1e16` kcal/mol, every
+/// backtrack is rejected, and the minimisation returns the structure it
+/// started from. One peptide embedding trial in eight came back at 939
+/// kcal/mol that way, having stopped five iterations in.
+///
+/// Capping keeps the direction, which is still downhill and still correct,
+/// and bounds the step the line search has to consider. The alternative --
+/// dropping the term where it is singular, as [`super::molecule::forcefield`]
+/// does for a collinear angle -- also lets the minimisation proceed, but it
+/// throws away a restoring force exactly where the geometry most needs one.
+pub(crate) fn cap_derivatives<const N: usize>(mut derivatives: [Vector3D; N]) -> [Vector3D; N] {
+    let largest = derivatives
+        .iter()
+        .map(|d| d.dot(d))
+        .fold(0.0f64, f64::max)
+        .sqrt();
+    if largest > MAX_GEOMETRIC_DERIVATIVE {
+        let scale = MAX_GEOMETRIC_DERIVATIVE / largest;
+        for derivative in &mut derivatives {
+            *derivative = *derivative * scale;
+        }
+    }
+    derivatives
+}
+
 impl Vector3D {
     /// Creates a `Vector3D` from x, y, and z components.
     ///
@@ -1046,5 +1200,87 @@ impl From<[f64; 3]> for Vector3D {
 impl From<(f64, f64, f64)> for Vector3D {
     fn from(tuple: (f64, f64, f64)) -> Self {
         Vector3D::new(tuple.0, tuple.1, tuple.2)
+    }
+}
+
+/// A point in four dimensions: three real ones and the temporary fourth the
+/// embedder uses to get chirality right.
+///
+/// Distance geometry in four dimensions is the classic trick, and it is the
+/// one thing `embed` has always documented as missing. A stereocentre that
+/// comes out of the initial embedding with the wrong handedness cannot be
+/// fixed in three dimensions without dragging a substituent straight through
+/// the other three -- the barrier is exactly the strain the refinement is
+/// trying to remove, so the centre stays wrong, or it goes right and the
+/// geometry around it stays bad. In four dimensions the same motion is a
+/// rotation through `w` with nothing in the way: the chirality term costs
+/// nothing to satisfy while `w` is free, and the structure is then squeezed
+/// back down to three dimensions with the handedness already correct.
+///
+/// Deliberately not a general-purpose vector type. It has what the
+/// minimiser needs and the projection back to three dimensions, and nothing
+/// else -- everything else in this crate is three-dimensional.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct Vector4D {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub w: f64,
+}
+
+impl Vector4D {
+    pub fn new(x: f64, y: f64, z: f64, w: f64) -> Self {
+        Vector4D { x, y, z, w }
+    }
+
+    /// The three real dimensions, dropping `w`.
+    pub fn xyz(&self) -> Vector3D {
+        Vector3D::new(self.x, self.y, self.z)
+    }
+
+    /// `xyz` from a [`Vector3D`], with `w` alongside.
+    pub fn from_xyz(point: Vector3D, w: f64) -> Self {
+        Vector4D::new(point.x, point.y, point.z, w)
+    }
+
+    pub fn dot(&self, other: &Self) -> f64 {
+        self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
+    }
+}
+
+impl Add for Vector4D {
+    type Output = Vector4D;
+    fn add(self, other: Vector4D) -> Vector4D {
+        Vector4D::new(self.x + other.x, self.y + other.y, self.z + other.z, self.w + other.w)
+    }
+}
+
+impl Sub for Vector4D {
+    type Output = Vector4D;
+    fn sub(self, other: Vector4D) -> Vector4D {
+        Vector4D::new(self.x - other.x, self.y - other.y, self.z - other.z, self.w - other.w)
+    }
+}
+
+impl Mul<f64> for Vector4D {
+    type Output = Vector4D;
+    fn mul(self, scalar: f64) -> Vector4D {
+        Vector4D::new(self.x * scalar, self.y * scalar, self.z * scalar, self.w * scalar)
+    }
+}
+
+impl Neg for Vector4D {
+    type Output = Vector4D;
+    fn neg(self) -> Vector4D {
+        Vector4D::new(-self.x, -self.y, -self.z, -self.w)
+    }
+}
+
+impl AddAssign for Vector4D {
+    fn add_assign(&mut self, other: Self) {
+        self.x += other.x;
+        self.y += other.y;
+        self.z += other.z;
+        self.w += other.w;
     }
 }

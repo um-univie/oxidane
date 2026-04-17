@@ -376,3 +376,57 @@ fn an_isotope_is_read_and_an_atom_map_is_not_a_question() {
     assert_eq!(count("[C:1]", "[CH4:1]"), 1);
     assert_eq!(count("[C:2]", "[CH4:1]"), 1);
 }
+
+/// `r{m-n}` — ring size in a range, either bound optional.
+///
+/// An RDKit SMARTS extension, not Daylight, supported because RDKit's
+/// small-ring and macrocycle torsion rules are written with it and
+/// cannot be read at all otherwise.
+#[test]
+fn ring_size_ranges_match_any_ring_in_range() {
+    // benzene (6), cyclobutane (4), and a 12-membered macrocycle
+    let parse = |smiles: &str| MolecularGraph::from_smiles_single(smiles).unwrap();
+    let benzene = parse("c1ccccc1");
+    let cyclobutane = parse("C1CCC1");
+    let macrocycle = parse("C1CCCCCCCCCCC1");
+
+    for (pattern, expected) in [
+        ("[c;r{5-6}]", true),
+        ("[c;r{5-8}]", true),
+        ("[c;r{9-}]", false),
+        ("[c;r{-4}]", false),
+    ] {
+        assert_eq!(
+            matches_cxsmarts(&benzene, pattern).unwrap(),
+            expected,
+            "benzene vs {pattern}"
+        );
+    }
+    assert!(matches_cxsmarts(&cyclobutane, "[C;r{-4}]").unwrap());
+    assert!(!matches_cxsmarts(&cyclobutane, "[C;r{5-8}]").unwrap());
+    // A twelve-membered ring answers to `r{9-}` and not to `r{5-8}`. It did
+    // not always: ring perception here enumerated simple cycles up to eight
+    // atoms, so a larger ring had no size at all and no range could match
+    // it. That is why RDKit's macrocycle torsion rules, written entirely in
+    // `r{9-}`, parsed here and matched nothing.
+    assert!(!matches_cxsmarts(&macrocycle, "[C;r{5-8}]").unwrap());
+    assert!(matches_cxsmarts(&macrocycle, "[C;r{9-}]").unwrap());
+    assert!(matches_cxsmarts(&macrocycle, "[C;r12]").unwrap());
+
+    // A bound is required, and the range has to be closed.
+    assert!(parse_cxsmarts("[C;r{-}]").is_err());
+    assert!(parse_cxsmarts("[C;r{5-6").is_err());
+}
+
+/// Bare `r` asks only whether the atom is in a ring, like bare `R`;
+/// `r<n>` asks for a smallest ring of exactly that size. Requiring the
+/// digit rejected ordinary SMARTS such as `[NX3&r]`.
+#[test]
+fn bare_ring_membership_needs_no_size() {
+    let parse = |smiles: &str| MolecularGraph::from_smiles_single(smiles).unwrap();
+    let pyrrolidine = parse("C1CCNC1");
+    let trimethylamine = parse("CN(C)C");
+    assert!(matches_cxsmarts(&pyrrolidine, "[NX3&r]").unwrap());
+    assert!(!matches_cxsmarts(&trimethylamine, "[NX3&r]").unwrap());
+    assert!(matches_cxsmarts(&trimethylamine, "[NX3!r]").unwrap());
+}

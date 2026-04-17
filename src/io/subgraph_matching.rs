@@ -36,7 +36,7 @@ use crate::molecule::molecular_graph::MolecularGraph;
 use crate::molecule::traits::*;
 use bit_set::BitSet;
 use nohash_hasher::IntMap;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use std::collections::{HashMap, HashSet};
 
 /// Represents a mapping state during subgraph isomorphism
@@ -243,9 +243,6 @@ pub struct AromaticityInfo {
     pub aromatic_bonds: FxHashSet<(usize, usize)>,
 }
 
-/// Largest ring size considered by R/r ring predicates
-const MAX_RING_SIZE: usize = 8;
-
 /// What the matcher needs to know about a molecule before it looks at a
 /// pattern: which bonds and atoms are in rings, and which are aromatic.
 ///
@@ -275,16 +272,18 @@ fn compute_ring_info(molecule: &MolecularGraph) -> RingInfo {
         atom_ring_sizes.insert(atom_index, FxHashSet::default());
     }
 
-    // Enumerate each simple cycle exactly once: it is discovered from its
-    // smallest atom and recorded in only one traversal direction.
-    let mut rings: Vec<Vec<usize>> = Vec::new();
-    let mut path = Vec::with_capacity(MAX_RING_SIZE);
-    for start in cyclic_atoms.iter() {
-        path.clear();
-        path.push(start);
-        collect_cycles(molecule, start, start, &cyclic_atoms, &mut path, &mut rings);
-    }
-    let rings = smallest_set_of_smallest_rings(molecule, &cyclic_atoms, &cyclic_bonds, rings);
+    // The smallest ring through each bond, which is the symmetrized ring
+    // set every toolkit's `r` and `R` primitives are written against.
+    //
+    // This used to enumerate every simple cycle of up to eight atoms and
+    // reduce them. Eight atoms: so `[C;r9]` matched nothing, ever, and
+    // neither did anything else asking about a larger ring -- including the
+    // whole of RDKit's macrocycle torsion rule set, whose patterns all
+    // carry `r{9-}`. A thirteen-membered ring reported its atoms as being
+    // in a ring, with no ring size attached to say which. The
+    // smallest-ring-per-bond search has no size limit and is polynomial,
+    // where enumerating simple cycles is why there was a limit at all.
+    let rings = crate::molecule::topology::smallest_rings(molecule);
 
     for ring in &rings {
         let size = ring.len();
@@ -307,147 +306,7 @@ fn compute_ring_info(molecule: &MolecularGraph) -> RingInfo {
     }
 }
 
-/// The smallest set of smallest rings, chosen from every simple cycle.
-///
-/// A fused bicyclic has three simple cycles -- each ring, and the envelope
-/// around both -- and only two of them are rings in any useful sense. What
-/// distinguishes them is that the envelope is the other two added together:
-/// a cycle basis has exactly `bonds - atoms + pieces` members, and taking
-/// the smallest cycles that are still independent of the ones already taken
-/// gives a *minimum* such basis, which is what SSSR means.
-///
-/// Without this an atom shared between two rings is in three of them, so
-/// `[R2]` misses it and `[R3]` finds it; and its smallest ring is right
-/// only by luck.
-fn smallest_set_of_smallest_rings(
-    molecule: &MolecularGraph,
-    cyclic_atoms: &BitSet,
-    cyclic_bonds: &FxHashSet<(usize, usize)>,
-    mut rings: Vec<Vec<usize>>,
-) -> Vec<Vec<usize>> {
-    if rings.len() < 2 {
-        return rings;
-    }
 
-    // How many rings there are to find: the cyclomatic number of the part
-    // of the molecule that is in rings.
-    let mut seen = BitSet::new();
-    let mut pieces = 0usize;
-    let mut stack: Vec<usize> = Vec::new();
-    for start in cyclic_atoms.iter() {
-        if seen.contains(start) {
-            continue;
-        }
-        pieces += 1;
-        seen.insert(start);
-        stack.push(start);
-        while let Some(current) = stack.pop() {
-            for bond in molecule.get_atom_bonds(current).unwrap_or_default() {
-                let target = bond.target();
-                // Along ring bonds only. Biphenyl's two rings are joined by
-                // a bond that is in neither of them, and walking across it
-                // makes them one piece -- which says there is one ring where
-                // there are two, and throws away the second.
-                let pair = (current.min(target), current.max(target));
-                if cyclic_bonds.contains(&pair) && !seen.contains(target) {
-                    seen.insert(target);
-                    stack.push(target);
-                }
-            }
-        }
-    }
-    let wanted = (cyclic_bonds.len() + pieces).saturating_sub(cyclic_atoms.len());
-    if rings.len() <= wanted {
-        return rings;
-    }
-
-    // Each ring as a set of bonds, so that "is this one the sum of those"
-    // is an exclusive or.
-    let bond_index: FxHashMap<(usize, usize), usize> = cyclic_bonds
-        .iter()
-        .enumerate()
-        .map(|(index, &pair)| (pair, index))
-        .collect();
-    let words = bond_index.len().div_ceil(64).max(1);
-
-    // Smallest first, and among equals in a fixed order, so that which
-    // rings are chosen does not depend on the order the search found them.
-    rings.sort_by(|left, right| left.len().cmp(&right.len()).then_with(|| left.cmp(right)));
-
-    // The basis is kept in order of its members' leading bonds. Each
-    // member's leading bond is the lowest one it still has, and clearing a
-    // leading bond never brings a lower one back, so reducing in that order
-    // is enough to decide independence in one pass.
-    let mut basis: Vec<(usize, Vec<u64>)> = Vec::with_capacity(wanted);
-    let mut chosen: Vec<Vec<usize>> = Vec::with_capacity(wanted);
-    for ring in rings {
-        if chosen.len() == wanted {
-            break;
-        }
-        let mut reduced = vec![0u64; words];
-        for position in 0..ring.len() {
-            let first = ring[position];
-            let second = ring[(position + 1) % ring.len()];
-            let pair = (first.min(second), first.max(second));
-            if let Some(&index) = bond_index.get(&pair) {
-                reduced[index / 64] ^= 1u64 << (index % 64);
-            }
-        }
-        for (leading, member) in &basis {
-            if reduced[leading / 64] & (1u64 << (leading % 64)) != 0 {
-                for (into, from) in reduced.iter_mut().zip(member.iter()) {
-                    *into ^= from;
-                }
-            }
-        }
-        let Some(word) = reduced.iter().position(|&word| word != 0) else {
-            // Every bond of this ring is covered by rings already chosen:
-            // it is their sum, and is the envelope around them rather than
-            // a ring of its own.
-            continue;
-        };
-        let leading = word * 64 + reduced[word].trailing_zeros() as usize;
-        let position = basis.partition_point(|&(other, _)| other < leading);
-        basis.insert(position, (leading, reduced));
-        chosen.push(ring);
-    }
-    chosen
-}
-
-/// DFS that collects every simple cycle through `start` using only atoms
-/// greater than `start` (so each cycle is anchored at its smallest atom)
-/// and only one traversal direction (`path[1] < path.last()`).
-fn collect_cycles(
-    molecule: &MolecularGraph,
-    current: usize,
-    start: usize,
-    cyclic_atoms: &BitSet,
-    path: &mut Vec<usize>,
-    rings: &mut Vec<Vec<usize>>,
-) {
-    let Some(bonds) = molecule.get_atom_bonds(current) else {
-        return;
-    };
-    for bond in bonds {
-        let neighbor = bond.target();
-        if !cyclic_atoms.contains(neighbor) {
-            continue;
-        }
-
-        if neighbor == start && path.len() >= 3 {
-            if path[1] < path[path.len() - 1] {
-                rings.push(path.clone());
-            }
-            continue;
-        }
-
-        if neighbor > start && path.len() < MAX_RING_SIZE && !path.contains(&neighbor) {
-            path.push(neighbor);
-            collect_cycles(molecule, neighbor, start, cyclic_atoms, path, rings);
-            path.pop();
-        }
-    }
-}
 
 /// Compute aromaticity information for the molecule using the robust aromatize() method
 ///
@@ -847,6 +706,21 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
                     .unwrap_or(0)
                     == *ring_size as usize
             }
+
+            // SMARTS `r{m-n}`: *any* ring the atom belongs to has a size in
+            // range, unlike `r<n>`, which asks about the smallest one. An
+            // atom shared between a six-ring and a macrocycle is both
+            // `r{5-8}` and `r{9-}`.
+            AtomExpression::RingSizeRange(minimum, maximum) => self
+                .ring_info
+                .atom_ring_sizes
+                .get(&molecule_atom)
+                .is_some_and(|sizes| {
+                    sizes.iter().any(|&size| {
+                        minimum.is_none_or(|m| size >= m as usize)
+                            && maximum.is_none_or(|m| size <= m as usize)
+                    })
+                }),
 
             AtomExpression::Charge(charge) => {
                 self.molecule.get_atom_charge(molecule_atom) == *charge

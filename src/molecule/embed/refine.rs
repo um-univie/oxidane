@@ -11,28 +11,133 @@
 //! satisfying bounds only in 4D, not in 3D. The `w` component from MDS is
 //! discarded by the caller before refinement starts.
 //!
-//! Steepest descent with Armijo backtracking line search is used rather than
-//! CG/L-BFGS: no optimizer infrastructure exists yet in this crate, and
-//! steepest descent's monotonic-decrease invariant is trivially testable.
-//! Upgrading the search direction to Polak-Ribiere CG later is a near
-//! drop-in change reusing the same gradient and line search.
+//! Polak-Ribiere conjugate gradient with an Armijo backtracking line
+//! search, falling back to steepest descent whenever the conjugate
+//! direction stops pointing downhill -- so the monotonic-decrease invariant
+//! steepest descent gave is still what the line search enforces.
+//!
+//! It replaced plain steepest descent because that was where essentially
+//! all of an embedding's time went, and it was not converging: on a 76-atom
+//! molecule the touch-up pass ran its full 1500-iteration budget and still
+//! ended at an energy of 0.37. Measured over ethanol, benzene, caffeine,
+//! cocaine, atorvastatin and a 90-atom peptide, the change lands 2-8x
+//! faster and at a lower final energy on five of the six (0.13 rather than
+//! 0.37 on the 76-atom case); caffeine is the exception, ending about 11%
+//! higher for 7x less time.
+//!
+//! Two things beyond the search direction mattered as much:
+//!
+//! * the step size was carried between iterations rather than restarting the
+//!   line search at a full step each time, which cut energy evaluations per
+//!   iteration from ~5 to ~2. That belonged to the conjugate-gradient
+//!   version and did not survive the move to [`crate::molecule::minimize`],
+//!   which proposes a full step every iteration; putting it back was
+//!   measured on 2026-10-02 and costs more quality than it buys time. See
+//!   that module's comment.;
+//! * a line search that fails is a reason to restart the direction, not to
+//!   stop. Treating failure as convergence -- as an intermediate version of
+//!   this did -- abandoned structures that were still improvable and gave up
+//!   most of the accuracy the method had gained.
+//!
+//! This could not land before the stereo double-bond restraint in
+//! [`super::forcefield`] did. Conjugate gradient reaches a lower total
+//! energy but distributes what is left differently, and the cis/trans term
+//! was at that point a hinge that stopped pulling roughly 105 degrees short
+//! of planar -- slack enough that the redistribution pushed a tagged bond
+//! over the line its test drew. Fixing the restraint to aim at the planar
+//! dihedral removed the slack, and this change then made no test worse.
+
+//! The pairs come in as a flat slice of [`bounds::Pair`], built once per
+//! molecule, rather than as the bounds matrix itself. Every iteration reads
+//! every pair, so what an `Array2` lookup costs -- an index computation and
+//! a bounds check for each of the two bounds -- is paid `n^2/2` times per
+//! energy evaluation; the squares and reciprocals the energy wants are
+//! precomputed in the same move, which turns its two divisions into
+//! multiplications. Worth 4% of an embedding, and it is also what lets a
+//! pass be handed a subset of the pairs (see [`bounds::Pairs`]).
 
 use super::bounds;
 use super::chirality::StereoConstraints;
 use super::forcefield::{AngleBend, Torsion};
 use super::planarity::{PlanarCenter, RingPlane};
+use crate::molecule::minimize::{Energy, minimize};
 use crate::vector::Vector3D;
-use ndarray::Array2;
 
-const ARMIJO_C1: f64 = 1e-4;
-const MAX_LINE_SEARCH_SHRINKS: usize = 20;
-const GRADIENT_NORM_TOLERANCE: f64 = 1e-8;
+const GRADIENT_NORM_TOLERANCE: f64 = 1e-4;
 
-/// Runs gradient-descent refinement in place, returning the final energy
-/// (bounds-violation energy plus the [`chirality`] consistency term).
+/// Everything the embedder restrains at once: the distance bounds, the
+/// stereo terms, and -- in the final touch-up only -- planarity, angle bend
+/// and torsion.
+struct Restraints<'a> {
+    pairs: &'a [bounds::Pair],
+    stereo: &'a StereoConstraints,
+    rings: &'a [RingPlane],
+    planar: &'a [PlanarCenter],
+    angles: &'a [AngleBend],
+    torsions: &'a [Torsion],
+    /// Somewhere for the terms that only offer a combined energy-and-gradient
+    /// entry point to write a gradient nobody wants, during a line search.
+    discard: std::cell::RefCell<Vec<Vector3D>>,
+}
+
+impl Energy for Restraints<'_> {
+    fn energy(&self, positions: &[Vector3D]) -> f64 {
+        let mut energy = self.pair_energy(positions);
+        let mut discard = self.discard.borrow_mut();
+        discard.fill(Vector3D::default());
+        energy += self.stereo.energy_and_gradient(positions, &mut discard);
+        energy += super::planarity::planarity_energy_and_gradient(
+            positions,
+            self.rings,
+            self.planar,
+            &mut discard,
+        );
+        energy += super::forcefield::forcefield_energy(positions, self.angles, self.torsions);
+        energy
+    }
+
+    fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
+        let mut energy = 0.0;
+        gradient.fill(Vector3D::default());
+
+        for pair in self.pairs {
+            let (e, g_xyz) = bounds::pair_violation(pair, positions);
+            energy += e;
+            gradient[pair.i as usize] += g_xyz;
+            gradient[pair.j as usize] += -g_xyz;
+        }
+
+        energy += self.stereo.energy_and_gradient(positions, gradient);
+        energy += super::planarity::planarity_energy_and_gradient(
+            positions,
+            self.rings,
+            self.planar,
+            gradient,
+        );
+        energy += super::forcefield::forcefield_energy_and_gradient(
+            positions,
+            self.angles,
+            self.torsions,
+            gradient,
+        );
+        energy
+    }
+}
+
+impl Restraints<'_> {
+    fn pair_energy(&self, positions: &[Vector3D]) -> f64 {
+        self.pairs
+            .iter()
+            .map(|pair| bounds::pair_violation::<Vector3D>(pair, positions).0)
+            .sum()
+    }
+}
+
+/// Runs gradient-descent refinement in place, returning the final energy.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn refine(
     positions: &mut [Vector3D],
-    bounds_matrix: &Array2<f64>,
+    pairs: &[bounds::Pair],
     stereo: &StereoConstraints,
     rings: &[RingPlane],
     planar: &[PlanarCenter],
@@ -40,129 +145,14 @@ pub(super) fn refine(
     torsions: &[Torsion],
     max_iterations: usize,
 ) -> f64 {
-    let (mut energy, mut grad_pos) =
-        energy_and_gradient(positions, bounds_matrix, stereo, rings, planar, angles, torsions);
-
-    for _ in 0..max_iterations {
-        let grad_norm_sq: f64 = grad_pos.iter().map(|g| g.dot(g)).sum::<f64>();
-        if grad_norm_sq < GRADIENT_NORM_TOLERANCE {
-            break;
-        }
-
-        let mut alpha = 1.0;
-        let mut accepted = false;
-        let mut trial_positions = positions.to_vec();
-
-        for _ in 0..MAX_LINE_SEARCH_SHRINKS {
-            for i in 0..positions.len() {
-                trial_positions[i] = positions[i] + (-grad_pos[i] * alpha);
-            }
-            let trial_energy =
-                energy_only(&trial_positions, bounds_matrix, stereo, rings, planar, angles, torsions);
-            if trial_energy <= energy - ARMIJO_C1 * alpha * grad_norm_sq {
-                positions.copy_from_slice(&trial_positions);
-                energy = trial_energy;
-                accepted = true;
-                break;
-            }
-            alpha *= 0.5;
-        }
-
-        if !accepted {
-            break;
-        }
-        let (next_energy, next_grad_pos) =
-            energy_and_gradient(positions, bounds_matrix, stereo, rings, planar, angles, torsions);
-        energy = next_energy;
-        grad_pos = next_grad_pos;
-    }
-
-    energy
-}
-
-fn energy_only(
-    positions: &[Vector3D],
-    bounds_matrix: &Array2<f64>,
-    stereo: &StereoConstraints,
-    rings: &[RingPlane],
-    planar: &[PlanarCenter],
-    angles: &[AngleBend],
-    torsions: &[Torsion],
-) -> f64 {
-    let n = positions.len();
-    let mut energy = 0.0;
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let (e, _) = pair_energy_and_grad(positions, bounds_matrix, i, j);
-            energy += e;
-        }
-    }
-    let mut scratch = vec![Vector3D::default(); n];
-    energy += stereo.energy_and_gradient(positions, &mut scratch);
-    energy += super::planarity::planarity_energy_and_gradient(positions, rings, planar, &mut scratch);
-    energy += super::forcefield::forcefield_energy_and_gradient(positions, angles, torsions, &mut scratch);
-    energy
-}
-
-fn energy_and_gradient(
-    positions: &[Vector3D],
-    bounds_matrix: &Array2<f64>,
-    stereo: &StereoConstraints,
-    rings: &[RingPlane],
-    planar: &[PlanarCenter],
-    angles: &[AngleBend],
-    torsions: &[Torsion],
-) -> (f64, Vec<Vector3D>) {
-    let n = positions.len();
-    let mut energy = 0.0;
-    let mut grad_pos = vec![Vector3D::default(); n];
-
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let (e, g_xyz) = pair_energy_and_grad(positions, bounds_matrix, i, j);
-            energy += e;
-            grad_pos[i] += g_xyz;
-            grad_pos[j] += -g_xyz;
-        }
-    }
-
-    energy += stereo.energy_and_gradient(positions, &mut grad_pos);
-    energy += super::planarity::planarity_energy_and_gradient(positions, rings, planar, &mut grad_pos);
-    energy += super::forcefield::forcefield_energy_and_gradient(positions, angles, torsions, &mut grad_pos);
-
-    (energy, grad_pos)
-}
-
-/// Energy contribution of pair `(i, j)` plus `dE/dp_i`. `dE/dp_j` is always
-/// the negation of `dE/dp_i` by symmetry of `d^2`.
-fn pair_energy_and_grad(
-    positions: &[Vector3D],
-    bounds_matrix: &Array2<f64>,
-    i: usize,
-    j: usize,
-) -> (f64, Vector3D) {
-    let lower = bounds::get_lower(bounds_matrix, i, j);
-    let upper = bounds::get_upper(bounds_matrix, i, j);
-    let diff = positions[i] - positions[j];
-    let d2 = diff.dot(&diff);
-    let u2 = upper * upper;
-    let l2 = lower * lower;
-
-    let mut energy = 0.0;
-    let mut grad_xyz = Vector3D::default();
-
-    if d2 > u2 {
-        let excess = d2 - u2;
-        energy += (excess * excess) / u2;
-        let coeff = 4.0 * excess / u2;
-        grad_xyz += diff * coeff;
-    }
-    if d2 < l2 {
-        let deficit = l2 - d2;
-        energy += (deficit * deficit) / l2;
-        let coeff = 4.0 * deficit / l2;
-        grad_xyz += -(diff * coeff);
-    }
-
-    (energy, grad_xyz)
+    let restraints = Restraints {
+        pairs,
+        stereo,
+        rings,
+        planar,
+        angles,
+        torsions,
+        discard: std::cell::RefCell::new(vec![Vector3D::default(); positions.len()]),
+    };
+    minimize(positions, &restraints, max_iterations, GRADIENT_NORM_TOLERANCE)
 }

@@ -7,6 +7,8 @@ pub mod descriptors;
 pub mod draw;
 pub mod cip;
 pub mod embed;
+pub mod forcefield;
+pub mod minimize;
 pub mod fingerprint;
 pub mod experimental;
 pub mod featurize;

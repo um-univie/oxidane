@@ -29,6 +29,11 @@ impl StereoConstraints {
         }
     }
 
+    /// Whether there is any stereochemistry to hold on to at all.
+    pub(super) fn is_empty(&self) -> bool {
+        self.tetrahedral.is_empty() && self.cis_trans.is_empty() && self.allenes.is_empty()
+    }
+
     pub(super) fn count_mismatches(&self, positions: &[Vector3D]) -> usize {
         count_mismatches(positions, &self.tetrahedral)
             + count_cis_trans_mismatches(positions, &self.cis_trans)
@@ -36,9 +41,29 @@ impl StereoConstraints {
     }
 
     pub(super) fn energy_and_gradient(&self, positions: &[Vector3D], grad: &mut [Vector3D]) -> f64 {
-        chirality_energy_and_gradient(positions, &self.tetrahedral, grad)
-            + cis_trans_energy_and_gradient(positions, &self.cis_trans, grad)
-            + allene_energy_and_gradient(positions, &self.allenes, grad)
+        self.energy_and_gradient_scaled(positions, grad, 1.0)
+    }
+
+    /// The same terms with every margin multiplied by `margin_scale`.
+    ///
+    /// Distance geometry wants a margin that actively pushes a centre well
+    /// clear of its plane, because nothing else there knows about
+    /// chirality. A force field does know what the geometry should be, and
+    /// wants the opposite: a term that is exactly zero wherever the centre
+    /// is unambiguous and speaks only as one approaches its plane. A
+    /// correct tetrahedral centre's signed volume is about 0.92 Angstrom
+    /// cubed at these bond lengths, just under the margin distance geometry
+    /// uses, so at full scale the restraint leans on every centre in the
+    /// molecule and the minimisation stalls 40 kcal/mol short.
+    pub(super) fn energy_and_gradient_scaled(
+        &self,
+        positions: &[Vector3D],
+        grad: &mut [Vector3D],
+        margin_scale: f64,
+    ) -> f64 {
+        chirality_energy_and_gradient(positions, &self.tetrahedral, grad, margin_scale)
+            + cis_trans_energy_and_gradient(positions, &self.cis_trans, grad, margin_scale)
+            + allene_energy_and_gradient(positions, &self.allenes, grad, margin_scale)
     }
 
     /// Returns `true` if any constraint was force-flipped (caller should
@@ -55,34 +80,61 @@ impl StereoConstraints {
 // Tetrahedral (TH) centres
 // ---------------------------------------------------------------------
 
-/// With `n0..n3` the centre's bonded neighbors sorted by ascending atom
-/// index and `v_k = pos(n_k) - pos(centre)`, `V = v0 . (v1 x v2)` is
-/// positive for `TH(1)` (`@`) and negative for `TH(2)` (`@@`) - matching
-/// this crate's documented `ChiralClass` convention (`TH(u8), // @ 1..=2
-/// 1 = anti-clockwise, 2 = clockwise`), the SMILES parser
-/// (`crate::io::smiles::assign_proper_chirality`), and RDKit (cross-checked
-/// via `tests/embed_oracle.py`). Also matches
-/// [`crate::molecule::chirality::ChiralClassifier::determine_tetrahedral_chirality`],
-/// the oracle used to *read back* chirality from a `Molecule3D` - that
-/// function used to return the opposite sign, a real bug found and fixed
-/// during this embedder's development (see its doc comment). Note `v3`/`n3`
-/// does not appear in `V` at all - this is the existing repo convention
-/// (three of the four neighbor directions already fix a tetrahedron's
-/// handedness), not an omission introduced here.
+/// A tetrahedral centre, as the handedness of its four neighbours.
+///
+/// With `n0..n3` the centre's bonded neighbours sorted by ascending atom
+/// index, the measure is `V = (p1 - p0) . ((p2 - p0) x (p3 - p0))`: the
+/// signed volume of the tetrahedron *they* make, which does not mention
+/// where the centre atom sits. It is negative for `TH(1)` (`@`) and
+/// positive for `TH(2)` (`@@`).
+///
+/// # Why not three vectors from the centre
+///
+/// The obvious measure is `v0 . (v1 x v2)` with `v_k = p_k - centre`, and
+/// that is what this was. The two agree wherever the centre sits inside its
+/// neighbours: writing the centre in barycentric coordinates gives
+/// `v0 . (v1 x v2) = -lambda3 * V` with `lambda3` the weight of the
+/// neighbour left out, so they differ by a positive factor and a sign --
+/// hence `TH(1)` mapping to a *negative* `V` here where it mapped to a
+/// positive triple product before.
+///
+/// They stop agreeing exactly where it matters. The three-vector form
+/// leaves out one neighbour entirely and measures the other three against
+/// the centre, so it reports a confident handedness for a centre that has
+/// been squashed flat, and it swings with the centre atom's own position
+/// rather than with the arrangement around it. That is not academic: on a
+/// strained cholesterol the two ring-fusion quaternary carbons read as
+/// correct by this measure, at a tenth of a healthy magnitude, while RDKit
+/// read the molecule as the wrong isomer -- the two codes disagreeing for a
+/// week of this module's history. `V` is the volume of the actual
+/// tetrahedron; it goes to zero exactly when the four neighbours become
+/// coplanar, which is exactly when handedness stops being defined.
+///
+/// The convention is otherwise unchanged and still cross-checked against
+/// RDKit via `tests/embed_oracle.py`, this crate's documented `ChiralClass`
+/// (`TH(u8), // @ 1..=2  1 = anti-clockwise, 2 = clockwise`), and the
+/// SMILES parser (`crate::io::smiles::assign_proper_chirality`).
 pub(super) struct StereoCenter {
     pub centre: usize,
     pub n0: usize,
     pub n1: usize,
     pub n2: usize,
+    pub n3: usize,
     pub target_sign: f64,
 }
 
-/// Distance scale at which the chirality penalty saturates. Set to a typical
-/// tetrahedral centre's `|V|` at equilibrium bond lengths (~1.5 A bonds,
-/// ~109.5 deg angles give `|V|` on the order of 1.5-2.5 A^3); a fixed
-/// constant is a deliberate "lite" simplification instead of a per-centre
-/// value derived from actual bond-length bounds.
-const CHIRALITY_MARGIN: f64 = 1.0;
+/// Volume at which the chirality penalty saturates, in cubic Angstroms.
+///
+/// A healthy tetrahedral centre at equilibrium bond lengths makes a
+/// tetrahedron of about 11 -- the neighbours are 2.4 to 2.5 A apart -- so
+/// four is comfortably inside the flat region and still far enough from
+/// zero to catch a centre on its way through coplanarity. It replaces a
+/// margin of one, which was the same fraction of the three-vector measure
+/// this used to use (that measure is smaller by the barycentric weight of
+/// the neighbour it ignores, about a quarter). A fixed constant is a
+/// deliberate "lite" simplification instead of a per-centre value derived
+/// from actual bond-length bounds.
+const CHIRALITY_MARGIN: f64 = 4.0;
 
 /// Collects every atom whose stored [`ChiralClass`] is `TH(1)` or `TH(2)`
 /// and that has exactly 4 bonded neighbors (guaranteed after
@@ -94,9 +146,11 @@ fn collect_tetrahedral_centers<T: MoleculeCore>(mol: &T) -> Vec<StereoCenter> {
 
     let mut centers = Vec::new();
     for (centre, &class) in chiral_classes.iter().enumerate() {
+        // Negated against the three-vector measure this replaced, which is
+        // the `-lambda3` of the identity in [`StereoCenter`]'s comment.
         let target_sign = match class {
-            ChiralClass::TH(1) => 1.0,
-            ChiralClass::TH(2) => -1.0,
+            ChiralClass::TH(1) => -1.0,
+            ChiralClass::TH(2) => 1.0,
             _ => continue,
         };
         let mut neighbors: Vec<usize> =
@@ -110,17 +164,20 @@ fn collect_tetrahedral_centers<T: MoleculeCore>(mol: &T) -> Vec<StereoCenter> {
             n0: neighbors[0],
             n1: neighbors[1],
             n2: neighbors[2],
+            n3: neighbors[3],
             target_sign,
         });
     }
     centers
 }
 
+/// The signed volume of the tetrahedron the four neighbours make, and the
+/// three edges from `n0` that define it.
 fn signed_volume(positions: &[Vector3D], c: &StereoCenter) -> (f64, Vector3D, Vector3D, Vector3D) {
-    let v0 = positions[c.n0] - positions[c.centre];
-    let v1 = positions[c.n1] - positions[c.centre];
-    let v2 = positions[c.n2] - positions[c.centre];
-    (v0.dot(&v1.cross(&v2)), v0, v1, v2)
+    let first = positions[c.n1] - positions[c.n0];
+    let second = positions[c.n2] - positions[c.n0];
+    let third = positions[c.n3] - positions[c.n0];
+    (first.dot(&second.cross(&third)), first, second, third)
 }
 
 /// Number of stereocenters whose current geometry does not match its target
@@ -143,29 +200,35 @@ fn chirality_energy_and_gradient(
     positions: &[Vector3D],
     centers: &[StereoCenter],
     grad: &mut [Vector3D],
+    margin_scale: f64,
 ) -> f64 {
+    let margin = CHIRALITY_MARGIN * margin_scale;
     let mut energy = 0.0;
     for c in centers {
-        let (v, v0, v1, v2) = signed_volume(positions, c);
+        let (v, first, second, third) = signed_volume(positions, c);
         let signed = c.target_sign * v;
-        if signed >= CHIRALITY_MARGIN {
+        if signed >= margin {
             continue;
         }
-        let deficit = CHIRALITY_MARGIN - signed;
-        energy += (deficit * deficit) / (CHIRALITY_MARGIN * CHIRALITY_MARGIN);
+        let deficit = margin - signed;
+        energy += (deficit * deficit) / (margin * margin);
 
         // dE/dV = -2*target_sign*deficit / margin^2
-        let de_dv = -2.0 * c.target_sign * deficit / (CHIRALITY_MARGIN * CHIRALITY_MARGIN);
+        let de_dv = -2.0 * c.target_sign * deficit / (margin * margin);
 
-        // Scalar triple product derivatives: dV/dv0 = v1 x v2, dV/dv1 = v2 x v0, dV/dv2 = v0 x v1.
-        let dv_dv0 = v1.cross(&v2);
-        let dv_dv1 = v2.cross(&v0);
-        let dv_dv2 = v0.cross(&v1);
+        // V = first . (second x third), with each edge measured from `n0`:
+        // dV/d(p1) = second x third, and so round. The centre atom does not
+        // appear in V and so takes no force -- a flattening centre is put
+        // right by moving what is around it, which is the motion that
+        // actually restores the handedness.
+        let d_first = second.cross(&third);
+        let d_second = third.cross(&first);
+        let d_third = first.cross(&second);
 
-        grad[c.n0] += dv_dv0 * de_dv;
-        grad[c.n1] += dv_dv1 * de_dv;
-        grad[c.n2] += dv_dv2 * de_dv;
-        grad[c.centre] += -(dv_dv0 + dv_dv1 + dv_dv2) * de_dv;
+        grad[c.n1] += d_first * de_dv;
+        grad[c.n2] += d_second * de_dv;
+        grad[c.n3] += d_third * de_dv;
+        grad[c.n0] += -(d_first + d_second + d_third) * de_dv;
     }
     energy
 }
@@ -221,6 +284,30 @@ fn first_non_double_neighbor<T: MoleculeCore>(mol: &T, atom: usize, exclude: usi
         .iter()
         .find(|b| b.bond_order() != BondOrder::Double && b.target() != exclude)
         .map(|b| b.target())
+}
+
+/// Which substituents a stereo double bond's tags are stated relative to,
+/// and whether the tags put that pair on the same side. This is exactly what
+/// [`collect_cis_trans_bonds`] derives per bond, exposed on its own so
+/// [`super::forcefield`] can place the phase of the torsions that flatten
+/// the bond without re-deriving the convention.
+pub(super) struct StereoDoubleBondReference {
+    pub reference_b: usize,
+    pub reference_c: usize,
+    /// `+1.0` if the two reference substituents are cis, `-1.0` if trans.
+    pub target_sign: f64,
+}
+
+pub(super) fn stereo_double_bond_reference<T: MoleculeCore>(
+    mol: &T,
+    b: usize,
+    c: usize,
+) -> Option<StereoDoubleBondReference> {
+    let chiral_classes = mol.chiral_classes()?;
+    let reference_b = first_non_double_neighbor(mol, b, c)?;
+    let reference_c = first_non_double_neighbor(mol, c, b)?;
+    let target_sign = if chiral_classes[b] == chiral_classes[c] { 1.0 } else { -1.0 };
+    Some(StereoDoubleBondReference { reference_b, reference_c, target_sign })
 }
 
 fn collect_cis_trans_bonds<T: MoleculeCore>(mol: &T) -> Vec<CisTransBond> {
@@ -309,18 +396,20 @@ fn cis_trans_energy_and_gradient(
     positions: &[Vector3D],
     bonds: &[CisTransBond],
     grad: &mut [Vector3D],
+    margin_scale: f64,
 ) -> f64 {
+    let margin = CIS_TRANS_MARGIN * margin_scale;
     let mut energy = 0.0;
     for ct in bonds {
         let (s, d_p, d_a, d_b, d_q) = cis_trans_scalar(positions, ct);
         let signed = ct.target_sign * s;
-        if signed >= CIS_TRANS_MARGIN {
+        if signed >= margin {
             continue;
         }
-        let deficit = CIS_TRANS_MARGIN - signed;
-        energy += (deficit * deficit) / (CIS_TRANS_MARGIN * CIS_TRANS_MARGIN);
+        let deficit = margin - signed;
+        energy += (deficit * deficit) / (margin * margin);
 
-        let de_ds = -2.0 * ct.target_sign * deficit / (CIS_TRANS_MARGIN * CIS_TRANS_MARGIN);
+        let de_ds = -2.0 * ct.target_sign * deficit / (margin * margin);
         grad[ct.sub_a0] += d_p * de_ds;
         grad[ct.a] += d_a * de_ds;
         grad[ct.b] += d_b * de_ds;
@@ -447,18 +536,20 @@ fn allene_energy_and_gradient(
     positions: &[Vector3D],
     centers: &[AllenCenter],
     grad: &mut [Vector3D],
+    margin_scale: f64,
 ) -> f64 {
+    let margin = CHIRALITY_MARGIN * margin_scale;
     let mut energy = 0.0;
     for c in centers {
         let (v, v0, v1, v2) = allene_signed_volume(positions, c);
         let signed = c.target_sign * v;
-        if signed >= CHIRALITY_MARGIN {
+        if signed >= margin {
             continue;
         }
-        let deficit = CHIRALITY_MARGIN - signed;
-        energy += (deficit * deficit) / (CHIRALITY_MARGIN * CHIRALITY_MARGIN);
+        let deficit = margin - signed;
+        energy += (deficit * deficit) / (margin * margin);
 
-        let de_dv = -2.0 * c.target_sign * deficit / (CHIRALITY_MARGIN * CHIRALITY_MARGIN);
+        let de_dv = -2.0 * c.target_sign * deficit / (margin * margin);
         let dv_dv0 = v1.cross(&v2);
         let dv_dv1 = v2.cross(&v0);
         let dv_dv2 = v0.cross(&v1);
@@ -512,9 +603,44 @@ mod tests {
         let mut oracle = embedded;
         oracle.chiral_classes = None;
         oracle.identify_chiral_classes();
+        // Negative volume is `TH(1)`; see [`StereoCenter`].
         assert_eq!(
             oracle.chiral_classes().unwrap()[centers[0].centre],
-            ChiralClass::TH(if centers[0].target_sign > 0.0 { 1 } else { 2 })
+            ChiralClass::TH(if centers[0].target_sign < 0.0 { 1 } else { 2 })
+        );
+    }
+
+    /// The four-point volume and the three-vector triple product it
+    /// replaced differ by `-lambda3`, the barycentric weight of the
+    /// neighbour the triple product leaves out -- which is why the target
+    /// signs are negated against the old ones, and why the margin went from
+    /// one to four.
+    ///
+    /// Written out because the relation is the whole argument for the sign
+    /// convention, and a test is the only thing that keeps an argument in a
+    /// comment honest.
+    #[test]
+    fn the_four_point_volume_is_the_triple_product_scaled_and_flipped() {
+        let mut mol = MolecularGraph::from_smiles_single("[C@](F)(Cl)(Br)I").unwrap();
+        mol.add_hydrogens();
+        let centre = &collect_tetrahedral_centers(&mol)[0];
+        let positions = mol.embed_3d().unwrap().positions;
+
+        let (four_point, ..) = signed_volume(&positions, centre);
+        let from_centre = |atom: usize| positions[atom] - positions[centre.centre];
+        let triple_product = from_centre(centre.n0)
+            .dot(&from_centre(centre.n1).cross(&from_centre(centre.n2)));
+
+        assert!(
+            triple_product * four_point < 0.0,
+            "the two measures should disagree in sign, got {triple_product} and {four_point}"
+        );
+        // `lambda3` is a barycentric weight, so strictly between 0 and 1,
+        // and about a quarter at a centre sitting where it should.
+        let lambda = -triple_product / four_point;
+        assert!(
+            (0.15..0.35).contains(&lambda),
+            "expected the excluded neighbour's weight near a quarter, got {lambda}"
         );
     }
 

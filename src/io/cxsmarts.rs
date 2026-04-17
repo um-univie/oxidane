@@ -219,6 +219,17 @@ pub enum AtomExpression {
     InRing,
     /// Ring size
     RingSize(u8),
+    /// SMARTS `r{m-n}`: the atom is in *a* ring whose size falls in the
+    /// range, either end optional (`r{-8}`, `r{9-}`).
+    ///
+    /// An RDKit extension rather than Daylight SMARTS, supported here
+    /// because RDKit's small-ring torsion rules
+    /// (`molecule::embed::torsion_preferences`) are written with it and are
+    /// unreadable without it.
+    ///
+    /// Uses the smallest ring through each bond, with no fixed size cutoff,
+    /// so macrocycle rules such as `r{9-}` can match larger rings too.
+    RingSizeRange(Option<u8>, Option<u8>),
     /// Valence
     Valence(u8),
     /// Connectivity (total connections)
@@ -344,6 +355,39 @@ impl CxSMARTSParser {
     }
 
     /// Parse a CxSMARTS string into a pattern
+    /// `{m-n}` after an `r`, with either bound optional: `{-8}` is "at most
+    /// 8", `{9-}` is "at least 9", `{5-6}` is both.
+    fn parse_ring_size_range(&mut self) -> Result<AtomExpression, CxSMARTSError> {
+        self.advance_position(); // past '{'
+        let bound = |parser: &mut Self| -> Result<Option<u8>, CxSMARTSError> {
+            if parser.position < parser.input.len() && parser.current_char()?.is_ascii_digit() {
+                Ok(Some(parser.parse_number()? as u8))
+            } else {
+                Ok(None)
+            }
+        };
+        let minimum = bound(self)?;
+        if self.position >= self.input.len() || self.current_char()? != '-' {
+            return Err(CxSMARTSError::InvalidSyntax(
+                "ring size range needs a '-' between its bounds".to_string(),
+            ));
+        }
+        self.advance_position();
+        let maximum = bound(self)?;
+        if self.position >= self.input.len() || self.current_char()? != '}' {
+            return Err(CxSMARTSError::InvalidSyntax(
+                "unterminated ring size range".to_string(),
+            ));
+        }
+        self.advance_position();
+        if minimum.is_none() && maximum.is_none() {
+            return Err(CxSMARTSError::InvalidSyntax(
+                "ring size range needs at least one bound".to_string(),
+            ));
+        }
+        Ok(AtomExpression::RingSizeRange(minimum, maximum))
+    }
+
     pub fn parse(&mut self, smarts_pattern: &str) -> Result<CxSMARTSPattern, CxSMARTSError> {
         if smarts_pattern.trim().is_empty() {
             return Err(CxSMARTSError::InvalidSyntax(
@@ -745,8 +789,18 @@ impl CxSMARTSParser {
             }
             'r' => {
                 self.advance_position();
-                let ring_size = self.parse_number()? as u8;
-                Ok(AtomExpression::RingSize(ring_size))
+                if self.position < self.input.len() && self.current_char()? == '{' {
+                    return self.parse_ring_size_range();
+                }
+                // `r<n>` asks for a smallest ring of exactly n; bare `r` asks
+                // only whether the atom is in a ring at all, the same
+                // question as bare `R`. Requiring a digit rejected patterns
+                // like `[NX3&r]` and `[CX3!r]`, which are ordinary SMARTS.
+                if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
+                    Ok(AtomExpression::RingSize(self.parse_number()? as u8))
+                } else {
+                    Ok(AtomExpression::InRing)
+                }
             }
             'v' => {
                 self.advance_position();

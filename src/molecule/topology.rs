@@ -109,3 +109,85 @@ pub fn topological_distances<M: MoleculeCore + ?Sized>(molecule: &M) -> Distance
 
     DistanceMatrix { size, values }
 }
+
+/// The smallest ring through every ring bond, each as a cycle of atoms in the
+/// order they are bonded, without duplicates.
+///
+/// This is the ring set a force field wants. It is not the smallest set of
+/// smallest rings: SSSR has exactly `bonds - atoms + fragments` members and
+/// so must drop one of the three six-membered rings of
+/// bicyclo[2.2.2]octane, which then makes two of those rings "in a ring of
+/// size 6" and the third not, purely by which one the algorithm happened to
+/// discard. Taking the smallest ring through each bond keeps all three, which
+/// is what the symmetrized ring set of every toolkit does and what a typing
+/// rule reading "in a ring of size 6" means.
+///
+/// `O(bonds x (atoms + bonds))`, by a breadth-first search per bond.
+pub fn smallest_rings<M: MoleculeCore + ?Sized>(molecule: &M) -> Vec<Vec<usize>> {
+    let size = molecule.len();
+    let mut rings: Vec<Vec<usize>> = Vec::new();
+    let mut seen: std::collections::HashSet<Vec<usize>> = std::collections::HashSet::new();
+
+    for first in 0..size {
+        for bond in molecule.get_atom_bonds(first).unwrap_or_default() {
+            let second = bond.target();
+            if second <= first {
+                continue;
+            }
+            let Some(ring) = shortest_cycle_through(molecule, first, second) else {
+                continue;
+            };
+            let mut key = ring.clone();
+            key.sort_unstable();
+            if seen.insert(key) {
+                rings.push(ring);
+            }
+        }
+    }
+
+    rings
+}
+
+/// The shortest cycle containing the bond `first`-`second`, which is that
+/// bond plus the shortest path between its two atoms that avoids it.
+fn shortest_cycle_through<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    first: usize,
+    second: usize,
+) -> Option<Vec<usize>> {
+    let size = molecule.len();
+    let mut previous = vec![usize::MAX; size];
+    let mut queue = Vec::with_capacity(size);
+    previous[second] = second;
+    queue.push(second);
+    let mut head = 0;
+
+    while head < queue.len() {
+        let current = queue[head];
+        head += 1;
+        for bond in molecule.get_atom_bonds(current).unwrap_or_default() {
+            let target = bond.target();
+            // The bond whose ring is being looked for is the one path back
+            // that does not count.
+            if (current == second && target == first) || (current == first && target == second) {
+                continue;
+            }
+            if target >= size || previous[target] != usize::MAX {
+                continue;
+            }
+            previous[target] = current;
+            if target == first {
+                let mut cycle = vec![first];
+                let mut atom = first;
+                while atom != second {
+                    atom = previous[atom];
+                    cycle.push(atom);
+                }
+                return Some(cycle);
+            }
+            queue.push(target);
+        }
+    }
+
+    None
+}

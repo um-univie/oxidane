@@ -15,3 +15,6 @@ mod sdf_tests;
 mod smarts_tests;
 mod smiles_tests;
 mod split_tests;
+
+mod forcefield_tests;
+mod mmff_tests;

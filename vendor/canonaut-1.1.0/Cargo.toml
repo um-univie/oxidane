@@ -1,0 +1,22 @@
+# Library-only manifest for the exact upstream snapshot in UPSTREAM.md.
+[package]
+name = "canonaut"
+version = "1.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Rust port of nauty: graph automorphism groups and canonical labelings"
+repository = "https://github.com/um-univie/canonaut"
+autobins = false
+autoexamples = false
+autobenches = false
+autotests = false
+
+[features]
+c-nauty-bench = []
+
+[dependencies]
+rand = "0.9.2"
+
+[build-dependencies]
+cc = "1"

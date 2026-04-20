@@ -35,11 +35,7 @@ fn collect_automorphism_generator(
 //use nauty_pet::autom::AutomGroup;
 use rustc_hash::FxHashMap;
 
-use graphcanon::{
-    refine::GraphContext,
-    search::canonicalize,
-    structs::{CanonautOptions, Statistics},
-};
+use canonaut::structs::CanonautManager;
 
 
 pub type BitMatrix = Vec<usize>;
@@ -48,14 +44,52 @@ pub type BitMatrix = Vec<usize>;
 ///
 /// Scratch, not state: every field is cleared and resized from the molecule
 /// before use.
-#[derive(Debug, Default, Clone)]
 pub struct CanonizationScratch {
     sorted_labels: Vec<AtomInvariant>,
-    labeling: Vec<u32>,
     heavy_labeling: Vec<usize>,
-    canong: Vec<usize>,
-    workspace: Vec<usize>,
-    orbits: Vec<u32>,
+    colors: Vec<u32>,
+    /// canonaut's own buffers -- labelling, orbits, partition, workspace and
+    /// search tree -- which it grows to each graph and reuses across calls.
+    manager: CanonautManager,
+}
+
+impl Default for CanonizationScratch {
+    fn default() -> Self {
+        Self {
+            sorted_labels: Vec::new(),
+            heavy_labeling: Vec::new(),
+            colors: Vec::new(),
+            // Sized from the first molecule: `canonize_with_colors` grows every
+            // buffer to the graph it is handed.
+            manager: CanonautManager::new(0)
+                .with_canonization()
+                .with_automorphism_callback(collect_automorphism_generator),
+        }
+    }
+}
+
+impl Clone for CanonizationScratch {
+    /// Nothing here is state, so a clone gets a fresh manager rather than a
+    /// copy of buffers the next canonization resizes anyway.
+    fn clone(&self) -> Self {
+        Self {
+            sorted_labels: self.sorted_labels.clone(),
+            heavy_labeling: self.heavy_labeling.clone(),
+            colors: self.colors.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+impl std::fmt::Debug for CanonizationScratch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CanonizationScratch")
+            .field("sorted_labels", &self.sorted_labels)
+            .field("heavy_labeling", &self.heavy_labeling)
+            .field("colors", &self.colors)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Canonizes molecules, keeping its working buffers between them.
@@ -337,76 +371,58 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     sorted_labels.clear();
     sorted_labels.extend(indices.iter().map(|&i| labels[i].clone()));
 
-    let Some((adjacency_matrix, mut partition, number_of_heavy_atoms)) =
+    let Some((adjacency_matrix, partition, number_of_heavy_atoms)) =
         molecule.prepare_canonization(sorted_labels)
     else {
         return Err(CanonizationError::InvalidInput);
     };
 
-    let words_per_vertex = adjacency_matrix.words_per_vertex;
     let number_of_vertices = adjacency_matrix.number_of_vertices;
-    let labeling = &mut scratch.labeling;
-    labeling.clear();
-    labeling.extend((0..number_of_vertices).map(|x| x as u32));
     let matrix = adjacency_matrix.matrix;
 
-    let canong = &mut scratch.canong;
-    canong.clear();
-    canong.resize(matrix.len(), 0);
-    // let mut partition: Vec<i32> = vec![1; number_of_vertices];
+    // canonaut takes a colouring as one colour per vertex and derives the cell
+    // boundaries itself; `prepare_canonization` hands back nauty's `ptn` form
+    // -- a 0 after the last vertex of each cell -- over a vertex order that is
+    // already grouped by colour. Numbering the cells along that order is the
+    // same partition, and because the colours then rise with the vertex index,
+    // canonaut's sort of the vertices by (colour, vertex) leaves the order
+    // untouched.
+    //
+    // The colouring has to be passed: canonizing the uncoloured graph would
+    // leave atom order undetermined for graph-symmetric molecules whose
+    // symmetry is broken only by atom identity (e.g. a palindromic chain with
+    // N on one end and O on the other).
+    let colors = &mut scratch.colors;
+    colors.clear();
+    colors.reserve(number_of_vertices);
+    let mut cell = 0u32;
+    for &is_cell_end in partition.iter() {
+        colors.push(cell);
+        if is_cell_end == 0 {
+            cell += 1;
+        }
+    }
 
-    let worksize = 120;
-    let workspace = &mut scratch.workspace;
-    workspace.clear();
-    workspace.resize(2 * words_per_vertex * worksize, 0);
-
-    let orbits = &mut scratch.orbits;
-    orbits.clear();
-    orbits.resize(number_of_vertices, 0);
-    // Enable canonical labeling and feed nauty our invariant-based colouring:
-    // `default_partition` would otherwise discard `partition` and canonicalize the
-    // uncoloured graph, leaving atom order undetermined for graph-symmetric
-    // molecules whose symmetry is broken only by atom identity (e.g. a palindromic
-    // chain with N on one end and O on the other).
     AUTOMORPHISM_GENERATORS.with(|generators| generators.borrow_mut().clear());
-    let mut options: CanonautOptions = CanonautOptions {
-        get_canonical: true,
-        default_partition: false,
-        user_automorphism_procedure: Some(collect_automorphism_generator),
-        ..CanonautOptions::default()
-    };
-    let mut statistics: Statistics = Statistics::default();
-    let mut graph_context = GraphContext::new(number_of_vertices);
-
-    canonicalize(
-        &matrix,
-        labeling,  // weights
-        &mut partition, // partition
-        None,           // active
-        orbits,    //orbits
-        &mut options,
-        &mut statistics, // active
-        workspace,
-        words_per_vertex as u32,
-        number_of_vertices as u32,
-        Some(canong.as_mut_slice()),
-        &mut graph_context,
-    );
+    scratch.manager.canonize_with_colors(&matrix, colors);
 
     // Nauty's output labeling is a permutation over all vertices, including the
     // virtual bond-order vertices appended after the heavy atoms in
     // `prepare_canonization`. Those virtual vertices are not guaranteed to occupy
     // only the tail positions of the canonical order, so we filter them out
     // instead of assuming the first `number_of_heavy_atoms` entries are all real atoms.
-    let heavy_labeling = &mut scratch.heavy_labeling;
+    let mut heavy_labeling = std::mem::take(&mut scratch.heavy_labeling);
     heavy_labeling.clear();
     heavy_labeling.extend(
-        labeling
+        scratch
+            .manager
+            .labeling()
             .iter()
             .map(|x| *x as usize)
             .filter(|&x| x < number_of_heavy_atoms),
     );
-    let labeling = heavy_labeling;
+    scratch.heavy_labeling = heavy_labeling;
+    let labeling = &scratch.heavy_labeling;
 
     // Collect the automorphism generators nauty found (on the pre-canonical
     // graph) before reordering, so we can later pick a canonical chirality tag

@@ -1,90 +1,76 @@
-name: Build and Release
+name: Test and package the library
 
 on:
+  pull_request:
   push:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  build:
-    name: Build and Release
-    runs-on: ubuntu-latest
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - os: linux
-            arch: amd64
-            target: x86_64-unknown-linux-gnu
-          - os: linux
-            arch: arm64
-            target: aarch64-unknown-linux-gnu
-          - os: darwin
-            arch: amd64
-            target: x86_64-apple-darwin
-          - os: darwin
-            arch: arm64
-            target: aarch64-apple-darwin
-          - os: windows
-            arch: amd64
-            target: x86_64-pc-windows-msvc
-            ext: .exe
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v7
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
-
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target ${{ matrix.target }}
-
-      - name: Prepare binary
-        shell: bash
-        run: |
-          mkdir -p release
-          if [ "${{ matrix.os }}" = "windows" ]; then
-            cp target/${{ matrix.target }}/release/oxidane.exe release/molecules_${{ matrix.os }}_${{ matrix.arch }}.exe
-          else
-            cp target/${{ matrix.target }}/release/oxidane release/molecules_${{ matrix.os }}_${{ matrix.arch }}
-          fi
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v3
-        with:
-          name: molecules_${{ matrix.os }}_${{ matrix.arch }}
-          path: release/molecules_${{ matrix.os }}_${{ matrix.arch }}${{ matrix.ext || '' }}
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Check every target
+        run: cargo +stable check --locked --all-features --all-targets
+      - name: Run library, regression and documentation tests
+        run: cargo +stable test --locked --all-features
 
   release:
-    name: Create Release
-    needs: build
+    name: Draft a source release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v3
+      - uses: actions/checkout@v7
         with:
-          path: release
-
-      - name: Flatten release directory
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Archive the tagged library and verify its contents
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          mkdir -p flat
-          find release -type f -exec cp {} flat/ \;
-          ls -la flat/
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: flat/*
-          draft: false
-          prerelease: false
-          generate_release_notes: true 
+          set -euo pipefail
+          package_version=$(cargo +stable metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "oxidane") | .version')
+          test "$RELEASE_TAG" = "v$package_version"
+          release_name="oxidane-$package_version"
+          archive_path="$RUNNER_TEMP/$release_name.tar.gz"
+          git archive --format=tar --prefix="$release_name/" HEAD | gzip -n > "$archive_path"
+          tar -xzf "$archive_path" -C "$RUNNER_TEMP"
+          (
+            cd "$RUNNER_TEMP/$release_name/vendor/canonaut-1.1.0"
+            sha256sum --check UPSTREAM.sha256
+          )
+          cargo +stable check --locked --all-features --all-targets --manifest-path "$RUNNER_TEMP/$release_name/Cargo.toml"
+          (
+            cd "$RUNNER_TEMP"
+            sha256sum "$release_name.tar.gz" > "$release_name.tar.gz.sha256"
+          )
+          echo "RELEASE_ARCHIVE=$archive_path" >> "$GITHUB_ENV"
+      - name: Create a draft with the source and its checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            "$RELEASE_ARCHIVE" "$RELEASE_ARCHIVE.sha256" \
+            --verify-tag --draft --generate-notes --title "$RELEASE_TAG"

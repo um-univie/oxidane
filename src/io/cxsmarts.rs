@@ -503,8 +503,12 @@ impl CxSMARTSParser {
     fn parse_bracketed_atom(&mut self) -> Result<(), CxSMARTSError> {
         self.advance_position(); // Skip '['
 
-        // Parse the complete logical expression inside brackets
-        let atom_expression = self.parse_logical_atom_expression()?;
+        // A SMILES-like hydrogen atom is the exception to H's usual meaning
+        // as an attached-hydrogen count in a SMARTS expression.
+        let atom_expression = match self.parse_hydrogen_atom()? {
+            Some(atom) => atom,
+            None => self.parse_logical_atom_expression()?,
+        };
 
         // Check for atom class at the end
         let mut atom_class = None;
@@ -530,6 +534,68 @@ impl CxSMARTSParser {
         self.attach_atom(self.current_atom_index);
         self.current_atom_index += 1;
         Ok(())
+    }
+
+    /// Recognise exactly `[<isotope>H<charge><map>]`. In every other
+    /// expression, including `[H1]`, `[H,C]` and `[H;D1]`, H remains a count.
+    /// Look ahead before consuming anything so recursive/logical expressions
+    /// continue through the normal parser unchanged.
+    fn parse_hydrogen_atom(&mut self) -> Result<Option<AtomExpression>, CxSMARTSError> {
+        let Some((body, _)) = self.input[self.position..].split_once(']') else {
+            return Ok(None);
+        };
+        let atom = if let Some((atom, map)) = body.split_once(':') {
+            if map.is_empty() || !map.bytes().all(|b| b.is_ascii_digit()) {
+                return Ok(None);
+            }
+            atom
+        } else {
+            body
+        };
+        let isotope_end = atom.bytes().take_while(u8::is_ascii_digit).count();
+        let Some(suffix) = atom[isotope_end..].strip_prefix('H') else {
+            return Ok(None);
+        };
+        let charge = if suffix.is_empty() {
+            None
+        } else {
+            let sign = suffix.as_bytes()[0];
+            if sign != b'+' && sign != b'-' {
+                return Ok(None);
+            }
+            let magnitude = &suffix[1..];
+            let charge = if !magnitude.is_empty() && magnitude.bytes().all(|b| b.is_ascii_digit()) {
+                suffix.parse::<i8>().ok()
+            } else if magnitude.bytes().all(|b| b == sign) {
+                let signed = if sign == b'+' { 1 } else { -1 } * suffix.len() as i64;
+                i8::try_from(signed).ok()
+            } else {
+                return Ok(None);
+            };
+            Some(charge.ok_or_else(|| {
+                CxSMARTSError::InvalidAtomProperty("Hydrogen charge is out of range".to_string())
+            })?)
+        };
+
+        let mut operands = vec![AtomExpression::AtomicNumber(1)];
+        if isotope_end != 0 {
+            let isotope = atom[..isotope_end].parse::<u16>().map_err(|_| {
+                CxSMARTSError::InvalidAtomProperty("Hydrogen isotope is out of range".to_string())
+            })?;
+            operands.push(AtomExpression::Isotope(isotope));
+        }
+        if let Some(charge) = charge {
+            operands.push(AtomExpression::Charge(charge));
+        }
+        self.position += atom.len(); // Leave the optional map and closing bracket to the caller.
+        Ok(Some(if operands.len() == 1 {
+            operands.pop().unwrap()
+        } else {
+            AtomExpression::Logical {
+                operator: LogicalOperator::HighAnd,
+                operands,
+            }
+        }))
     }
 
     /// Parse a simple atom like C, N, O, c, n, o, *

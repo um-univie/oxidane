@@ -760,12 +760,10 @@ impl CxSMARTSParser {
                 '&' | ',' | ';' | ']' | ':' => break,
                 '!' => expressions.push(self.parse_negated_primitive()?),
                 _ => {
-                    // Try to parse another atom property
-                    if let Ok(expr) = self.parse_atom_expression() {
-                        expressions.push(expr);
-                    } else {
-                        break;
-                    }
+                    // Terminators were handled above. A malformed property
+                    // must not disappear after consuming its input, leaving
+                    // a weaker query that silently matches more molecules.
+                    expressions.push(self.parse_atom_expression()?);
                 }
             }
         }
@@ -979,9 +977,24 @@ impl CxSMARTSParser {
                     Ok(AtomExpression::Chirality(ChiralClass::Clockwise))
                 }
                 'T' => {
-                    // @TH (tetrahedral)
+                    // @TH (tetrahedral) or @TB (trigonal bipyramidal).
                     self.advance_position();
-                    if self.position < self.input.len() && self.current_char()? == 'H' {
+                    if self.position < self.input.len() && self.current_char()? == 'B' {
+                        self.advance_position();
+                        let chiral_number = if self.position < self.input.len()
+                            && self.current_char()?.is_ascii_digit()
+                        {
+                            self.parse_number()?
+                        } else {
+                            1
+                        };
+                        if !(1..=20).contains(&chiral_number) {
+                            return Err(CxSMARTSError::InvalidChirality(
+                                "@TB requires a class from 1 to 20".to_string(),
+                            ));
+                        }
+                        Ok(AtomExpression::Chirality(ChiralClass::TB(chiral_number as u8)))
+                    } else if self.position < self.input.len() && self.current_char()? == 'H' {
                         self.advance_position();
                         let chiral_number = if self.position < self.input.len()
                             && self.current_char()?.is_ascii_digit()
@@ -993,7 +1006,7 @@ impl CxSMARTSParser {
                         Ok(AtomExpression::Chirality(ChiralClass::TH(chiral_number)))
                     } else {
                         Err(CxSMARTSError::InvalidChirality(
-                            "Expected 'H' after '@T'".to_string(),
+                            "Expected 'H' or 'B' after '@T'".to_string(),
                         ))
                     }
                 }
@@ -1337,13 +1350,16 @@ impl CxSMARTSParser {
 
     /// Parse a number from the current position
     fn parse_number(&mut self) -> Result<usize, CxSMARTSError> {
-        let mut number = 0;
+        let mut number = 0_usize;
         let mut has_digits = false;
 
         while self.position < self.input.len() {
             let current_character = self.current_char()?;
             if current_character.is_ascii_digit() {
-                number = number * 10 + (current_character as usize - '0' as usize);
+                number = number
+                    .checked_mul(10)
+                    .and_then(|value| value.checked_add(current_character as usize - '0' as usize))
+                    .ok_or_else(|| CxSMARTSError::InvalidSyntax("Number is out of range".to_string()))?;
                 has_digits = true;
                 self.advance_position();
             } else {

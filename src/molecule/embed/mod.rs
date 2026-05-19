@@ -52,6 +52,9 @@ mod torsion_preferences;
 mod torsion_search;
 mod refine;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     molecule::{
         base::MoleculeCore, chirality::MoleculeChirality, graph::MoleculeGraph,
@@ -650,10 +653,10 @@ fn extract_component(mol: &Molecule3D, atoms: &[usize]) -> Molecule3D {
 
     Molecule3D {
         atomic_numbers: atoms.iter().map(|&a| mol.atomic_numbers()[a]).collect(),
-        atom_classes: mol.atom_classes().clone(),
+        atom_classes: mol.atom_classes().as_ref().map(|classes| atoms.iter().map(|&a| classes[a]).collect()),
         charges: atoms.iter().map(|&a| mol.charges()[a]).collect(),
         chiral_classes: mol.chiral_classes().map(|cc| atoms.iter().map(|&a| cc[a]).collect()),
-        isotopes: mol.isotopes().cloned(),
+        isotopes: mol.isotopes().map(|isotopes| atoms.iter().map(|&a| isotopes[a]).collect()),
         positions: vec![Vector3D::default(); atoms.len()],
         radical_states: atoms.iter().map(|&a| mol.radical_states()[a]).collect(),
         atom_bonds,

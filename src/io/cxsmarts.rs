@@ -361,7 +361,7 @@ impl CxSMARTSParser {
         self.advance_position(); // past '{'
         let bound = |parser: &mut Self| -> Result<Option<u8>, CxSMARTSError> {
             if parser.position < parser.input.len() && parser.current_char()?.is_ascii_digit() {
-                Ok(Some(parser.parse_number()? as u8))
+                Ok(Some(parser.parse_number_as::<u8>()?))
             } else {
                 Ok(None)
             }
@@ -383,6 +383,11 @@ impl CxSMARTSParser {
         if minimum.is_none() && maximum.is_none() {
             return Err(CxSMARTSError::InvalidSyntax(
                 "ring size range needs at least one bound".to_string(),
+            ));
+        }
+        if matches!((minimum, maximum), (Some(low), Some(high)) if low > high) {
+            return Err(CxSMARTSError::InvalidSyntax(
+                "ring size range has its minimum above its maximum".to_string(),
             ));
         }
         Ok(AtomExpression::RingSizeRange(minimum, maximum))
@@ -809,19 +814,19 @@ impl CxSMARTSParser {
         match current_character {
             '#' => {
                 self.advance_position();
-                let atomic_number = self.parse_number()? as u8;
+                let atomic_number = self.parse_number_as::<u8>()?;
                 Ok(AtomExpression::AtomicNumber(atomic_number))
             }
             'D' => {
                 self.advance_position();
-                let degree = self.parse_number()? as u8;
+                let degree = self.parse_number_as::<u8>()?;
                 Ok(AtomExpression::Degree(degree))
             }
             'H' => {
                 self.advance_position();
                 let hydrogen_count =
                     if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
-                        self.parse_number()? as u8
+                        self.parse_number_as::<u8>()?
                     } else {
                         1
                     };
@@ -831,7 +836,7 @@ impl CxSMARTSParser {
                 self.advance_position();
                 let hydrogen_count =
                     if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
-                        self.parse_number()? as u8
+                        self.parse_number_as::<u8>()?
                     } else {
                         1
                     };
@@ -846,7 +851,7 @@ impl CxSMARTSParser {
                 // fusion carbons and matched nothing at all in
                 // bicyclo[2.2.2]octane, where no atom is in only one ring.
                 if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
-                    Ok(AtomExpression::RingMembership(self.parse_number()? as u8))
+                    Ok(AtomExpression::RingMembership(self.parse_number_as::<u8>()?))
                 } else {
                     Ok(AtomExpression::InRing)
                 }
@@ -861,50 +866,31 @@ impl CxSMARTSParser {
                 // question as bare `R`. Requiring a digit rejected patterns
                 // like `[NX3&r]` and `[CX3!r]`, which are ordinary SMARTS.
                 if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
-                    Ok(AtomExpression::RingSize(self.parse_number()? as u8))
+                    Ok(AtomExpression::RingSize(self.parse_number_as::<u8>()?))
                 } else {
                     Ok(AtomExpression::InRing)
                 }
             }
             'v' => {
                 self.advance_position();
-                let valence = self.parse_number()? as u8;
+                let valence = self.parse_number_as::<u8>()?;
                 Ok(AtomExpression::Valence(valence))
             }
             'X' => {
                 self.advance_position();
-                let connectivity = self.parse_number()? as u8;
+                let connectivity = self.parse_number_as::<u8>()?;
                 Ok(AtomExpression::Connectivity(connectivity))
             }
             '^' => {
                 self.advance_position();
-                let hybridization = self.parse_number()? as u8;
+                let hybridization = self.parse_number_as::<u8>()?;
                 Ok(AtomExpression::Hybridization(hybridization))
             }
-            '+' => {
-                self.advance_position();
-                let charge =
-                    if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
-                        self.parse_number()? as i8
-                    } else {
-                        1
-                    };
-                Ok(AtomExpression::Charge(charge))
-            }
-            '-' => {
-                self.advance_position();
-                let charge =
-                    if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
-                        -(self.parse_number()? as i8)
-                    } else {
-                        -1
-                    };
-                Ok(AtomExpression::Charge(charge))
-            }
+            '+' | '-' => Ok(AtomExpression::Charge(self.parse_charge()?)),
             '@' => self.parse_chirality(),
             '0'..='9' => {
                 // Isotope specification at the beginning
-                let isotope = self.parse_number()? as u16;
+                let isotope = self.parse_number_as::<u16>()?;
                 Ok(AtomExpression::Isotope(isotope))
             }
             // `a` and `A` inside brackets are the aromatic and aliphatic
@@ -981,29 +967,14 @@ impl CxSMARTSParser {
                     self.advance_position();
                     if self.position < self.input.len() && self.current_char()? == 'B' {
                         self.advance_position();
-                        let chiral_number = if self.position < self.input.len()
-                            && self.current_char()?.is_ascii_digit()
-                        {
-                            self.parse_number()?
-                        } else {
-                            1
-                        };
-                        if !(1..=20).contains(&chiral_number) {
-                            return Err(CxSMARTSError::InvalidChirality(
-                                "@TB requires a class from 1 to 20".to_string(),
-                            ));
-                        }
-                        Ok(AtomExpression::Chirality(ChiralClass::TB(chiral_number as u8)))
+                        Ok(AtomExpression::Chirality(ChiralClass::TB(
+                            self.parse_chiral_number("TB", 20)?,
+                        )))
                     } else if self.position < self.input.len() && self.current_char()? == 'H' {
                         self.advance_position();
-                        let chiral_number = if self.position < self.input.len()
-                            && self.current_char()?.is_ascii_digit()
-                        {
-                            self.parse_number()? as u8
-                        } else {
-                            1
-                        };
-                        Ok(AtomExpression::Chirality(ChiralClass::TH(chiral_number)))
+                        Ok(AtomExpression::Chirality(ChiralClass::TH(
+                            self.parse_chiral_number("TH", 2)?,
+                        )))
                     } else {
                         Err(CxSMARTSError::InvalidChirality(
                             "Expected 'H' or 'B' after '@T'".to_string(),
@@ -1015,14 +986,9 @@ impl CxSMARTSParser {
                     self.advance_position();
                     if self.position < self.input.len() && self.current_char()? == 'L' {
                         self.advance_position();
-                        let chiral_number = if self.position < self.input.len()
-                            && self.current_char()?.is_ascii_digit()
-                        {
-                            self.parse_number()? as u8
-                        } else {
-                            1
-                        };
-                        Ok(AtomExpression::Chirality(ChiralClass::AL(chiral_number)))
+                        Ok(AtomExpression::Chirality(ChiralClass::AL(
+                            self.parse_chiral_number("AL", 2)?,
+                        )))
                     } else {
                         Err(CxSMARTSError::InvalidChirality(
                             "Expected 'L' after '@A'".to_string(),
@@ -1034,14 +1000,9 @@ impl CxSMARTSParser {
                     self.advance_position();
                     if self.position < self.input.len() && self.current_char()? == 'P' {
                         self.advance_position();
-                        let chiral_number = if self.position < self.input.len()
-                            && self.current_char()?.is_ascii_digit()
-                        {
-                            self.parse_number()? as u8
-                        } else {
-                            1
-                        };
-                        Ok(AtomExpression::Chirality(ChiralClass::SP(chiral_number)))
+                        Ok(AtomExpression::Chirality(ChiralClass::SP(
+                            self.parse_chiral_number("SP", 3)?,
+                        )))
                     } else {
                         Err(CxSMARTSError::InvalidChirality(
                             "Expected 'P' after '@S'".to_string(),
@@ -1053,14 +1014,9 @@ impl CxSMARTSParser {
                     self.advance_position();
                     if self.position < self.input.len() && self.current_char()? == 'H' {
                         self.advance_position();
-                        let chiral_number = if self.position < self.input.len()
-                            && self.current_char()?.is_ascii_digit()
-                        {
-                            self.parse_number()? as u8
-                        } else {
-                            1
-                        };
-                        Ok(AtomExpression::Chirality(ChiralClass::OH(chiral_number)))
+                        Ok(AtomExpression::Chirality(ChiralClass::OH(
+                            self.parse_chiral_number("OH", 30)?,
+                        )))
                     } else {
                         Err(CxSMARTSError::InvalidChirality(
                             "Expected 'H' after '@O'".to_string(),
@@ -1075,6 +1031,44 @@ impl CxSMARTSParser {
         } else {
             Ok(AtomExpression::Chirality(ChiralClass::Counterclockwise))
         }
+    }
+
+    fn parse_chiral_number(&mut self, class: &str, maximum: usize) -> Result<u8, CxSMARTSError> {
+        let number = if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
+            self.parse_number()?
+        } else {
+            1
+        };
+        if !(1..=maximum).contains(&number) {
+            return Err(CxSMARTSError::InvalidChirality(format!(
+                "@{class} requires a class from 1 to {maximum}"
+            )));
+        }
+        Ok(number as u8) // All supported stereo classes have at most 30 configurations.
+    }
+
+    /// Apply the sign before narrowing: -128 is representable as i8, but
+    /// negating an already-narrowed 128 overflows. Repeated signs are an
+    /// alternative spelling of the same magnitude, not separate constraints.
+    fn parse_charge(&mut self) -> Result<i8, CxSMARTSError> {
+        let sign = self.current_char()?;
+        self.advance_position();
+        let magnitude = if self.position < self.input.len() && self.current_char()?.is_ascii_digit() {
+            self.parse_number()?
+        } else {
+            let mut count = 1;
+            while self.position < self.input.len() && self.current_char()? == sign {
+                self.advance_position();
+                count += 1;
+            }
+            count
+        };
+        let maximum = if sign == '-' { 128 } else { 127 };
+        if magnitude > maximum {
+            return Err(CxSMARTSError::InvalidAtomProperty("Charge is out of range".to_string()));
+        }
+        let signed = if sign == '-' { -(magnitude as i16) } else { magnitude as i16 };
+        Ok(signed as i8)
     }
 
     /// Parse recursive SMARTS pattern
@@ -1346,6 +1340,15 @@ impl CxSMARTSParser {
         };
 
         Ok(bond_expression)
+    }
+
+    /// Numeric predicates must fit their stored representation. An unchecked
+    /// cast changes the query (for example, #262 becomes #6) instead of
+    /// reporting that it cannot be represented.
+    fn parse_number_as<T: TryFrom<usize>>(&mut self) -> Result<T, CxSMARTSError> {
+        T::try_from(self.parse_number()?).map_err(|_| {
+            CxSMARTSError::InvalidAtomProperty("Numeric property is out of range".to_string())
+        })
     }
 
     /// Parse a number from the current position

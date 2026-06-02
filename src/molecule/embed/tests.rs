@@ -4,16 +4,8 @@ use crate::molecule::molecular_graph::MolecularGraph;
 
 #[test]
 fn extracted_components_keep_their_own_isotopes_and_atom_labels() {
-    let mut originals =
+    let originals =
         MolecularGraph::from_smiles("[Ne].[13CH3:7][18OH:8].N[C@@H:9](C)C(=O)[O-]").unwrap();
-    // The explicit hydrogens have no atom maps. Materialise their zero
-    // entries so this fixture does not depend on parser padding behaviour.
-    for original in &mut originals {
-        let len = original.len();
-        if let Some(classes) = original.atom_classes_mut() {
-            classes.resize(len, 0);
-        }
-    }
     let combined = MolecularGraph::combine(&originals.iter().collect::<Vec<_>>());
     let molecule = to_molecule3d_topology(&combined);
     let components = molecule.get_components();

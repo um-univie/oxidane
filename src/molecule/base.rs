@@ -766,6 +766,9 @@ pub trait MoleculeCore {
         if atom.isotope.is_some() && self.isotopes().is_none() {
             *self.isotopes_mut() = Some(vec![0; index]);
         }
+        if atom.atom_class.is_some() && self.atom_classes().is_none() {
+            *self.atom_classes_mut() = Some(vec![0; index]);
+        }
         self.atomic_numbers_mut().push(atom.atomic_number);
         for bond in &atom.bonds {
             self.atom_bonds_mut()[bond.target()].push(BondTarget::single(index));
@@ -777,6 +780,9 @@ pub trait MoleculeCore {
         }
         if let Some(isotopes) = self.isotopes_mut() {
             isotopes.push(atom.isotope.unwrap_or(0));
+        }
+        if let Some(classes) = self.atom_classes_mut() {
+            classes.push(atom.atom_class.unwrap_or(0));
         }
         self.push_atom_extras(&atom);
         self.atom_bonds_mut().push(atom.bonds);

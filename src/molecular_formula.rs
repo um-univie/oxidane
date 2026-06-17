@@ -54,12 +54,13 @@ impl std::error::Error for ParseFormulaError {}
 impl FromStr for MolecularFormula {
     type Err = ParseFormulaError;
 
-    /// Parses a molecular formula from a string.
+    /// Parses a flat molecular formula such as `C6H12O6` or `CH3COOH`.
+    /// Element symbols are case-sensitive; repeated elements are summed.
     ///
-    /// # Panics
-    ///
-    /// This function does not panic. But it will ignore everything that is neither a number nor a
-    /// letter
+    /// # Errors
+    /// Returns [`ParseFormulaError`] for empty input, unknown elements, zero or
+    /// overflowing counts, or unsupported syntax (including parentheses, isotope
+    /// labels, charges, whitespace, and hydrate separators).
     ///
     /// # Examples
     /// ```
@@ -72,44 +73,40 @@ impl FromStr for MolecularFormula {
     /// ```
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
+        // Flat formulas only: Element [positive count], repeated as needed.
+        // Reject unsupported syntax rather than silently changing its meaning.
+        let bytes = s.as_bytes();
+        let mut cursor = 0;
+        let mut elements: IntMap<u8, usize> = IntMap::default();
+        if bytes.is_empty() {
             return Err(ParseFormulaError);
         }
-        let mut number_buffer = String::new();
-        let mut element_buffer = String::new();
-        let mut elements: IntMap<u8, usize> = IntMap::default();
-        s.chars().for_each(|c| {
-            if c.is_alphabetic() {
-                if !element_buffer.is_empty() && c.is_uppercase() {
-                    let atomic_number = element_buffer
-                        .as_str()
-                        .atomic_number()
-                        .expect("Invalid element");
-                    let count = if !number_buffer.is_empty() {
-                        number_buffer.parse::<usize>().unwrap_or(1)
-                    } else {
-                        1
-                    };
-                    *elements.entry(atomic_number).or_insert(0) += count;
-                    number_buffer.clear();
-                    element_buffer.clear();
-                }
-                element_buffer.push(c);
-            } else if c.is_numeric() {
-                number_buffer.push(c);
+        while cursor < bytes.len() {
+            let start = cursor;
+            if !bytes[cursor].is_ascii_uppercase() {
+                return Err(ParseFormulaError);
             }
-        });
-        if !element_buffer.is_empty() {
-            let atomic_number = element_buffer
-                .as_str()
-                .atomic_number()
-                .expect("Invalid element");
-            let count = if !number_buffer.is_empty() {
-                number_buffer.parse::<usize>().unwrap_or(1)
-            } else {
-                1
-            };
-            *elements.entry(atomic_number).or_insert(0) += count;
+            cursor += 1;
+            if cursor < bytes.len() && bytes[cursor].is_ascii_lowercase() {
+                cursor += 1;
+            }
+            // Only ASCII bytes have been consumed, so these are UTF-8 boundaries.
+            let atomic_number = (&s[start..cursor]).atomic_number().ok_or(ParseFormulaError)?;
+            let count_start = cursor;
+            let mut count = 0usize;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                count = count.checked_mul(10)
+                    .and_then(|n| n.checked_add((bytes[cursor] - b'0') as usize))
+                    .ok_or(ParseFormulaError)?;
+                cursor += 1;
+            }
+            if cursor == count_start {
+                count = 1;
+            } else if count == 0 {
+                return Err(ParseFormulaError);
+            }
+            let total = elements.entry(atomic_number).or_insert(0);
+            *total = total.checked_add(count).ok_or(ParseFormulaError)?;
         }
         Ok(MolecularFormula { elements })
     }

@@ -138,17 +138,12 @@ pub trait MoleculeCore {
 
     /// Checks if an atom has a plausible valency based on its element type, charge, and bonding.
     ///
-    /// This function determines whether the actual valency of an atom is chemically reasonable
-    /// by comparing it with the expected valency for that element, while accounting for:
-    /// - Formal charges (which can modify acceptable valencies)
-    /// - Radical states (which can affect bonding capacity)
-    /// - Special cases for hypervalent elements (P, S) and transition metals
-    ///
-    /// # Arguments
-    /// * `atom_index` - The index of the atom to check
-    ///
-    /// # Returns
-    /// `true` if the atom's valency is plausible, `false` otherwise
+    /// Checks an upper bound on occupied valence, including each unpaired electron.
+    /// Neutral phosphorus permits up to five and sulfur up to six; other elements
+    /// use their largest nonnegative tabulated valence. Formal charges use the
+    /// group-based adjustment used by hydrogen perception. Underfilled atoms and
+    /// elements without a valence model are allowed, so this is a plausibility
+    /// check, not a full chemical validator.
     ///
     /// # Examples
     /// ```
@@ -163,51 +158,36 @@ pub trait MoleculeCore {
     ///
     /// let molecule = MolecularGraph::from_smiles("OS(=O)(=O)O").unwrap();
     /// let molecule = molecule.first().unwrap();
-    /// assert!(molecule.has_plausible_valency(0)); // Sulfur can be hypervalent
+    /// assert!(molecule.has_plausible_valency(1)); // Sulfur with valence six
     /// ```
     fn has_plausible_valency(&self, atom_index: usize) -> bool {
-        // Get the expected valency for this atom
-        let expected_valency = match self.expected_valency(atom_index) {
-            Some(val) => val,
-            None => return true, // If we don't know the expected valency, assume it's plausible
+        let Some(&element) = self.atomic_numbers().get(atom_index) else {
+            return false;
         };
-
-        // Get the actual valency
-        let actual_valency = self.actual_valency(atom_index);
-        // Get the charge and radical state
-        let charge = self.get_atom_charge(atom_index);
-        let is_radical = self.is_atom_radical(atom_index);
-        // Calculate the valency delta (expected - actual)
-        let valency_delta = expected_valency - actual_valency;
-
-        // For most elements, the valency delta should be non-negative
-        // Exceptions are made for charged atoms and radicals
-        if valency_delta < 0 {
-            // Atoms with positive charge can have higher valency
-            if charge > 0 && valency_delta + charge >= 0 {
-                return true;
-            }
-
-            // Radicals can have one less bond than expected
-            if is_radical && valency_delta + 1 >= 0 {
-                return true;
-            }
-
-            // Special cases for specific elements
-            let atomic_number = self.get_atomic_number(atom_index);
-            match atomic_number {
-                // Hypervalent elements like P, S can exceed their usual valency
-                15 => return valency_delta < -4, // Phosphorus, maximum valency is 7
-                16 => return valency_delta < -5, // Sulfur standard valency is 2, maximum valency is 6
-                // Transition metals often have variable valencies
-                21..=30 | 39..=48 | 57..=80 | 89..=112 => return true,
-                // Default case - valency should match expected
-                _ => return false,
-            }
-        }
-
-        // If valency_delta is non-negative, the valency is plausible
-        true
+        let Some(valences) = element.valencies() else {
+            // No covalent model for this element (e.g. a transition metal).
+            return true;
+        };
+        let maximum = match element {
+            // The constants table also lists P(VII); ordinary covalent
+            // phosphorus is limited to five here, sulfur to six.
+            15 => 5,
+            16 => 6,
+            _ => valences.filter(|&v| v >= 0).max().unwrap_or(0) as i16,
+        };
+        // Use the same group-based charge adjustment as hydrogen perception,
+        // but widen before arithmetic so even extreme i8 charges cannot overflow.
+        let charge = self.get_atom_charge(atom_index) as i16;
+        let shift = match element {
+            5 | 13 | 31 | 49 | 81 => -charge,
+            6 | 14 | 32 | 50 | 82 => -charge.abs(),
+            7 | 15 | 33 | 51 | 83 | 8 | 16 | 34 | 52 | 84
+                | 9 | 17 | 35 | 53 | 85 => charge,
+            _ => -charge.abs(),
+        };
+        let radicals = self.radical_states().get(atom_index).copied().unwrap_or(0) as i16;
+        let occupied = self.actual_valency(atom_index) as i16 + radicals;
+        occupied <= maximum + shift
     }
 
     fn get_atomic_number(&self, atom_index: usize) -> u8 {

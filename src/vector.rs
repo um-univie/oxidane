@@ -557,11 +557,7 @@ impl Vector3D {
     pub fn distance_squared(&self, other: &Self) -> f64 {
         self.difference(other).squared_length()
     }
-    /// Generates a random unit vector
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
+    /// Generates a direction uniformly distributed over the unit sphere.
     ///
     /// # Examples
     ///
@@ -574,15 +570,18 @@ impl Vector3D {
     /// ```
     ///
     pub fn random_unit_vector() -> Self {
-        let mut rng = rand::rng();
-        let theta = rng.random_range(0.0..std::f64::consts::PI);
-        let phi = rng.random_range(0.0..2.0 * std::f64::consts::PI);
+        Self::random_unit_vector_with_rng(&mut rand::rng())
+    }
 
-        let x = theta.sin() * phi.cos();
-        let y = theta.sin() * phi.sin();
-        let z = theta.cos();
-
-        Vector3D::new(x, y, z)
+    /// Generates a uniform sphere direction using a caller-supplied RNG.
+    /// A seeded RNG makes sequences reproducible.
+    pub fn random_unit_vector_with_rng<R: Rng + ?Sized>(rng: &mut R) -> Self {
+        // Equal-height bands have equal area: cos(theta), not theta, is uniform.
+        let z: f64 = rng.random_range(-1.0..1.0);
+        let phi = rng.random_range(0.0..std::f64::consts::TAU);
+        let radius = (1.0 - z * z).sqrt();
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        Vector3D::new(radius * cos_phi, radius * sin_phi, z)
     }
     /// Calculates the cross product of two vectors and returns a new vector
     ///

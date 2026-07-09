@@ -7,6 +7,11 @@ carries. Everything else is under the MIT licence in `LICENSE`.
 
 The following pieces derive from [RDKit](https://github.com/rdkit/rdkit):
 
+- **Hydrogen-bond acceptor typing** in `src/molecule/descriptors.rs` follows
+  `NumHBA` version 2.0.2 in `Code/GraphMol/Descriptors/Lipinski.cpp`, with explicit
+  hydrogen neighbours excluded when identifying acidic hydroxyl groups.
+  Copyright (C) 2011–2013 Greg Landrum, under the BSD 3-Clause licence below.
+
 - **`src/molecule/cip/`** — a port of RDKit's `CIPLabeler`
   (`Code/GraphMol/CIPLabeler`), itself a port of John Mayfield's `centres`
   library for the Hanson *et al.* re-specification of the CIP rules.

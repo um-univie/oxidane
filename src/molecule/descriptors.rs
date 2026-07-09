@@ -123,18 +123,74 @@ pub trait MolecularDescriptors: MoleculeCore {
         count
     }
 
-    /// This function calculates the number of hydrogen bond acceptors in the molecule.
-    /// IT IS NOT YET STABLE
+    /// Counts chemically typed N/O/S hydrogen-bond acceptors.
+    ///
+    /// Uses the RDKit NumHBA 2.0.2 functional-group definition: excludes amide,
+    /// sulfonamide, pyrrole and protonated amine nitrogens and acidic hydroxyls;
+    /// includes eligible sulfur atoms. Hydrogens are explicit graph atoms here.
+    /// See [the reference rules](https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/Descriptors/Lipinski.cpp).
     fn number_of_hydrogen_bond_acceptors(&self) -> usize {
-        let mut count = 0;
-        for (index, &atomic_number) in self.atomic_numbers().iter().enumerate() {
-            if atomic_number == 8 || atomic_number == 7 {
-                if self.get_atom_charge(index) <= 0 {
-                    count += 1;
-                }
+        // Typed N/O/S rules corresponding to RDKit's NumHBA 2.0.2.
+        // Inspect heavy neighbours explicitly: this crate stores hydrogens as
+        // atoms, which must not make an acid OH look like an alcohol OH.
+        let mut cyclic = None;
+        (0..self.len()).filter(|&atom| {
+            let element = self.get_atomic_number(atom);
+            if !matches!(element, 7 | 8 | 16) {
+                return false;
             }
-        }
-        count
+            let charge = self.get_atom_charge(atom);
+            let hydrogens = self.number_of_bonded_element(atom, 1);
+            let aromatic = self.is_atom_aromatic(atom);
+            let valence = self.actual_valency(atom);
+            let bonds = &self.atom_bonds()[atom];
+            if aromatic {
+                return charge == 0 && match element {
+                    7 => hydrogens == 0 && bonds.len() == 2,
+                    8 | 16 => true,
+                    _ => false,
+                };
+            }
+            if element == 8 || element == 16 {
+                if charge == -1 {
+                    return true;
+                }
+                if valence != 2 {
+                    return false;
+                }
+                if hydrogens == 0 {
+                    return true;
+                }
+                return hydrogens == 1 && bonds.iter().any(|bond| {
+                    let neighbour = bond.target();
+                    self.get_atomic_number(neighbour) != 1 &&
+                        !self.atom_bonds()[neighbour].iter().any(|other| {
+                            other.bond_order() == BondOrder::Double &&
+                                matches!(self.get_atomic_number(other.target()), 7 | 8 | 15 | 16)
+                        })
+                });
+            }
+            if valence != 3 {
+                return false;
+            }
+            // An amide, sulfonamide, amidine, etc. nitrogen has its lone pair
+            // delocalized toward a non-ring double bond to N/O/P/S.
+            !bonds.iter().any(|bond| {
+                if bond.bond_order() != BondOrder::Single {
+                    return false;
+                }
+                let neighbour = bond.target();
+                self.atom_bonds()[neighbour].iter().any(|other| {
+                    let target = other.target();
+                    if other.bond_order() != BondOrder::Double ||
+                        !matches!(self.get_atomic_number(target), 7 | 8 | 15 | 16) {
+                        return false;
+                    }
+                    let ring_bonds = cyclic.get_or_insert_with(|| self.find_cyclic_bonds_and_atoms().1);
+                    !ring_bonds.contains(&(neighbour.min(target), neighbour.max(target)))
+                })
+            })
+        }).count()
     }
 
     /// How many atoms are not hydrogen.

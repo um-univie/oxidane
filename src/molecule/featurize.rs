@@ -38,7 +38,8 @@ use crate::molecule::descriptors::MolecularDescriptors;
 ///
 /// A model is trained against a schema, not against a crate, so this is what a
 /// stored model should record.
-pub const FEATURE_SCHEMA_VERSION: u32 = 2;
+// Version 3 changes the acceptor column from a N/O proxy to typed N/O/S counts.
+pub const FEATURE_SCHEMA_VERSION: u32 = 3;
 
 /// The elements that get a column of their own. Anything else shares the last.
 pub const FEATURED_ELEMENTS: [u8; 12] = [5, 6, 7, 8, 9, 14, 15, 16, 17, 34, 35, 53];

@@ -39,7 +39,8 @@ use crate::molecule::descriptors::MolecularDescriptors;
 /// A model is trained against a schema, not against a crate, so this is what a
 /// stored model should record.
 // Version 3 changes the acceptor column from a N/O proxy to typed N/O/S counts.
-pub const FEATURE_SCHEMA_VERSION: u32 = 3;
+// Version 4 makes the molecular-weight column honor explicit isotope labels.
+pub const FEATURE_SCHEMA_VERSION: u32 = 4;
 
 /// The elements that get a column of their own. Anything else shares the last.
 pub const FEATURED_ELEMENTS: [u8; 12] = [5, 6, 7, 8, 9, 14, 15, 16, 17, 34, 35, 53];

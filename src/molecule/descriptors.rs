@@ -80,34 +80,31 @@ mod polar_surface {
 
 
 pub trait MolecularDescriptors: MoleculeCore {
-    /// Calculates the molecular weight of the molecule.
-    ///
-    /// This function calculates the molecular weight of the molecule by summing the standard atomic weights of all atoms in the molecule.
-    ///
-    /// # Returns
-    /// The molecular weight of the molecule in grams per mole.
+    /// Calculates molecular weight in g/mol using standard atomic weights for
+    /// unlabelled atoms and exact isotope masses for explicitly labelled atoms.
+    /// Returns NaN if a written isotope has no tabulated mass; wildcard labels
+    /// contribute zero.
     ///
     /// # Examples
     /// ```
     /// use oxidane::molecule::MolecularGraph;
     /// use oxidane::molecule::descriptors::MolecularDescriptors;
+    ///
     /// let molecule = MolecularGraph::from_smiles_single("CCO").unwrap();
-    /// // Ethanol C2H6O; hydrogens are explicit atoms in the parsed graph
     /// assert!((molecule.molecular_weight() - 46.07).abs() < 0.05);
     /// ```
     fn molecular_weight(&self) -> f64 {
-        let mut molecular_weight = 0.0;
-        for atomic_number in self.atomic_numbers() {
-            molecular_weight += atomic_number.standard_atomic_weight().unwrap_or(0.0);
-        }
-        molecular_weight
+        self.atomic_numbers().iter().enumerate().map(|(index, &element)| {
+            match self.get_isotope(index) {
+                Some(mass_number) => crate::atom::isotope_mass(element, mass_number).unwrap_or(f64::NAN),
+                None => element.standard_atomic_weight().unwrap_or(0.0),
+            }
+        }).sum()
     }
+    /// Isotope-aware monoisotopic mass; see [`MoleculeCore::monoisotopic_mass`]
+    /// for the policy for unlabelled atoms and unavailable isotope masses.
     fn monoisotopic_mass(&self) -> f64 {
-        let mut monoisotopic_mass = 0.0;
-        for atomic_number in self.atomic_numbers() {
-            monoisotopic_mass += atomic_number.monoisotopic_mass().unwrap_or(0.0);
-        }
-        monoisotopic_mass
+        MoleculeCore::monoisotopic_mass(self)
     }
     /// This function calculates the number of hydrogen bond donors in the molecule.
     /// IT IS NOT YET STABLE

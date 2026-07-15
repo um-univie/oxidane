@@ -367,17 +367,17 @@ pub trait MoleculeCore {
             .collect()
     }
 
-    /// This function returns the monoisotopic mass of the molecule, based on the most common isotope of each element
-    ///
-    /// # Arguments
-    /// * 'self' - The molecule
-    ///
-    /// # Returns
-    /// The monoisotopic mass of the molecule as an `f64`
+    /// Sums exact masses of explicitly labelled isotopes and default monoisotopic
+    /// element masses for unlabelled atoms. Returns NaN if a written isotope has
+    /// no tabulated mass. Wildcard labels contribute zero.
     fn monoisotopic_mass(&self) -> f64 {
         self.atomic_numbers()
             .iter()
-            .map(|atom| atom.monoisotopic_mass().unwrap_or(0.0))
+            .enumerate()
+            .map(|(index, &element)| match self.get_isotope(index) {
+                Some(mass_number) => crate::atom::isotope_mass(element, mass_number).unwrap_or(f64::NAN),
+                None => element.monoisotopic_mass().unwrap_or(0.0),
+            })
             .sum::<f64>()
     }
 

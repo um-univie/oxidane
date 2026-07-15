@@ -25,6 +25,23 @@ pub const WILDCARD_ATOMIC_NUMBER: u8 = 0;
 /// The symbol a wildcard atom is written with.
 pub const WILDCARD_SYMBOL: &str = "*";
 
+/// Exact mass for a written nuclide, when present in the constants table.
+/// The isotope field on a wildcard is a fragment label, not a nuclide.
+pub(crate) fn isotope_mass(atomic_number: u8, mass_number: u16) -> Option<f64> {
+    if atomic_number == WILDCARD_ATOMIC_NUMBER {
+        return Some(0.0);
+    }
+    if let Some(isotopes) = atomic_number.isotopes() {
+        if let Some(isotope) = isotopes.into_iter().find(|i| i.mass.round() as u16 == mass_number) {
+            return Some(isotope.mass);
+        }
+    }
+    // Elements without stable isotopes have a conventional nuclide mass even
+    // when they have no natural-abundance isotope entries.
+    atomic_number.monoisotopic_mass()
+        .filter(|&mass| mass > 0.0 && mass.round() as u16 == mass_number)
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct Atom {
     pub atomic_number: u8,
@@ -193,8 +210,14 @@ impl Atom {
         self.electronegativity() > other.electronegativity()
     }
 
+    /// Mass of the written isotope, or the element's default monoisotopic mass.
+    /// Returns `None` if a written nuclide has no tabulated mass. Zero is an
+    /// unspecified isotope; wildcard isotope fields are labels and add no mass.
     pub fn monoisotopic_mass(&self) -> Option<f64> {
-        self.atomic_number.monoisotopic_mass()
+        match self.isotope.filter(|&mass_number| mass_number != 0) {
+            Some(mass_number) => isotope_mass(self.atomic_number, mass_number),
+            None => self.atomic_number.monoisotopic_mass(),
+        }
     }
 
     pub fn is_complex(&self) -> bool {

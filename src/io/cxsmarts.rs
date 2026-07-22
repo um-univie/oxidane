@@ -468,6 +468,18 @@ impl CxSMARTSParser {
             self.parse_atom_or_bond()?;
         }
 
+        if !self.branch_stack.is_empty() {
+            return Err(CxSMARTSError::MismatchedBrackets);
+        }
+        if let Some(ring) = self.open_ring_closures.keys().min() {
+            return Err(CxSMARTSError::InvalidRingClosure(format!(
+                "Unclosed ring number: {ring}"
+            )));
+        }
+        if self.pending_bond.is_some() {
+            return Err(CxSMARTSError::UnexpectedEndOfInput);
+        }
+
         Ok(CxSMARTSPattern {
             atoms: self.atoms.clone(),
             bonds: self.bonds.clone(),

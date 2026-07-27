@@ -24,6 +24,7 @@ pub mod shape;
 pub mod molecule3d;
 pub mod traits;
 pub mod utils;
+mod substructure;
 
 pub use base::Molecule;
 pub use bond::{BondAngle, BondChange, BondState};

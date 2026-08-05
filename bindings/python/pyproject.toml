@@ -1,0 +1,37 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "oxidane"
+version = "0.2.0"
+description = "Python bindings for the Oxidane cheminformatics library"
+readme = { content-type = "text/markdown", text = """
+# Oxidane Python bindings
+
+Molecules, SMARTS queries, reaction transformations, and SVG display in Jupyter.
+The bindings live in `bindings/python` inside the Oxidane Rust repository and
+build against that checkout. Legacy `from molecules import PyMolecule, MolParser`
+imports remain supported alongside `from oxidane import Molecule`.
+
+From a checkout, install with `uv pip install './bindings/python[notebook]'`.
+Use `Molecule('CCO').plot()` for immediate notebook display, or `to_svg()` to
+export without IPython. Full instructions and examples are in
+`bindings/python/README.md` in the source repository.
+""" }
+requires-python = ">=3.9"
+license = "MIT"
+
+[project.optional-dependencies]
+notebook = ["ipython>=8", "ipykernel>=6"]
+
+[dependency-groups]
+dev = ["pytest>=8", "nbclient>=0.10", "nbformat>=5", "ipykernel>=6"]
+
+[tool.maturin]
+module-name = "oxidane._oxidane"
+python-source = "python"
+python-packages = ["oxidane", "molecules"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

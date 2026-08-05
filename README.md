@@ -1,5 +1,9 @@
 # oxidane
 
+Python users: the [Python bindings and notebook examples](bindings/python/README.md)
+live in this repository. They support `import oxidane` and the legacy
+`from molecules import PyMolecule, MolParser` API.
+
 A cheminformatics library in Rust. It reads the formats molecules actually
 arrive in, works out what the file left implicit, and answers the questions
 that follow: what is this, does it contain that, are these two the same, what

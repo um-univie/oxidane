@@ -224,12 +224,26 @@ struct DenseHessian {
     step_flat: Vec<f64>,
     change_flat: Vec<f64>,
     gradient_flat: Vec<f64>,
+    /// `-H g`, flattened, before it is spread back over the atoms.
+    direction_flat: Vec<f64>,
+    /// No update has been applied since the last reset. Tracked rather than
+    /// read off the matrix, which every iteration asks and which is a
+    /// `dimension^2` scan to answer.
+    identity: bool,
 }
 
 /// One number per variable, from one vector per atom.
 fn flatten<C: Coordinate>(vectors: &[C], flat: &mut [f64]) {
     for (index, slot) in flat.iter_mut().enumerate() {
         *slot = vectors[index / C::DIMENSIONS].axis(index % C::DIMENSIONS);
+    }
+}
+
+/// [`flatten`] of `new - old`, without the intermediate vector.
+fn flatten_difference<C: Coordinate>(new: &[C], old: &[C], flat: &mut [f64]) {
+    for (index, slot) in flat.iter_mut().enumerate() {
+        let (atom, axis) = (index / C::DIMENSIONS, index % C::DIMENSIONS);
+        *slot = new[atom].axis(axis) - old[atom].axis(axis);
     }
 }
 
@@ -304,22 +318,22 @@ impl DenseHessian {
             step_flat: vec![0.0; dimension],
             change_flat: vec![0.0; dimension],
             gradient_flat: vec![0.0; dimension],
+            direction_flat: vec![0.0; dimension],
+            identity: true,
         }
     }
 
     /// Whether this is still the identity, i.e. the first direction will be
     /// a plain gradient and needs scaling like one.
     fn is_identity(&self) -> bool {
-        self.inverse
-            .iter()
-            .enumerate()
-            .all(|(index, value)| {
-                let diagonal = index % (self.dimension + 1) == 0;
-                *value == if diagonal { 1.0 } else { 0.0 }
-            })
+        self.identity
     }
 
     fn reset(&mut self) {
+        if self.identity {
+            return;
+        }
+        self.identity = true;
         self.inverse.fill(0.0);
         for index in 0..self.dimension {
             self.inverse[index * self.dimension + index] = 1.0;
@@ -330,17 +344,23 @@ impl DenseHessian {
     fn direction<C: Coordinate>(&mut self, gradient: &[C], direction: &mut [C]) {
         let dimension = self.dimension;
         flatten(gradient, &mut self.gradient_flat);
-        let mut flat = vec![0.0; dimension];
-        faer_gemv(&self.inverse, &self.gradient_flat, &mut flat, dimension);
-        for (index, &value) in flat.iter().enumerate() {
+        faer_gemv(&self.inverse, &self.gradient_flat, &mut self.direction_flat, dimension);
+        for (index, &value) in self.direction_flat.iter().enumerate() {
             *direction[index / C::DIMENSIONS].axis_mut(index % C::DIMENSIONS) = -value;
         }
     }
 
-    /// The BFGS update for a step `s` and gradient change `y`. Skipped when
-    /// the curvature is too small to trust, which leaves the matrix as it
-    /// was rather than making it indefinite.
-    fn update<C: Coordinate>(&mut self, step: &[C], change: &[C]) {
+    /// The BFGS update for the step from `previous_positions` to
+    /// `positions` and the gradient change over it, both flattened straight
+    /// into scratch. Skipped when the curvature is too small to trust, which
+    /// leaves the matrix as it was rather than making it indefinite.
+    fn update<C: Coordinate>(
+        &mut self,
+        positions: &[C],
+        previous_positions: &[C],
+        gradient: &[C],
+        previous_gradient: &[C],
+    ) {
         let DenseHessian {
             inverse,
             dimension,
@@ -348,11 +368,12 @@ impl DenseHessian {
             combination,
             step_flat,
             change_flat,
+            identity,
             ..
         } = self;
         let dimension = *dimension;
-        flatten(step, step_flat);
-        flatten(change, change_flat);
+        flatten_difference(positions, previous_positions, step_flat);
+        flatten_difference(gradient, previous_gradient, change_flat);
         let mut curvature = 0.0;
         let mut change_squared = 0.0;
         let mut step_squared = 0.0;
@@ -365,6 +386,7 @@ impl DenseHessian {
             return;
         }
 
+        *identity = false;
         faer_gemv(inverse, change_flat, product, dimension);
         let change_product = wide_dot(change_flat, product);
 
@@ -453,7 +475,6 @@ struct Workspace<C> {
     previous_gradient: Vec<C>,
     direction: Vec<C>,
     trial: Vec<C>,
-    trial_gradient: Vec<C>,
     previous_positions: Vec<C>,
     history: std::collections::VecDeque<Correction<C>>,
     /// The two-loop recursion's inner coefficients, one per stored pair.
@@ -470,7 +491,6 @@ impl<C: Coordinate> Workspace<C> {
             previous_gradient: vec![C::default(); n],
             direction: vec![C::default(); n],
             trial: vec![C::default(); n],
-            trial_gradient: vec![C::default(); n],
             previous_positions: vec![C::default(); n],
             history: std::collections::VecDeque::with_capacity(HISTORY),
             coefficients: Vec::with_capacity(HISTORY),
@@ -547,46 +567,45 @@ impl<C: Coordinate> Workspace<C> {
 
     /// Stores the step just taken, unless it carries no usable curvature.
     fn record(&mut self, positions: &[C]) {
-        if self.dense.is_some() {
-            let step: Vec<C> = positions
-                .iter()
-                .zip(&self.previous_positions)
-                .map(|(new, old)| *new - *old)
-                .collect();
-            let change: Vec<C> = self
-                .gradient
-                .iter()
-                .zip(&self.previous_gradient)
-                .map(|(new, old)| *new - *old)
-                .collect();
-            if let Some(dense) = &mut self.dense {
-                dense.update(&step, &change);
-            }
+        if let Some(dense) = &mut self.dense {
+            dense.update(positions, &self.previous_positions, &self.gradient, &self.previous_gradient);
             return;
         }
-        let step: Vec<C> = positions
+        let curvature: f64 = positions
             .iter()
             .zip(&self.previous_positions)
-            .map(|(new, old)| *new - *old)
-            .collect();
-        let gradient_change: Vec<C> = self
-            .gradient
-            .iter()
-            .zip(&self.previous_gradient)
-            .map(|(new, old)| *new - *old)
-            .collect();
-        let curvature = dot(&step, &gradient_change);
+            .zip(self.gradient.iter().zip(&self.previous_gradient))
+            .map(|((new, old), (new_gradient, old_gradient))| {
+                (*new - *old).dot(&(*new_gradient - *old_gradient))
+            })
+            .sum();
         if !(curvature > MIN_CURVATURE) {
             return;
         }
-        if self.history.len() == HISTORY {
-            self.history.pop_front();
+        // A full history hands its oldest pair's buffers to the new one, so
+        // only the first `HISTORY` stored steps allocate.
+        let mut correction = if self.history.len() == HISTORY {
+            self.history.pop_front().expect("history is full")
+        } else {
+            Correction {
+                step: vec![C::default(); positions.len()],
+                gradient_change: vec![C::default(); positions.len()],
+                inverse_curvature: 0.0,
+            }
+        };
+        for ((slot, new), old) in correction.step.iter_mut().zip(positions).zip(&self.previous_positions) {
+            *slot = *new - *old;
         }
-        self.history.push_back(Correction {
-            step,
-            gradient_change,
-            inverse_curvature: 1.0 / curvature,
-        });
+        for ((slot, new), old) in correction
+            .gradient_change
+            .iter_mut()
+            .zip(&self.gradient)
+            .zip(&self.previous_gradient)
+        {
+            *slot = *new - *old;
+        }
+        correction.inverse_curvature = 1.0 / curvature;
+        self.history.push_back(correction);
     }
 }
 
@@ -594,12 +613,6 @@ fn dot<C: Coordinate>(a: &[C], b: &[C]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x.dot(y)).sum()
 }
 
-/// Minimises `terms` over `positions` in place, returning the final energy.
-///
-/// Stops when the squared gradient norm is below `gradient_tolerance`, or
-/// when the energy is stable and every atom's squared gradient norm is below
-/// that threshold. Also stops when `max_iterations` is spent or no downhill
-/// step can be found along either the quasi-Newton or plain gradient direction.
 /// The result of one line search: how far it went and the energy there.
 struct Step {
     length: f64,
@@ -695,16 +708,21 @@ fn backtracking_line_search<C: Coordinate, E: Energy<C> + ?Sized>(
     None
 }
 
+/// Minimises `terms` over `positions` in place, returning the final energy.
+///
+/// Stops when the squared gradient norm is below `gradient_tolerance`, or
+/// when the energy is stable and every atom's squared gradient norm is below
+/// that threshold. Also stops when `max_iterations` is spent or no downhill
+/// step can be found along either the quasi-Newton or plain gradient direction.
 pub fn minimize<C: Coordinate, E: Energy<C> + ?Sized>(
     positions: &mut [C],
     terms: &E,
     max_iterations: usize,
     gradient_tolerance: f64,
 ) -> f64 {
-    let n = positions.len();
-    let mut work = Workspace::new(n, max_iterations);
-    let mut restarts = 0usize;
+    let mut work = Workspace::new(positions.len(), max_iterations);
     let mut energy = terms.energy_and_gradient(positions, &mut work.gradient);
+    let mut restarts = 0usize;
 
     for _ in 0..max_iterations {
         let gradient_norm_sq = dot(&work.gradient, &work.gradient);

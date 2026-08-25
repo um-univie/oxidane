@@ -193,23 +193,11 @@ pub(super) fn refine_torsions(
                 {
                     continue;
                 }
-                minimize(&mut trial, field, candidate_move.screen_iterations, GRADIENT_TOLERANCE);
-                if !(field.energy(&trial) < energy + SCREEN_ALLOWANCE) {
+                let Some(candidate) =
+                    relax_candidate(&mut trial, field, candidate_move.screen_iterations, energy)
+                else {
                     continue;
-                }
-                // Third filter: a truncated relaxation can only overstate
-                // the final energy, so a candidate that is not yet winning
-                // after a third of the budget usually never does.
-                let partial = minimize(&mut trial, field, PARTIAL_ITERATIONS, GRADIENT_TOLERANCE);
-                if !(partial < energy) {
-                    continue;
-                }
-                let candidate = minimize(
-                    &mut trial,
-                    field,
-                    FULL_ITERATIONS - PARTIAL_ITERATIONS,
-                    GRADIENT_TOLERANCE,
-                );
+                };
                 if candidate < energy - ACCEPT
                     && candidate.is_finite()
                     && trial.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
@@ -242,6 +230,30 @@ pub(super) fn refine_torsions(
         }
     }
     energy
+}
+
+/// Relaxes one candidate through the screening and ranking stages, giving up
+/// as soon as a stage says it cannot win: `None` if it was abandoned, its
+/// relaxed energy otherwise. `energy` is the energy it has to beat.
+///
+/// Each stage is a fresh minimisation. Continuing one minimisation across the
+/// gates instead keeps the curvature built so far, and was measured: 3% slower
+/// on the PubChem corpus, no better on average, and the erythromycin fragment
+/// in `a_corner_flip_finds_a_better_macrocycle_conformer` stopped improving.
+/// `minimize` answers with the energy it stopped at, so each gate reads that
+/// rather than paying for it again.
+fn relax_candidate(trial: &mut [Vector3D], field: &Field, screen: usize, energy: f64) -> Option<f64> {
+    let screened = minimize(trial, field, screen, GRADIENT_TOLERANCE);
+    if !(screened < energy + SCREEN_ALLOWANCE) {
+        return None;
+    }
+    // Third filter: a truncated relaxation can only overstate the final
+    // energy, so a candidate that is not yet winning after a third of the
+    // budget usually never does.
+    if !(minimize(trial, field, PARTIAL_ITERATIONS, GRADIENT_TOLERANCE) < energy) {
+        return None;
+    }
+    Some(minimize(trial, field, FULL_ITERATIONS - PARTIAL_ITERATIONS, GRADIENT_TOLERANCE))
 }
 
 /// What a move does to the atoms it names.
@@ -366,20 +378,9 @@ fn shake(
         if touched < 2 {
             continue;
         }
-        minimize(&mut trial, field, SCREEN_ITERATIONS, GRADIENT_TOLERANCE);
-        if !(field.energy(&trial) < energy + SCREEN_ALLOWANCE) {
+        let Some(candidate) = relax_candidate(&mut trial, field, SCREEN_ITERATIONS, energy) else {
             continue;
-        }
-        let partial = minimize(&mut trial, field, PARTIAL_ITERATIONS, GRADIENT_TOLERANCE);
-        if !(partial < energy) {
-            continue;
-        }
-        let candidate = minimize(
-            &mut trial,
-            field,
-            FULL_ITERATIONS - PARTIAL_ITERATIONS,
-            GRADIENT_TOLERANCE,
-        );
+        };
         if candidate < energy - ACCEPT
             && candidate.is_finite()
             && trial.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())

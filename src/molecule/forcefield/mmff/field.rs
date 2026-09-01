@@ -360,6 +360,21 @@ impl ForceField {
 
     /// The energy of `positions`, term by term.
     pub fn energies(&self, positions: &[Vector3D]) -> TermEnergies {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = pulp::x86::V3::try_new() {
+            return simd.vectorize(
+                #[inline(always)]
+                || self.energies_in(terms::Avx(simd), positions),
+            );
+        }
+        self.energies_in(terms::Portable, positions)
+    }
+
+    /// [`ForceField::energies`] on the lanes `simd` provides. Inlined
+    /// whole, so that inside [`pulp`]'s dispatch every term -- not only the
+    /// pair loop -- is compiled for the instruction set it found.
+    #[inline(always)]
+    fn energies_in<L: terms::Lanes>(&self, simd: L, positions: &[Vector3D]) -> TermEnergies {
         let angle_and_stretch = self.angles.iter().fold((0.0, 0.0), |(bend, stretch), term| {
             let (one, two) = terms::angle_energies(positions, term);
             (bend + one, stretch + two)
@@ -385,14 +400,15 @@ impl ForceField {
                 .iter()
                 .map(|term| terms::torsion_energy(positions, term))
                 .sum(),
-            ..self.nonbonded_energies(positions)
+            ..self.nonbonded_energies(simd, positions)
         }
     }
 
     /// The two through-space terms, from one pass over the pair list.
-    fn nonbonded_energies(&self, positions: &[Vector3D]) -> TermEnergies {
+    #[inline(always)]
+    fn nonbonded_energies<L: terms::Lanes>(&self, simd: L, positions: &[Vector3D]) -> TermEnergies {
         let (van_der_waals, electrostatic) =
-            terms::nonbonded_energies(&self.non_bonded, positions);
+            terms::nonbonded_energies_in(simd, &self.non_bonded, positions);
         TermEnergies {
             van_der_waals,
             electrostatic,
@@ -411,12 +427,37 @@ impl ForceField {
     }
 }
 
+/// Both evaluations pick their instruction set per call: AVX2 through
+/// [`pulp`] where the CPU has it, otherwise whatever the crate was compiled
+/// for. The check is one relaxed atomic load, and the two paths agree to
+/// the bit -- see [`terms::Lanes`].
 impl Energy for ForceField {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
         self.energies(positions).total()
     }
 
     fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = pulp::x86::V3::try_new() {
+            return simd.vectorize(
+                #[inline(always)]
+                || self.energy_and_gradient_in(terms::Avx(simd), positions, gradient),
+            );
+        }
+        self.energy_and_gradient_in(terms::Portable, positions, gradient)
+    }
+}
+
+impl ForceField {
+    /// [`Energy::energy_and_gradient`] on the lanes `simd` provides; see
+    /// [`ForceField::energies_in`] for why it is inlined whole.
+    #[inline(always)]
+    fn energy_and_gradient_in<L: terms::Lanes>(
+        &self,
+        simd: L,
+        positions: &[Vector3D],
+        gradient: &mut [Vector3D],
+    ) -> f64 {
         gradient.fill(Vector3D::default());
         let mut energy = 0.0;
         for term in &self.bonds {
@@ -433,7 +474,7 @@ impl Energy for ForceField {
             energy += terms::torsion_energy_and_gradient(positions, term, gradient);
         }
         let (repulsive, coulombic) =
-            terms::nonbonded_energies_and_gradient(&self.non_bonded, positions, gradient);
+            terms::nonbonded_energies_and_gradient_in(simd, &self.non_bonded, positions, gradient);
         energy += repulsive + coulombic;
         energy
     }

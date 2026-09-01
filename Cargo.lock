@@ -1222,6 +1222,7 @@ dependencies = [
  "ndarray",
  "nohash-hasher",
  "petgraph",
+ "pulp",
  "rand 0.9.2",
  "rayon",
  "rustc-hash",

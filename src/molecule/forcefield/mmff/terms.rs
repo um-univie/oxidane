@@ -206,6 +206,7 @@ const LANES: usize = 4;
 const NEAR: f64 = 1.07;
 const FAR: f64 = 1.12;
 
+#[inline(always)]
 pub(super) fn bond_energy(positions: &[Vector3D], bond: &Bond) -> f64 {
     let stretch = positions[bond.i].distance(&positions[bond.j]) - bond.length;
     0.5 * MDYNE_TO_KCAL
@@ -215,6 +216,7 @@ pub(super) fn bond_energy(positions: &[Vector3D], bond: &Bond) -> f64 {
         * (1.0 + BOND_CUBIC * stretch + BOND_QUARTIC * BOND_CUBIC * BOND_CUBIC * stretch * stretch)
 }
 
+#[inline(always)]
 pub(super) fn bond_energy_and_gradient(
     positions: &[Vector3D],
     bond: &Bond,
@@ -255,6 +257,7 @@ struct AngleGeometry {
 /// evaluation wants: the line search takes about three of those per
 /// gradient, and the two vectors and the division by `sin` the gradient
 /// needs are most of the cost of computing one.
+#[inline(always)]
 fn angle_geometry(
     positions: &[Vector3D],
     i: usize,
@@ -280,6 +283,7 @@ fn angle_geometry(
 
 /// [`angle_geometry`] and the derivative of the angle with respect to the
 /// three atoms.
+#[inline(always)]
 fn angle_and_gradient(
     positions: &[Vector3D],
     i: usize,
@@ -304,6 +308,7 @@ fn angle_and_gradient(
     Some((geometry, [d_i, -(d_i + d_k), d_k]))
 }
 
+#[inline(always)]
 fn angle_energy_from(angle: &Angle, theta: f64, cosine: f64) -> f64 {
     if angle.linear {
         return MDYNE_TO_KCAL * angle.force_constant * (1.0 + cosine);
@@ -321,6 +326,7 @@ fn angle_energy_from(angle: &Angle, theta: f64, cosine: f64) -> f64 {
 ///
 /// Reported apart because that is how MMFF is checked, term by term
 /// against RDKit, even though they are now computed together.
+#[inline(always)]
 pub(super) fn angle_energies(positions: &[Vector3D], angle: &Angle) -> (f64, f64) {
     let Some(geometry) = angle_geometry(positions, angle.i, angle.central, angle.k) else {
         return (0.0, 0.0);
@@ -336,6 +342,7 @@ pub(super) fn angle_energies(positions: &[Vector3D], angle: &Angle) -> (f64, f64
 
 /// The stretch-bend energy, given the angle's geometry: the bend away from
 /// the reference angle, coupled to each bond's stretch away from its own.
+#[inline(always)]
 fn stretch_energy_from(angle: &Angle, stretch: &StretchBend, geometry: &AngleGeometry) -> f64 {
     let first = geometry.first_distance - stretch.first_length;
     let second = geometry.second_distance - stretch.second_length;
@@ -348,6 +355,7 @@ fn stretch_energy_from(angle: &Angle, stretch: &StretchBend, geometry: &AngleGeo
 
 /// [`angle_energies`], accumulating both terms' gradients from the one
 /// derivative of the angle.
+#[inline(always)]
 pub(super) fn angle_energies_and_gradient(
     positions: &[Vector3D],
     angle: &Angle,
@@ -408,6 +416,7 @@ pub(super) fn angle_energies_and_gradient(
 
 /// The Wilson angle in degrees: how far `central -> l` lies out of the plane
 /// of `central -> i` and `central -> k`.
+#[inline(always)]
 fn wilson_angle(positions: &[Vector3D], term: &OutOfPlane) -> Option<f64> {
     let to_i = (positions[term.i] - positions[term.central]).normalize();
     let to_k = (positions[term.k] - positions[term.central]).normalize();
@@ -421,6 +430,7 @@ fn wilson_angle(positions: &[Vector3D], term: &OutOfPlane) -> Option<f64> {
     Some(sine.asin() / DEGREES_TO_RADIANS)
 }
 
+#[inline(always)]
 pub(super) fn out_of_plane_energy(positions: &[Vector3D], term: &OutOfPlane) -> f64 {
     match wilson_angle(positions, term) {
         Some(chi) => 0.5 * MDYNE_TO_KCAL_PER_DEGREE_SQUARED * term.force_constant * chi * chi,
@@ -428,6 +438,7 @@ pub(super) fn out_of_plane_energy(positions: &[Vector3D], term: &OutOfPlane) -> 
     }
 }
 
+#[inline(always)]
 pub(super) fn out_of_plane_energy_and_gradient(
     positions: &[Vector3D],
     term: &OutOfPlane,
@@ -486,6 +497,7 @@ pub(super) fn out_of_plane_energy_and_gradient(
     0.5 * MDYNE_TO_KCAL_PER_DEGREE_SQUARED * term.force_constant * chi * chi
 }
 
+#[inline(always)]
 fn torsion_energy_from(torsion: &Torsion, cosine: f64) -> f64 {
     let cosine2 = 2.0 * cosine * cosine - 1.0;
     let cosine3 = cosine * (2.0 * cosine2 - 1.0);
@@ -494,6 +506,7 @@ fn torsion_energy_from(torsion: &Torsion, cosine: f64) -> f64 {
         + torsion.v3 * (1.0 + cosine3))
 }
 
+#[inline(always)]
 pub(super) fn torsion_energy(positions: &[Vector3D], torsion: &Torsion) -> f64 {
     // The gradient-free dihedral: the energy needs `cos(phi)` and nothing
     // else, and the four derivative vectors the other one builds are most
@@ -509,6 +522,7 @@ pub(super) fn torsion_energy(positions: &[Vector3D], torsion: &Torsion) -> f64 {
     }
 }
 
+#[inline(always)]
 pub(super) fn torsion_energy_and_gradient(
     positions: &[Vector3D],
     torsion: &Torsion,
@@ -542,6 +556,7 @@ pub(super) fn torsion_energy_and_gradient(
 ///
 /// Returned separately because that is how MMFF is checked, term by term
 /// against RDKit, even though they are computed from one distance.
+#[inline(always)]
 pub(super) fn nonbonded_energy(positions: &[Vector3D], pair: &NonBonded) -> (f64, f64) {
     let offset = positions[pair.i as usize] - positions[pair.j as usize];
     let distance_squared = offset.dot(&offset);
@@ -564,6 +579,7 @@ pub(super) fn nonbonded_energy(positions: &[Vector3D], pair: &NonBonded) -> (f64
 }
 
 /// [`nonbonded_energy`], accumulating both interactions' gradients.
+#[inline(always)]
 pub(super) fn nonbonded_energy_and_gradient(
     positions: &[Vector3D],
     pair: &NonBonded,
@@ -604,13 +620,155 @@ pub(super) fn nonbonded_energy_and_gradient(
     (pair.well * seventh * (repulsion - 2.0), coulombic)
 }
 
+/// Four `f64` lanes, and the few operations the pair loop needs beyond
+/// arithmetic.
+///
+/// Two of these exist. [`Portable`] is `wide::f64x4`, whose instruction set is
+/// fixed when the crate is compiled -- for baseline x86-64 that is two SSE2
+/// halves. [`Avx`] is the same four lanes in one AVX register, available only
+/// once [`pulp`] has confirmed the CPU has AVX2 and only inside code it has
+/// compiled for it; see `ForceField::energy_and_gradient`. Both do exactly
+/// the same IEEE operations in the same order, so they agree to the bit and
+/// the choice between them changes speed, not results.
+pub(super) trait Lanes: Copy {
+    type Vector: Copy
+        + core::ops::Add<Output = Self::Vector>
+        + core::ops::Sub<Output = Self::Vector>
+        + core::ops::Mul<Output = Self::Vector>
+        + core::ops::Div<Output = Self::Vector>
+        + core::ops::Neg<Output = Self::Vector>
+        + core::ops::AddAssign;
+
+    fn splat(self, value: f64) -> Self::Vector;
+    fn from_array(self, values: [f64; LANES]) -> Self::Vector;
+    fn to_array(self, vector: Self::Vector) -> [f64; LANES];
+    fn sqrt(self, vector: Self::Vector) -> Self::Vector;
+    /// `value` where `left > right`, zero elsewhere.
+    fn where_greater(
+        self,
+        left: Self::Vector,
+        right: Self::Vector,
+        value: Self::Vector,
+    ) -> Self::Vector;
+}
+
+/// [`Lanes`] on `wide`, for whatever the crate was compiled for.
+#[derive(Clone, Copy)]
+pub(super) struct Portable;
+
+impl Lanes for Portable {
+    type Vector = wide::f64x4;
+
+    #[inline(always)]
+    fn splat(self, value: f64) -> wide::f64x4 {
+        wide::f64x4::splat(value)
+    }
+    #[inline(always)]
+    fn from_array(self, values: [f64; LANES]) -> wide::f64x4 {
+        wide::f64x4::new(values)
+    }
+    #[inline(always)]
+    fn to_array(self, vector: wide::f64x4) -> [f64; LANES] {
+        vector.to_array()
+    }
+    #[inline(always)]
+    fn sqrt(self, vector: wide::f64x4) -> wide::f64x4 {
+        vector.sqrt()
+    }
+    #[inline(always)]
+    fn where_greater(self, left: wide::f64x4, right: wide::f64x4, value: wide::f64x4) -> wide::f64x4 {
+        wide::CmpGt::cmp_gt(left, right).blend(value, wide::f64x4::ZERO)
+    }
+}
+
+/// [`Lanes`] in one 256-bit register. Holding a `pulp::x86::V3` is the proof
+/// that the CPU has AVX2, which is what makes the operations below sound.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub(super) struct Avx(pub(super) pulp::x86::V3);
+
+/// One [`Avx`] vector. It carries the token so the arithmetic operators can
+/// reach the instructions.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy)]
+pub(super) struct AvxVector(pulp::x86::V3, pulp::f64x4);
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! avx_binary {
+    ($trait:ident, $method:ident, $instruction:ident) => {
+        impl core::ops::$trait for AvxVector {
+            type Output = AvxVector;
+            #[inline(always)]
+            fn $method(self, other: AvxVector) -> AvxVector {
+                AvxVector(self.0, self.0.$instruction(self.1, other.1))
+            }
+        }
+    };
+}
+#[cfg(target_arch = "x86_64")]
+avx_binary!(Add, add, add_f64x4);
+#[cfg(target_arch = "x86_64")]
+avx_binary!(Sub, sub, sub_f64x4);
+#[cfg(target_arch = "x86_64")]
+avx_binary!(Mul, mul, mul_f64x4);
+#[cfg(target_arch = "x86_64")]
+avx_binary!(Div, div, div_f64x4);
+
+#[cfg(target_arch = "x86_64")]
+impl core::ops::Neg for AvxVector {
+    type Output = AvxVector;
+    /// `0 - x`, as `wide` does it, rather than a sign flip: the two differ
+    /// on a zero, and the paths have to agree to the bit.
+    #[inline(always)]
+    fn neg(self) -> AvxVector {
+        AvxVector(self.0, self.0.sub_f64x4(self.0.splat_f64x4(0.0), self.1))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl core::ops::AddAssign for AvxVector {
+    #[inline(always)]
+    fn add_assign(&mut self, other: AvxVector) {
+        *self = *self + other;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Lanes for Avx {
+    type Vector = AvxVector;
+
+    #[inline(always)]
+    fn splat(self, value: f64) -> AvxVector {
+        AvxVector(self.0, self.0.splat_f64x4(value))
+    }
+    #[inline(always)]
+    fn from_array(self, [a, b, c, d]: [f64; LANES]) -> AvxVector {
+        AvxVector(self.0, pulp::f64x4(a, b, c, d))
+    }
+    #[inline(always)]
+    fn to_array(self, vector: AvxVector) -> [f64; LANES] {
+        let pulp::f64x4(a, b, c, d) = vector.1;
+        [a, b, c, d]
+    }
+    #[inline(always)]
+    fn sqrt(self, vector: AvxVector) -> AvxVector {
+        AvxVector(self.0, self.0.sqrt_f64x4(vector.1))
+    }
+    #[inline(always)]
+    fn where_greater(self, left: AvxVector, right: AvxVector, value: AvxVector) -> AvxVector {
+        let mask = self.0.cmp_gt_f64x4(left.1, right.1);
+        AvxVector(self.0, self.0.select_f64x4(mask, value.1, self.0.splat_f64x4(0.0)))
+    }
+}
+
 /// Gathers one lane-width of pair offsets, and the squared distances.
-#[inline]
-fn lane_offsets(
+#[inline(always)]
+fn lane_offsets<L: Lanes>(
+    simd: L,
     pairs: &NonBondedPairs,
     positions: &[Vector3D],
     start: usize,
-) -> ([wide::f64x4; 3], wide::f64x4) {
+) -> ([L::Vector; 3], L::Vector) {
     let mut x = [0.0; LANES];
     let mut y = [0.0; LANES];
     let mut z = [0.0; LANES];
@@ -621,18 +779,14 @@ fn lane_offsets(
         y[lane] = offset.y;
         z[lane] = offset.z;
     }
-    let (x, y, z) = (
-        wide::f64x4::new(x),
-        wide::f64x4::new(y),
-        wide::f64x4::new(z),
-    );
+    let (x, y, z) = (simd.from_array(x), simd.from_array(y), simd.from_array(z));
     ([x, y, z], x * x + y * y + z * z)
 }
 
 /// One lane-width of a parameter array.
-#[inline]
-fn lane(values: &[f64], start: usize) -> wide::f64x4 {
-    wide::f64x4::new([
+#[inline(always)]
+fn lane<L: Lanes>(simd: L, values: &[f64], start: usize) -> L::Vector {
+    simd.from_array([
         values[start],
         values[start + 1],
         values[start + 2],
@@ -646,35 +800,45 @@ fn lane(values: &[f64], start: usize) -> wide::f64x4 {
 /// The same arithmetic as [`nonbonded_energy`], in lanes. What changes is
 /// the order the sum is taken in, which moves the total by the last bit or
 /// two of an `f64`; see [`NonBondedPairs`] for what the layout buys.
+#[cfg(test)]
 pub(super) fn nonbonded_energies(pairs: &NonBondedPairs, positions: &[Vector3D]) -> (f64, f64) {
-    use wide::f64x4;
-    let (mut van_der_waals, mut electrostatic) = (f64x4::ZERO, f64x4::ZERO);
+    nonbonded_energies_in(Portable, pairs, positions)
+}
+
+/// [`nonbonded_energies`] on the lanes `simd` provides.
+#[inline(always)]
+pub(super) fn nonbonded_energies_in<L: Lanes>(
+    simd: L,
+    pairs: &NonBondedPairs,
+    positions: &[Vector3D],
+) -> (f64, f64) {
+    let splat = |value| simd.splat(value);
+    let (mut van_der_waals, mut electrostatic) = (splat(0.0), splat(0.0));
     let whole = pairs.len() - pairs.len() % LANES;
     let mut start = 0;
     while start < whole {
-        let (_, squared) = lane_offsets(pairs, positions, start);
-        let distance = squared.sqrt();
-        let minimum = lane(&pairs.minimum, start);
-        let minimum_seventh = lane(&pairs.minimum_seventh, start);
+        let (_, squared) = lane_offsets(simd, pairs, positions, start);
+        let distance = simd.sqrt(squared);
+        let minimum = lane(simd, &pairs.minimum, start);
+        let minimum_seventh = lane(simd, &pairs.minimum_seventh, start);
 
-        let buffered_near = distance + f64x4::splat(NEAR - 1.0) * minimum;
-        let attenuated = f64x4::splat(NEAR) * minimum / buffered_near;
+        let buffered_near = distance + splat(NEAR - 1.0) * minimum;
+        let attenuated = splat(NEAR) * minimum / buffered_near;
         let cubed = attenuated * attenuated * attenuated;
         let seventh = cubed * cubed * attenuated;
         let sixth = squared * squared * squared;
-        let repulsion = f64x4::splat(FAR) * minimum_seventh
-            / (sixth * distance + f64x4::splat(FAR - 1.0) * minimum_seventh);
+        let repulsion =
+            splat(FAR) * minimum_seventh / (sixth * distance + splat(FAR - 1.0) * minimum_seventh);
 
-        van_der_waals +=
-            lane(&pairs.well, start) * seventh * (repulsion - f64x4::splat(2.0));
-        electrostatic += f64x4::splat(COULOMB) * lane(&pairs.charge_product, start)
-            / (distance + f64x4::splat(ELECTROSTATIC_BUFFER));
+        van_der_waals += lane(simd, &pairs.well, start) * seventh * (repulsion - splat(2.0));
+        electrostatic += splat(COULOMB) * lane(simd, &pairs.charge_product, start)
+            / (distance + splat(ELECTROSTATIC_BUFFER));
         start += LANES;
     }
 
     let (mut van_der_waals, mut electrostatic) = (
-        horizontal_sum(van_der_waals),
-        horizontal_sum(electrostatic),
+        horizontal_sum(simd.to_array(van_der_waals)),
+        horizontal_sum(simd.to_array(electrostatic)),
     );
     for index in whole..pairs.len() {
         let (repulsive, coulombic) = nonbonded_energy(positions, &pairs.get(index));
@@ -685,54 +849,68 @@ pub(super) fn nonbonded_energies(pairs: &NonBondedPairs, positions: &[Vector3D])
 }
 
 /// [`nonbonded_energies`], accumulating both interactions' gradients.
+#[cfg(test)]
 pub(super) fn nonbonded_energies_and_gradient(
     pairs: &NonBondedPairs,
     positions: &[Vector3D],
     gradient: &mut [Vector3D],
 ) -> (f64, f64) {
-    use wide::f64x4;
-    let (mut van_der_waals, mut electrostatic) = (f64x4::ZERO, f64x4::ZERO);
+    nonbonded_energies_and_gradient_in(Portable, pairs, positions, gradient)
+}
+
+/// [`nonbonded_energies_and_gradient`] on the lanes `simd` provides.
+#[inline(always)]
+pub(super) fn nonbonded_energies_and_gradient_in<L: Lanes>(
+    simd: L,
+    pairs: &NonBondedPairs,
+    positions: &[Vector3D],
+    gradient: &mut [Vector3D],
+) -> (f64, f64) {
+    let splat = |value| simd.splat(value);
+    let (mut van_der_waals, mut electrostatic) = (splat(0.0), splat(0.0));
     let whole = pairs.len() - pairs.len() % LANES;
     let mut start = 0;
     while start < whole {
-        let ([x, y, z], squared) = lane_offsets(pairs, positions, start);
-        let distance = squared.sqrt();
-        let minimum = lane(&pairs.minimum, start);
-        let minimum_seventh = lane(&pairs.minimum_seventh, start);
-        let well = lane(&pairs.well, start);
+        let ([x, y, z], squared) = lane_offsets(simd, pairs, positions, start);
+        let distance = simd.sqrt(squared);
+        let minimum = lane(simd, &pairs.minimum, start);
+        let minimum_seventh = lane(simd, &pairs.minimum_seventh, start);
+        let well = lane(simd, &pairs.well, start);
 
-        let buffered_near = distance + f64x4::splat(NEAR - 1.0) * minimum;
-        let attenuated = f64x4::splat(NEAR) * minimum / buffered_near;
+        // Four reciprocals, each used twice, where the scalar form divides
+        // seven times: the divider, not the multipliers, is what bounds
+        // this loop.
+        let buffered_near = distance + splat(NEAR - 1.0) * minimum;
+        let inverse_near = splat(1.0) / buffered_near;
+        let attenuated = splat(NEAR) * minimum * inverse_near;
         let cubed = attenuated * attenuated * attenuated;
         let sixth_attenuated = cubed * cubed;
         let seventh = sixth_attenuated * attenuated;
         let sixth = squared * squared * squared;
-        let denominator = sixth * distance + f64x4::splat(FAR - 1.0) * minimum_seventh;
-        let repulsion = f64x4::splat(FAR) * minimum_seventh / denominator;
+        let denominator = sixth * distance + splat(FAR - 1.0) * minimum_seventh;
+        let inverse_denominator = splat(1.0) / denominator;
+        let repulsion = splat(FAR) * minimum_seventh * inverse_denominator;
 
-        let d_attenuated = -attenuated / buffered_near;
-        let d_repulsion = -f64x4::splat(FAR) * minimum_seventh * f64x4::splat(7.0) * sixth
-            / (denominator * denominator);
+        let d_attenuated = -attenuated * inverse_near;
+        let d_repulsion = -repulsion * splat(7.0) * sixth * inverse_denominator;
         let derivative = well
-            * (f64x4::splat(7.0) * sixth_attenuated * d_attenuated
-                * (repulsion - f64x4::splat(2.0))
+            * (splat(7.0) * sixth_attenuated * d_attenuated * (repulsion - splat(2.0))
                 + seventh * d_repulsion);
 
-        let buffered_far = distance + f64x4::splat(ELECTROSTATIC_BUFFER);
-        let scaled = f64x4::splat(COULOMB) * lane(&pairs.charge_product, start) / buffered_far;
-        let scale = (derivative + (-scaled / buffered_far)) / distance;
+        let inverse_far = splat(1.0) / (distance + splat(ELECTROSTATIC_BUFFER));
+        let scaled = splat(COULOMB) * lane(simd, &pairs.charge_product, start) * inverse_far;
+        let scale = (derivative - scaled * inverse_far) / distance;
         // Two atoms on top of each other have no direction to push along.
         // Their energies are still finite, so only the gradient is dropped.
-        let scale = wide::CmpGt::cmp_gt(distance, f64x4::splat(DEGENERATE_SEPARATION))
-            .blend(scale, f64x4::ZERO);
+        let scale = simd.where_greater(distance, splat(DEGENERATE_SEPARATION), scale);
 
-        van_der_waals += well * seventh * (repulsion - f64x4::splat(2.0));
+        van_der_waals += well * seventh * (repulsion - splat(2.0));
         electrostatic += scaled;
 
         let (x, y, z) = (
-            (x * scale).to_array(),
-            (y * scale).to_array(),
-            (z * scale).to_array(),
+            simd.to_array(x * scale),
+            simd.to_array(y * scale),
+            simd.to_array(z * scale),
         );
         for lane in 0..LANES {
             let step = Vector3D::new(x[lane], y[lane], z[lane]);
@@ -743,8 +921,8 @@ pub(super) fn nonbonded_energies_and_gradient(
     }
 
     let (mut van_der_waals, mut electrostatic) = (
-        horizontal_sum(van_der_waals),
-        horizontal_sum(electrostatic),
+        horizontal_sum(simd.to_array(van_der_waals)),
+        horizontal_sum(simd.to_array(electrostatic)),
     );
     for index in whole..pairs.len() {
         let (repulsive, coulombic) =
@@ -756,9 +934,8 @@ pub(super) fn nonbonded_energies_and_gradient(
 }
 
 /// The four lanes added up, pairwise so the order is at least fixed.
-#[inline]
-fn horizontal_sum(value: wide::f64x4) -> f64 {
-    let lanes = value.to_array();
+#[inline(always)]
+fn horizontal_sum(lanes: [f64; LANES]) -> f64 {
     (lanes[0] + lanes[1]) + (lanes[2] + lanes[3])
 }
 
@@ -819,6 +996,51 @@ mod tests {
         for (got, want) in gradient.iter().zip(&want_gradient) {
             for axis in [got.x - want.x, got.y - want.y, got.z - want.z] {
                 assert!(axis.abs() < 1e-9, "gradient differs by {axis}");
+            }
+        }
+    }
+
+    /// The AVX lanes are the portable ones in a wider register: same
+    /// operations, same order, so the same bits. Anything less and the
+    /// embedding would depend on which machine ran it. Includes a
+    /// coincident pair, which is where `0 - x` and a sign flip part ways.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
+        let Some(simd) = pulp::x86::V3::try_new() else {
+            return;
+        };
+        let mut positions: Vec<Vector3D> = (0..23)
+            .map(|index| {
+                let t = index as f64 * 0.77;
+                Vector3D::new(t.sin() * 4.0, t.cos() * 3.0, index as f64 * 0.31)
+            })
+            .collect();
+        positions[7] = positions[3];
+        let mut pairs = NonBondedPairs::default();
+        for i in 0..positions.len() {
+            for j in (i + 2)..positions.len() {
+                pairs.push(NonBonded::new(i, j, 3.0 + 0.05 * i as f64, 0.05 + 0.003 * j as f64, 0.01 * (i as f64 - j as f64)));
+            }
+        }
+
+        let portable = nonbonded_energies_in(Portable, &pairs, &positions);
+        let avx = simd.vectorize(|| nonbonded_energies_in(Avx(simd), &pairs, &positions));
+        assert_eq!(portable.0.to_bits(), avx.0.to_bits());
+        assert_eq!(portable.1.to_bits(), avx.1.to_bits());
+
+        let mut portable_gradient = vec![Vector3D::default(); positions.len()];
+        let mut avx_gradient = portable_gradient.clone();
+        let portable =
+            nonbonded_energies_and_gradient_in(Portable, &pairs, &positions, &mut portable_gradient);
+        let avx = simd.vectorize(|| {
+            nonbonded_energies_and_gradient_in(Avx(simd), &pairs, &positions, &mut avx_gradient)
+        });
+        assert_eq!(portable.0.to_bits(), avx.0.to_bits());
+        assert_eq!(portable.1.to_bits(), avx.1.to_bits());
+        for (one, other) in portable_gradient.iter().zip(&avx_gradient) {
+            for (a, b) in [(one.x, other.x), (one.y, other.y), (one.z, other.z)] {
+                assert_eq!(a.to_bits(), b.to_bits());
             }
         }
     }

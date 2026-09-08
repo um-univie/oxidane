@@ -12,6 +12,7 @@
 //! it.
 
 use super::params::UffType;
+use crate::molecule::forcefield::lanes::{LANES, Lanes, horizontal_sum};
 use crate::vector::Vector3D;
 
 /// `G` in UFF, the prefactor that turns effective charges into a force
@@ -80,11 +81,37 @@ pub(super) struct Inversion {
 }
 
 /// A non-bonded pair, with its Lennard-Jones minimum and well depth.
+#[derive(Clone, Copy)]
 pub(super) struct VanDerWaals {
     pub i: usize,
     pub j: usize,
     pub distance: f64,
     pub well_depth: f64,
+}
+
+/// Every nonbonded pair, one array per field, for the vectorised loop --
+/// the layout MMFF's `NonBondedPairs` uses, for the same reason. The minimum
+/// is stored squared: the Lennard-Jones form needs only `(r0 / r)^2`, so the
+/// loop takes no square root at all.
+#[derive(Default)]
+pub(super) struct VanDerWaalsPairs {
+    i: Vec<u32>,
+    j: Vec<u32>,
+    minimum_squared: Vec<f64>,
+    well_depth: Vec<f64>,
+}
+
+impl VanDerWaalsPairs {
+    pub(super) fn push(&mut self, pair: VanDerWaals) {
+        self.i.push(pair.i as u32);
+        self.j.push(pair.j as u32);
+        self.minimum_squared.push(pair.distance * pair.distance);
+        self.well_depth.push(pair.well_depth);
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.i.len()
+    }
 }
 
 /// UFF's equilibrium bond length: the two valence radii, shortened for bond
@@ -126,6 +153,7 @@ pub(super) fn angle_force_constant(
 
 /// `cos(n * x)` from `cos(x)`, by the Chebyshev recurrence, for the folds
 /// UFF uses.
+#[inline(always)]
 fn cos_multiple(fold: u32, cos_x: f64) -> f64 {
     let sin_sq = 1.0 - cos_x * cos_x;
     match fold {
@@ -142,15 +170,18 @@ fn cos_multiple(fold: u32, cos_x: f64) -> f64 {
 }
 
 /// `d/dx cos(n x)` expressed as `-n * sin(n x)`.
+#[inline(always)]
 fn d_cos_multiple(fold: u32, x: f64) -> f64 {
     -(fold as f64) * (fold as f64 * x).sin()
 }
 
+#[inline(always)]
 pub(super) fn bond_energy(positions: &[Vector3D], bond: &Bond) -> f64 {
     let separation = positions[bond.i].distance(&positions[bond.j]) - bond.rest_length;
     0.5 * bond.force_constant * separation * separation
 }
 
+#[inline(always)]
 pub(super) fn bond_energy_and_gradient(
     positions: &[Vector3D],
     bond: &Bond,
@@ -169,6 +200,7 @@ pub(super) fn bond_energy_and_gradient(
 }
 
 /// `theta` and `d(theta)/dp` for the three atoms of an angle.
+#[inline(always)]
 fn angle_and_gradient(positions: &[Vector3D], angle: &Angle) -> Option<(f64, [Vector3D; 3])> {
     let first = positions[angle.i] - positions[angle.k];
     let second = positions[angle.j] - positions[angle.k];
@@ -195,6 +227,7 @@ fn angle_and_gradient(positions: &[Vector3D], angle: &Angle) -> Option<(f64, [Ve
     Some((cos_theta.acos(), [d_i, -(d_i + d_j), d_j]))
 }
 
+#[inline(always)]
 fn angle_energy_from(angle: &Angle, theta: f64) -> f64 {
     let cos_theta = theta.cos();
     match angle.fold {
@@ -216,6 +249,7 @@ fn angle_energy_from(angle: &Angle, theta: f64) -> f64 {
     }
 }
 
+#[inline(always)]
 pub(super) fn angle_energy(positions: &[Vector3D], angle: &Angle) -> f64 {
     match angle_and_gradient(positions, angle) {
         Some((theta, _)) => angle_energy_from(angle, theta),
@@ -223,6 +257,7 @@ pub(super) fn angle_energy(positions: &[Vector3D], angle: &Angle) -> f64 {
     }
 }
 
+#[inline(always)]
 pub(super) fn angle_energy_and_gradient(
     positions: &[Vector3D],
     angle: &Angle,
@@ -254,6 +289,7 @@ pub(super) fn angle_energy_and_gradient(
 
 /// The dihedral `i-b-c-j` and `d(phi)/dp` for its four atoms, indexed into
 /// `positions`.
+#[inline(always)]
 fn dihedral_and_gradient(
     positions: &[Vector3D],
     i: usize,
@@ -264,6 +300,7 @@ fn dihedral_and_gradient(
     crate::vector::dihedral_and_gradient(positions[i], positions[b], positions[c], positions[j])
 }
 
+#[inline(always)]
 pub(super) fn torsion_energy(positions: &[Vector3D], torsion: &Torsion) -> f64 {
     match crate::vector::dihedral_cosine_sine(
         positions[torsion.i],
@@ -279,6 +316,7 @@ pub(super) fn torsion_energy(positions: &[Vector3D], torsion: &Torsion) -> f64 {
     }
 }
 
+#[inline(always)]
 pub(super) fn torsion_energy_and_gradient(
     positions: &[Vector3D],
     torsion: &Torsion,
@@ -303,34 +341,155 @@ pub(super) fn torsion_energy_and_gradient(
     energy
 }
 
-pub(super) fn van_der_waals_energy(positions: &[Vector3D], pair: &VanDerWaals) -> f64 {
-    let distance = positions[pair.i].distance(&positions[pair.j]);
-    if distance < MIN_VDW_SEPARATION {
-        return f64::INFINITY;
+/// The Lennard-Jones energy of one pair, from its squared separation.
+/// Written as the lanes below write it, so the remainder they leave to
+/// this agrees with them to the bit.
+#[inline(always)]
+fn lennard_jones(minimum_squared: f64, well_depth: f64, squared: f64) -> (f64, f64) {
+    if !(squared > MIN_VDW_SEPARATION * MIN_VDW_SEPARATION) {
+        return (f64::INFINITY, 0.0);
     }
-    let ratio = pair.distance / distance;
-    let six = ratio.powi(6);
-    pair.well_depth * (six * six - 2.0 * six)
+    let inverse = 1.0 / squared;
+    let ratio = minimum_squared * inverse;
+    let six = ratio * ratio * ratio;
+    // dE/dr = 12 * D * (r6 - r12) / distance, along offset / distance.
+    let scale = 12.0 * well_depth * (six - six * six) * inverse;
+    (well_depth * (six * six - 2.0 * six), scale)
 }
 
+#[cfg(test)]
+pub(super) fn van_der_waals_energy(positions: &[Vector3D], pair: &VanDerWaals) -> f64 {
+    let offset = positions[pair.i] - positions[pair.j];
+    lennard_jones(pair.distance * pair.distance, pair.well_depth, offset.dot(&offset)).0
+}
+
+#[cfg(test)]
 pub(super) fn van_der_waals_energy_and_gradient(
     positions: &[Vector3D],
     pair: &VanDerWaals,
     gradient: &mut [Vector3D],
 ) -> f64 {
     let offset = positions[pair.i] - positions[pair.j];
-    let distance = offset.length();
-    if distance < MIN_VDW_SEPARATION {
-        return f64::INFINITY;
-    }
-    let ratio = pair.distance / distance;
-    let six = ratio.powi(6);
-    let energy = pair.well_depth * (six * six - 2.0 * six);
-    // dE/dr = 12 * D * (r6 - r12) / distance
-    let scale = 12.0 * pair.well_depth * (six - six * six) / (distance * distance);
+    let (energy, scale) =
+        lennard_jones(pair.distance * pair.distance, pair.well_depth, offset.dot(&offset));
     gradient[pair.i] += offset * scale;
     gradient[pair.j] += -(offset * scale);
     energy
+}
+
+/// One lane-width of pair offsets, and the squared separations.
+#[inline(always)]
+fn lane_offsets<L: Lanes>(
+    simd: L,
+    pairs: &VanDerWaalsPairs,
+    positions: &[Vector3D],
+    start: usize,
+) -> ([L::Vector; 3], L::Vector) {
+    let mut x = [0.0; LANES];
+    let mut y = [0.0; LANES];
+    let mut z = [0.0; LANES];
+    for lane in 0..LANES {
+        let offset = positions[pairs.i[start + lane] as usize]
+            - positions[pairs.j[start + lane] as usize];
+        x[lane] = offset.x;
+        y[lane] = offset.y;
+        z[lane] = offset.z;
+    }
+    let (x, y, z) = (simd.from_array(x), simd.from_array(y), simd.from_array(z));
+    ([x, y, z], x * x + y * y + z * z)
+}
+
+#[inline(always)]
+fn lane<L: Lanes>(simd: L, values: &[f64], start: usize) -> L::Vector {
+    simd.from_array([values[start], values[start + 1], values[start + 2], values[start + 3]])
+}
+
+/// [`lennard_jones`] four pairs at a time.
+#[inline(always)]
+fn lennard_jones_lanes<L: Lanes>(
+    simd: L,
+    minimum_squared: L::Vector,
+    well_depth: L::Vector,
+    squared: L::Vector,
+) -> (L::Vector, L::Vector) {
+    let splat = |value| simd.splat(value);
+    let inverse = splat(1.0) / squared;
+    let ratio = minimum_squared * inverse;
+    let six = ratio * ratio * ratio;
+    let scale = splat(12.0) * well_depth * (six - six * six) * inverse;
+    let energy = well_depth * (six * six - splat(2.0) * six);
+    let separated = splat(MIN_VDW_SEPARATION * MIN_VDW_SEPARATION);
+    (
+        simd.select_greater(squared, separated, energy, splat(f64::INFINITY)),
+        simd.select_greater(squared, separated, scale, splat(0.0)),
+    )
+}
+
+/// The Lennard-Jones energy of every pair, on the lanes `simd` provides.
+#[inline(always)]
+pub(super) fn van_der_waals_energies_in<L: Lanes>(
+    simd: L,
+    pairs: &VanDerWaalsPairs,
+    positions: &[Vector3D],
+) -> f64 {
+    let mut total = simd.splat(0.0);
+    let whole = pairs.len() - pairs.len() % LANES;
+    let mut start = 0;
+    while start < whole {
+        let (_, squared) = lane_offsets(simd, pairs, positions, start);
+        let minimum_squared = lane(simd, &pairs.minimum_squared, start);
+        let well_depth = lane(simd, &pairs.well_depth, start);
+        total += lennard_jones_lanes(simd, minimum_squared, well_depth, squared).0;
+        start += LANES;
+    }
+    let mut total = horizontal_sum(simd.to_array(total));
+    for index in whole..pairs.len() {
+        let offset = positions[pairs.i[index] as usize] - positions[pairs.j[index] as usize];
+        total += lennard_jones(pairs.minimum_squared[index], pairs.well_depth[index], offset.dot(&offset)).0;
+    }
+    total
+}
+
+/// [`van_der_waals_energies_in`], accumulating the gradient.
+#[inline(always)]
+pub(super) fn van_der_waals_energies_and_gradient_in<L: Lanes>(
+    simd: L,
+    pairs: &VanDerWaalsPairs,
+    positions: &[Vector3D],
+    gradient: &mut [Vector3D],
+) -> f64 {
+    let mut total = simd.splat(0.0);
+    let whole = pairs.len() - pairs.len() % LANES;
+    let mut start = 0;
+    while start < whole {
+        let ([x, y, z], squared) = lane_offsets(simd, pairs, positions, start);
+        let minimum_squared = lane(simd, &pairs.minimum_squared, start);
+        let well_depth = lane(simd, &pairs.well_depth, start);
+        let (energy, scale) = lennard_jones_lanes(simd, minimum_squared, well_depth, squared);
+        total += energy;
+        let (x, y, z) = (
+            simd.to_array(x * scale),
+            simd.to_array(y * scale),
+            simd.to_array(z * scale),
+        );
+        for lane in 0..LANES {
+            let step = Vector3D::new(x[lane], y[lane], z[lane]);
+            gradient[pairs.i[start + lane] as usize] += step;
+            gradient[pairs.j[start + lane] as usize] += -step;
+        }
+        start += LANES;
+    }
+    let mut total = horizontal_sum(simd.to_array(total));
+    for index in whole..pairs.len() {
+        let (i, j) = (pairs.i[index] as usize, pairs.j[index] as usize);
+        let offset = positions[i] - positions[j];
+        let (energy, scale) =
+            lennard_jones(pairs.minimum_squared[index], pairs.well_depth[index], offset.dot(&offset));
+        total += energy;
+        gradient[i] += offset * scale;
+        gradient[j] += -(offset * scale);
+    }
+    total
 }
 
 /// `sin(omega)` for [`Inversion`]'s Wilson angle, and `d(sin omega)/dp` for
@@ -339,6 +498,7 @@ pub(super) fn van_der_waals_energy_and_gradient(
 /// Taking the sine rather than the angle keeps the whole expression
 /// rational: it is `n . l` for the unit plane normal `n` and the unit bond
 /// `l`, and the energy needs only its cosine, which is `sqrt(1 - sin^2)`.
+#[inline(always)]
 fn out_of_plane_and_gradient(
     positions: &[Vector3D],
     inversion: &Inversion,
@@ -363,12 +523,14 @@ fn out_of_plane_and_gradient(
     Some((sine, [d_first, d_second, d_centre, d_out]))
 }
 
+#[inline(always)]
 fn inversion_energy_from(inversion: &Inversion, sine: f64) -> f64 {
     let cosine = (1.0 - sine * sine).max(0.0).sqrt();
     inversion.force_constant
         * (inversion.c0 + inversion.c1 * cosine + inversion.c2 * (2.0 * cosine * cosine - 1.0))
 }
 
+#[inline(always)]
 pub(super) fn inversion_energy(positions: &[Vector3D], inversion: &Inversion) -> f64 {
     match out_of_plane_and_gradient(positions, inversion) {
         Some((sine, _)) => inversion_energy_from(inversion, sine),
@@ -376,6 +538,7 @@ pub(super) fn inversion_energy(positions: &[Vector3D], inversion: &Inversion) ->
     }
 }
 
+#[inline(always)]
 pub(super) fn inversion_energy_and_gradient(
     positions: &[Vector3D],
     inversion: &Inversion,
@@ -460,4 +623,104 @@ mod tests {
             f64::INFINITY
         );
     }
+
+    /// Pairs for the lane tests: 23 atoms on a helix, two of them on top of
+    /// each other, every pair but bonded neighbours, so the pair count is
+    /// not a multiple of the lane width.
+    fn helix_pairs() -> (Vec<Vector3D>, Vec<VanDerWaals>, VanDerWaalsPairs) {
+        let mut positions: Vec<Vector3D> = (0..23)
+            .map(|index| {
+                let t = index as f64 * 0.77;
+                Vector3D::new(t.sin() * 4.0, t.cos() * 3.0, index as f64 * 0.31)
+            })
+            .collect();
+        positions[7] = positions[3];
+        let mut scalar = Vec::new();
+        let mut pairs = VanDerWaalsPairs::default();
+        for i in 0..positions.len() {
+            for j in (i + 2)..positions.len() {
+                let pair = VanDerWaals {
+                    i,
+                    j,
+                    distance: 3.0 + 0.05 * i as f64,
+                    well_depth: 0.05 + 0.003 * j as f64,
+                };
+                scalar.push(pair);
+                pairs.push(pair);
+            }
+        }
+        assert_ne!(pairs.len() % LANES, 0);
+        (positions, scalar, pairs)
+    }
+
+    /// The lanes are the scalar term four at a time: same energy up to the
+    /// order of the sum, and the same gradient.
+    #[test]
+    fn the_vectorised_pairs_agree_with_the_scalar_ones() {
+        let (mut positions, scalar, pairs) = helix_pairs();
+        // Apart, so the energy is finite and comparable.
+        positions[7] = positions[7] + Vector3D::new(0.4, 0.0, 0.0);
+        let portable = crate::molecule::forcefield::lanes::Portable;
+
+        let mut want_gradient = vec![Vector3D::default(); positions.len()];
+        let want: f64 = scalar
+            .iter()
+            .map(|pair| van_der_waals_energy_and_gradient(&positions, pair, &mut want_gradient))
+            .sum();
+        let energy = van_der_waals_energies_in(portable, &pairs, &positions);
+        assert!((energy - want).abs() < 1e-9 * want.abs().max(1.0), "{energy} against {want}");
+
+        let mut gradient = vec![Vector3D::default(); positions.len()];
+        let energy = van_der_waals_energies_and_gradient_in(portable, &pairs, &positions, &mut gradient);
+        assert!((energy - want).abs() < 1e-9 * want.abs().max(1.0), "{energy} against {want}");
+        for (got, want) in gradient.iter().zip(&want_gradient) {
+            for axis in [got.x - want.x, got.y - want.y, got.z - want.z] {
+                assert!(axis.abs() < 1e-9 * want.length().max(1.0), "gradient differs by {axis}");
+            }
+        }
+
+        // And an exact overlap is infinite in lanes as in scalar.
+        positions[7] = positions[3];
+        assert_eq!(van_der_waals_energies_in(portable, &pairs, &positions), f64::INFINITY);
+    }
+
+    /// AVX and portable lanes agree to the bit, overlap included.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
+        use crate::molecule::forcefield::lanes::{Avx, Portable};
+        let Some(simd) = pulp::x86::V3::try_new() else {
+            return;
+        };
+        let (mut positions, _, pairs) = helix_pairs();
+        for overlap in [false, true] {
+            if !overlap {
+                positions[7] = positions[3] + Vector3D::new(0.4, 0.0, 0.0);
+            } else {
+                positions[7] = positions[3];
+            }
+            let portable = van_der_waals_energies_in(Portable, &pairs, &positions);
+            let avx = simd.vectorize(|| van_der_waals_energies_in(Avx(simd), &pairs, &positions));
+            assert_eq!(portable.to_bits(), avx.to_bits());
+
+            let mut portable_gradient = vec![Vector3D::default(); positions.len()];
+            let mut avx_gradient = portable_gradient.clone();
+            let portable = van_der_waals_energies_and_gradient_in(
+                Portable,
+                &pairs,
+                &positions,
+                &mut portable_gradient,
+            );
+            let avx = simd.vectorize(|| {
+                van_der_waals_energies_and_gradient_in(Avx(simd), &pairs, &positions, &mut avx_gradient)
+            });
+            assert_eq!(portable.to_bits(), avx.to_bits());
+            for (one, other) in portable_gradient.iter().zip(&avx_gradient) {
+                for (a, b) in [(one.x, other.x), (one.y, other.y), (one.z, other.z)] {
+                    assert_eq!(a.to_bits(), b.to_bits());
+                }
+            }
+        }
+    }
+
 }

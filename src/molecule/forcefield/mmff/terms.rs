@@ -8,6 +8,9 @@
 //! throughout, which is why the conversion factors appear where they do.
 
 use super::assign::DEGREES_TO_RADIANS;
+use crate::molecule::forcefield::lanes::{LANES, Lanes, horizontal_sum};
+#[cfg(test)]
+use crate::molecule::forcefield::lanes::Portable;
 use crate::vector::Vector3D;
 
 /// Millidyne-angstrom to kcal/mol, the unit conversion every MMFF force
@@ -197,8 +200,6 @@ impl NonBondedPairs {
     }
 }
 
-/// How many pairs one pass of the vectorised loop covers.
-const LANES: usize = 4;
 
 /// The buffering constants of MMFF's 14-7: `NEAR` softens the attractive
 /// separation and `FAR` the repulsive one, so that two atoms on top of each
@@ -620,147 +621,6 @@ pub(super) fn nonbonded_energy_and_gradient(
     (pair.well * seventh * (repulsion - 2.0), coulombic)
 }
 
-/// Four `f64` lanes, and the few operations the pair loop needs beyond
-/// arithmetic.
-///
-/// Two of these exist. [`Portable`] is `wide::f64x4`, whose instruction set is
-/// fixed when the crate is compiled -- for baseline x86-64 that is two SSE2
-/// halves. [`Avx`] is the same four lanes in one AVX register, available only
-/// once [`pulp`] has confirmed the CPU has AVX2 and only inside code it has
-/// compiled for it; see `ForceField::energy_and_gradient`. Both do exactly
-/// the same IEEE operations in the same order, so they agree to the bit and
-/// the choice between them changes speed, not results.
-pub(super) trait Lanes: Copy {
-    type Vector: Copy
-        + core::ops::Add<Output = Self::Vector>
-        + core::ops::Sub<Output = Self::Vector>
-        + core::ops::Mul<Output = Self::Vector>
-        + core::ops::Div<Output = Self::Vector>
-        + core::ops::Neg<Output = Self::Vector>
-        + core::ops::AddAssign;
-
-    fn splat(self, value: f64) -> Self::Vector;
-    fn from_array(self, values: [f64; LANES]) -> Self::Vector;
-    fn to_array(self, vector: Self::Vector) -> [f64; LANES];
-    fn sqrt(self, vector: Self::Vector) -> Self::Vector;
-    /// `value` where `left > right`, zero elsewhere.
-    fn where_greater(
-        self,
-        left: Self::Vector,
-        right: Self::Vector,
-        value: Self::Vector,
-    ) -> Self::Vector;
-}
-
-/// [`Lanes`] on `wide`, for whatever the crate was compiled for.
-#[derive(Clone, Copy)]
-pub(super) struct Portable;
-
-impl Lanes for Portable {
-    type Vector = wide::f64x4;
-
-    #[inline(always)]
-    fn splat(self, value: f64) -> wide::f64x4 {
-        wide::f64x4::splat(value)
-    }
-    #[inline(always)]
-    fn from_array(self, values: [f64; LANES]) -> wide::f64x4 {
-        wide::f64x4::new(values)
-    }
-    #[inline(always)]
-    fn to_array(self, vector: wide::f64x4) -> [f64; LANES] {
-        vector.to_array()
-    }
-    #[inline(always)]
-    fn sqrt(self, vector: wide::f64x4) -> wide::f64x4 {
-        vector.sqrt()
-    }
-    #[inline(always)]
-    fn where_greater(self, left: wide::f64x4, right: wide::f64x4, value: wide::f64x4) -> wide::f64x4 {
-        wide::CmpGt::cmp_gt(left, right).blend(value, wide::f64x4::ZERO)
-    }
-}
-
-/// [`Lanes`] in one 256-bit register. Holding a `pulp::x86::V3` is the proof
-/// that the CPU has AVX2, which is what makes the operations below sound.
-#[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-pub(super) struct Avx(pub(super) pulp::x86::V3);
-
-/// One [`Avx`] vector. It carries the token so the arithmetic operators can
-/// reach the instructions.
-#[cfg(target_arch = "x86_64")]
-#[derive(Clone, Copy)]
-pub(super) struct AvxVector(pulp::x86::V3, pulp::f64x4);
-
-#[cfg(target_arch = "x86_64")]
-macro_rules! avx_binary {
-    ($trait:ident, $method:ident, $instruction:ident) => {
-        impl core::ops::$trait for AvxVector {
-            type Output = AvxVector;
-            #[inline(always)]
-            fn $method(self, other: AvxVector) -> AvxVector {
-                AvxVector(self.0, self.0.$instruction(self.1, other.1))
-            }
-        }
-    };
-}
-#[cfg(target_arch = "x86_64")]
-avx_binary!(Add, add, add_f64x4);
-#[cfg(target_arch = "x86_64")]
-avx_binary!(Sub, sub, sub_f64x4);
-#[cfg(target_arch = "x86_64")]
-avx_binary!(Mul, mul, mul_f64x4);
-#[cfg(target_arch = "x86_64")]
-avx_binary!(Div, div, div_f64x4);
-
-#[cfg(target_arch = "x86_64")]
-impl core::ops::Neg for AvxVector {
-    type Output = AvxVector;
-    /// `0 - x`, as `wide` does it, rather than a sign flip: the two differ
-    /// on a zero, and the paths have to agree to the bit.
-    #[inline(always)]
-    fn neg(self) -> AvxVector {
-        AvxVector(self.0, self.0.sub_f64x4(self.0.splat_f64x4(0.0), self.1))
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-impl core::ops::AddAssign for AvxVector {
-    #[inline(always)]
-    fn add_assign(&mut self, other: AvxVector) {
-        *self = *self + other;
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-impl Lanes for Avx {
-    type Vector = AvxVector;
-
-    #[inline(always)]
-    fn splat(self, value: f64) -> AvxVector {
-        AvxVector(self.0, self.0.splat_f64x4(value))
-    }
-    #[inline(always)]
-    fn from_array(self, [a, b, c, d]: [f64; LANES]) -> AvxVector {
-        AvxVector(self.0, pulp::f64x4(a, b, c, d))
-    }
-    #[inline(always)]
-    fn to_array(self, vector: AvxVector) -> [f64; LANES] {
-        let pulp::f64x4(a, b, c, d) = vector.1;
-        [a, b, c, d]
-    }
-    #[inline(always)]
-    fn sqrt(self, vector: AvxVector) -> AvxVector {
-        AvxVector(self.0, self.0.sqrt_f64x4(vector.1))
-    }
-    #[inline(always)]
-    fn where_greater(self, left: AvxVector, right: AvxVector, value: AvxVector) -> AvxVector {
-        let mask = self.0.cmp_gt_f64x4(left.1, right.1);
-        AvxVector(self.0, self.0.select_f64x4(mask, value.1, self.0.splat_f64x4(0.0)))
-    }
-}
-
 /// Gathers one lane-width of pair offsets, and the squared distances.
 #[inline(always)]
 fn lane_offsets<L: Lanes>(
@@ -902,7 +762,7 @@ pub(super) fn nonbonded_energies_and_gradient_in<L: Lanes>(
         let scale = (derivative - scaled * inverse_far) / distance;
         // Two atoms on top of each other have no direction to push along.
         // Their energies are still finite, so only the gradient is dropped.
-        let scale = simd.where_greater(distance, splat(DEGENERATE_SEPARATION), scale);
+        let scale = simd.select_greater(distance, splat(DEGENERATE_SEPARATION), scale, splat(0.0));
 
         van_der_waals += well * seventh * (repulsion - splat(2.0));
         electrostatic += scaled;
@@ -933,11 +793,6 @@ pub(super) fn nonbonded_energies_and_gradient_in<L: Lanes>(
     (van_der_waals, electrostatic)
 }
 
-/// The four lanes added up, pairwise so the order is at least fixed.
-#[inline(always)]
-fn horizontal_sum(lanes: [f64; LANES]) -> f64 {
-    (lanes[0] + lanes[1]) + (lanes[2] + lanes[3])
-}
 
 /// Below this separation a pair has no gradient direction, only an energy.
 const DEGENERATE_SEPARATION: f64 = 1e-8;
@@ -1007,6 +862,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
+        use crate::molecule::forcefield::lanes::Avx;
         let Some(simd) = pulp::x86::V3::try_new() else {
             return;
         };

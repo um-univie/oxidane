@@ -74,13 +74,14 @@ mod terms;
 pub(crate) mod typing;
 
 use super::UntypedAtom;
+use super::lanes;
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::bond::{BondOrder, BondTarget};
 use crate::molecule::featurize::{Hybridization, hybridization};
 use crate::molecule::minimize::{Energy, minimize};
 use crate::vector::Vector3D;
 use params::UffType;
-use terms::{Angle, Bond, Inversion, Torsion, VanDerWaals};
+use terms::{Angle, Bond, Inversion, Torsion, VanDerWaals, VanDerWaalsPairs};
 
 /// Squared gradient-norm threshold below which minimisation is finished;
 /// `minimize` compares against `|g|^2`, so this stops at `|g| < 1e-3`.
@@ -101,7 +102,7 @@ pub struct ForceField {
     angles: Vec<Angle>,
     torsions: Vec<Torsion>,
     inversions: Vec<Inversion>,
-    nonbonded: Vec<VanDerWaals>,
+    nonbonded: VanDerWaalsPairs,
 }
 
 /// UFF's bond order for the resonance in an amide's C-N bond, from the
@@ -386,9 +387,9 @@ impl ForceField {
     fn collect_nonbonded<M: MoleculeCore + ?Sized>(
         molecule: &M,
         types: &[&'static UffType],
-    ) -> Vec<VanDerWaals> {
+    ) -> VanDerWaalsPairs {
         let count = molecule.len();
-        let mut nonbonded = Vec::new();
+        let mut nonbonded = VanDerWaalsPairs::default();
         for i in 0..count {
             let hops = bond_hops_from(molecule, i);
             for j in (i + 1)..count {
@@ -417,8 +418,39 @@ impl ForceField {
     }
 }
 
+/// Both evaluations pick their instruction set per call, as MMFF's do: AVX2
+/// through [`pulp`] where the CPU has it, otherwise whatever the crate was
+/// compiled for, with the same bits either way -- see [`lanes::Lanes`].
 impl Energy for ForceField {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = pulp::x86::V3::try_new() {
+            return simd.vectorize(
+                #[inline(always)]
+                || self.energy_in(lanes::Avx(simd), positions),
+            );
+        }
+        self.energy_in(lanes::Portable, positions)
+    }
+
+    fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(simd) = pulp::x86::V3::try_new() {
+            return simd.vectorize(
+                #[inline(always)]
+                || self.energy_and_gradient_in(lanes::Avx(simd), positions, gradient),
+            );
+        }
+        self.energy_and_gradient_in(lanes::Portable, positions, gradient)
+    }
+}
+
+impl ForceField {
+    /// [`Energy::energy`] on the lanes `simd` provides. Inlined whole, so
+    /// that inside [`pulp`]'s dispatch every term is compiled for the
+    /// instruction set it found.
+    #[inline(always)]
+    fn energy_in<L: lanes::Lanes>(&self, simd: L, positions: &[Vector3D]) -> f64 {
         self.bonds
             .iter()
             .map(|b| terms::bond_energy(positions, b))
@@ -438,14 +470,17 @@ impl Energy for ForceField {
                 .iter()
                 .map(|v| terms::inversion_energy(positions, v))
                 .sum::<f64>()
-            + self
-                .nonbonded
-                .iter()
-                .map(|p| terms::van_der_waals_energy(positions, p))
-                .sum::<f64>()
+            + terms::van_der_waals_energies_in(simd, &self.nonbonded, positions)
     }
 
-    fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
+    /// [`Energy::energy_and_gradient`] on the lanes `simd` provides.
+    #[inline(always)]
+    fn energy_and_gradient_in<L: lanes::Lanes>(
+        &self,
+        simd: L,
+        positions: &[Vector3D],
+        gradient: &mut [Vector3D],
+    ) -> f64 {
         gradient.fill(Vector3D::default());
         let mut energy = 0.0;
         for bond in &self.bonds {
@@ -460,9 +495,7 @@ impl Energy for ForceField {
         for inversion in &self.inversions {
             energy += terms::inversion_energy_and_gradient(positions, inversion, gradient);
         }
-        for pair in &self.nonbonded {
-            energy += terms::van_der_waals_energy_and_gradient(positions, pair, gradient);
-        }
+        energy += terms::van_der_waals_energies_and_gradient_in(simd, &self.nonbonded, positions, gradient);
         energy
     }
 }

@@ -11,6 +11,7 @@
 //! The unqualified [`ForceField`] is UFF's; [`Field::best_for`] selects the
 //! field used for embedding relaxation.
 
+mod lanes;
 pub mod mmff;
 pub mod uff;
 

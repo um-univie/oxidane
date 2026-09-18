@@ -4,6 +4,8 @@
 //! the upper bound is stored at `[i, j]` and the lower bound at `[j, i]`.
 
 use super::EmbedError;
+use crate::molecule::forcefield::lanes::{self, LANES, Lanes};
+use crate::molecule::minimize::Coordinate;
 use crate::molecule::{base::MoleculeCore, bond::BondOrder, chirality::ChiralClass};
 use bit_set::BitSet;
 use chemistry_consts::ElementProperties;
@@ -921,10 +923,7 @@ impl Pairs {
 /// `E = max(0, d^2 - u^2)^2 / u^2 + max(0, l^2 - d^2)^2 / l^2`: flat between
 /// the bounds, quartic in the distance outside them, and free of the `sqrt`
 /// a distance would need.
-pub(crate) fn pair_violation<C>(pair: &Pair, positions: &[C]) -> (f64, C)
-where
-    C: crate::molecule::minimize::Coordinate,
-{
+pub(crate) fn pair_violation<C: Coordinate>(pair: &Pair, positions: &[C]) -> (f64, C) {
     let difference = positions[pair.i as usize] - positions[pair.j as usize];
     let squared = difference.dot(&difference);
 
@@ -943,6 +942,110 @@ where
     }
 
     (energy, gradient)
+}
+
+/// Every pair's violation energy summed, and -- given somewhere to put it --
+/// every pair's gradient added into `gradient`.
+///
+/// [`pair_violation`] four pairs at a time, in whichever lanes the CPU
+/// offers: AVX2 where [`pulp`] finds it, `wide` otherwise, with the same
+/// bits either way (see `forcefield::lanes`). Every distance-geometry pass
+/// spends most of its time in this loop.
+pub(crate) fn pair_violations<C: Coordinate>(
+    pairs: &[Pair],
+    positions: &[C],
+    gradient: Option<&mut [C]>,
+) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(simd) = pulp::x86::V3::try_new() {
+        return simd.vectorize(
+            #[inline(always)]
+            || pair_violations_in(lanes::Avx(simd), pairs, positions, gradient),
+        );
+    }
+    pair_violations_in(lanes::Portable, pairs, positions, gradient)
+}
+
+/// [`pair_violations`] on the lanes `simd` provides.
+///
+/// Branch-free: a pair inside its window has a zero excess and a zero
+/// deficit rather than a skipped term, which gives each pair exactly the
+/// energy and gradient [`pair_violation`] does. The energies are then added
+/// one pair at a time, in order, rather than per lane: that keeps the total
+/// bit for bit the scalar loop's. Summing per lane was tried, and the last
+/// few bits it moves are enough to send line searches elsewhere -- PubChem's
+/// 287 came out 14 better and 19 worse against RDKit, a mean 0.15 kcal/mol
+/// worse, for perhaps one percent more speed than this version.
+#[inline(always)]
+fn pair_violations_in<L: Lanes, C: Coordinate>(
+    simd: L,
+    pairs: &[Pair],
+    positions: &[C],
+    mut gradient: Option<&mut [C]>,
+) -> f64 {
+    let zero = simd.splat(0.0);
+    let four = simd.splat(4.0);
+    let mut energy = 0.0;
+    let (chunks, remainder) = pairs.as_chunks::<LANES>();
+    for chunk in chunks {
+        let field = |value: fn(&Pair) -> f64| {
+            simd.from_array([
+                value(&chunk[0]),
+                value(&chunk[1]),
+                value(&chunk[2]),
+                value(&chunk[3]),
+            ])
+        };
+        let axis = |atom: fn(&Pair) -> u32, axis: usize| {
+            simd.from_array(std::array::from_fn(|lane| {
+                positions[atom(&chunk[lane]) as usize].axis(axis)
+            }))
+        };
+        let mut difference = [zero; 4];
+        for (dimension, slot) in difference.iter_mut().enumerate().take(C::DIMENSIONS) {
+            *slot = axis(|pair| pair.i, dimension) - axis(|pair| pair.j, dimension);
+        }
+        let mut squared = difference[0] * difference[0];
+        for slot in &difference[1..C::DIMENSIONS] {
+            squared += *slot * *slot;
+        }
+
+        let (upper_sq, lower_sq) = (field(|pair| pair.upper_sq), field(|pair| pair.lower_sq));
+        let inverse_upper_sq = field(|pair| pair.inverse_upper_sq);
+        let inverse_lower_sq = field(|pair| pair.inverse_lower_sq);
+        let excess = simd.select_greater(squared, upper_sq, squared - upper_sq, zero);
+        let deficit = simd.select_greater(lower_sq, squared, lower_sq - squared, zero);
+        let violations = excess * excess * inverse_upper_sq + deficit * deficit * inverse_lower_sq;
+        for violation in simd.to_array(violations) {
+            energy += violation;
+        }
+
+        if let Some(gradient) = gradient.as_deref_mut() {
+            let scale = four * excess * inverse_upper_sq - four * deficit * inverse_lower_sq;
+            let mut steps = [[0.0; LANES]; 4];
+            for (dimension, step) in steps.iter_mut().enumerate().take(C::DIMENSIONS) {
+                *step = simd.to_array(difference[dimension] * scale);
+            }
+            for (lane, pair) in chunk.iter().enumerate() {
+                let mut step = C::default();
+                for (dimension, values) in steps.iter().enumerate().take(C::DIMENSIONS) {
+                    *step.axis_mut(dimension) = values[lane];
+                }
+                gradient[pair.i as usize] += step;
+                gradient[pair.j as usize] += -step;
+            }
+        }
+    }
+
+    for pair in remainder {
+        let (violation, derivative) = pair_violation(pair, positions);
+        energy += violation;
+        if let Some(gradient) = gradient.as_deref_mut() {
+            gradient[pair.i as usize] += derivative;
+            gradient[pair.j as usize] += -derivative;
+        }
+    }
+    energy
 }
 
 /// Distance windows for every 1-4 pair whose torsion the geometry actually
@@ -1637,6 +1740,92 @@ mod tests {
                     get_lower(&bounds, i, j) <= get_upper(&bounds, i, j) + 1e-6,
                     "bounds inconsistent for pair ({i}, {j})"
                 );
+            }
+        }
+    }
+
+    /// Caffeine's pairs with a scattered, partly collapsed structure: some
+    /// pairs too close, some too far, some inside their window, and a count
+    /// that leaves a remainder after the four-lane loop.
+    fn scattered_pairs() -> (Vec<Pair>, Vec<crate::vector::Vector4D>) {
+        let m = mol("Cn1cnc2c1c(=O)n(C)c(=O)n2C");
+        let mut bounds = build_bounds(
+            &m,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+            &ring_set(&m),
+        )
+        .unwrap();
+        smooth_bounds(&mut bounds).unwrap();
+        let mut pairs = Pairs::collect(&bounds).all().to_vec();
+        if pairs.len() % LANES == 0 {
+            pairs.pop();
+        }
+        let points = (0..bounds.nrows())
+            .map(|atom| {
+                let t = atom as f64;
+                crate::vector::Vector4D::new(
+                    (1.3 * t).sin() * 2.0,
+                    (0.7 * t).cos() * 1.5,
+                    0.2 * t,
+                    (2.1 * t).sin() * 0.5,
+                )
+            })
+            .collect();
+        (pairs, points)
+    }
+
+    #[test]
+    fn the_vectorised_pair_violations_agree_with_the_scalar_ones() {
+        let (pairs, points) = scattered_pairs();
+        let flat: Vec<crate::vector::Vector3D> = points.iter().map(|point| point.xyz()).collect();
+
+        let mut gradient = vec![crate::vector::Vector3D::default(); flat.len()];
+        let energy = pair_violations(&pairs, &flat, Some(&mut gradient));
+        let mut expected_gradient = vec![crate::vector::Vector3D::default(); flat.len()];
+        let mut expected = 0.0;
+        for pair in &pairs {
+            let (violation, derivative) = pair_violation(pair, &flat);
+            expected += violation;
+            expected_gradient[pair.i as usize] += derivative;
+            expected_gradient[pair.j as usize] += -derivative;
+        }
+        assert!(expected > 1.0, "the structure should violate its bounds");
+        assert_eq!(energy.to_bits(), expected.to_bits());
+        assert_eq!(
+            energy.to_bits(),
+            pair_violations(&pairs, &flat, None).to_bits()
+        );
+        // Each pair's step is the scalar one exactly, and the steps are added
+        // in the same order.
+        for (one, other) in gradient.iter().zip(&expected_gradient) {
+            for (a, b) in [(one.x, other.x), (one.y, other.y), (one.z, other.z)] {
+                assert_eq!(a.to_bits(), b.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
+        use crate::molecule::forcefield::lanes::{Avx, Portable};
+        use crate::vector::Vector4D;
+        let Some(simd) = pulp::x86::V3::try_new() else {
+            return;
+        };
+        let (pairs, points) = scattered_pairs();
+        let mut portable_gradient = vec![Vector4D::default(); points.len()];
+        let mut avx_gradient = portable_gradient.clone();
+        let portable = pair_violations_in(Portable, &pairs, &points, Some(&mut portable_gradient));
+        let avx = simd
+            .vectorize(|| pair_violations_in(Avx(simd), &pairs, &points, Some(&mut avx_gradient)));
+        assert_eq!(portable.to_bits(), avx.to_bits());
+        for (one, other) in portable_gradient.iter().zip(&avx_gradient) {
+            for (a, b) in [
+                (one.x, other.x),
+                (one.y, other.y),
+                (one.z, other.z),
+                (one.w, other.w),
+            ] {
+                assert_eq!(a.to_bits(), b.to_bits());
             }
         }
     }

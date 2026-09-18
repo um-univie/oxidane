@@ -152,11 +152,7 @@ impl Restraints<'_> {
 
 impl Energy<Vector4D> for Restraints<'_> {
     fn energy(&self, points: &[Vector4D]) -> f64 {
-        let mut energy: f64 = self
-            .pairs
-            .iter()
-            .map(|pair| bounds::pair_violation::<Vector4D>(pair, points).0)
-            .sum();
+        let mut energy = bounds::pair_violations(self.pairs, points, None);
         energy += self.stereo_energy(points, None);
         let flattening = self.flattening.get();
         energy + flattening * points.iter().map(|point| point.w * point.w).sum::<f64>()
@@ -164,13 +160,7 @@ impl Energy<Vector4D> for Restraints<'_> {
 
     fn energy_and_gradient(&self, points: &[Vector4D], gradient: &mut [Vector4D]) -> f64 {
         gradient.fill(Vector4D::default());
-        let mut energy = 0.0;
-        for pair in self.pairs {
-            let (violation, derivative) = bounds::pair_violation(pair, points);
-            energy += violation;
-            gradient[pair.i as usize] += derivative;
-            gradient[pair.j as usize] += -derivative;
-        }
+        let mut energy = bounds::pair_violations(self.pairs, points, Some(&mut *gradient));
         energy += self.stereo_energy(points, Some(gradient));
 
         let flattening = self.flattening.get();

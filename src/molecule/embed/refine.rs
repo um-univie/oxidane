@@ -82,7 +82,7 @@ struct Restraints<'a> {
 
 impl Energy for Restraints<'_> {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
-        let mut energy = self.pair_energy(positions);
+        let mut energy = bounds::pair_violations(self.pairs, positions, None);
         let mut discard = self.discard.borrow_mut();
         discard.fill(Vector3D::default());
         energy += self.stereo.energy_and_gradient(positions, &mut discard);
@@ -97,15 +97,8 @@ impl Energy for Restraints<'_> {
     }
 
     fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
-        let mut energy = 0.0;
         gradient.fill(Vector3D::default());
-
-        for pair in self.pairs {
-            let (e, g_xyz) = bounds::pair_violation(pair, positions);
-            energy += e;
-            gradient[pair.i as usize] += g_xyz;
-            gradient[pair.j as usize] += -g_xyz;
-        }
+        let mut energy = bounds::pair_violations(self.pairs, positions, Some(gradient));
 
         energy += self.stereo.energy_and_gradient(positions, gradient);
         energy += super::planarity::planarity_energy_and_gradient(
@@ -121,15 +114,6 @@ impl Energy for Restraints<'_> {
             gradient,
         );
         energy
-    }
-}
-
-impl Restraints<'_> {
-    fn pair_energy(&self, positions: &[Vector3D]) -> f64 {
-        self.pairs
-            .iter()
-            .map(|pair| bounds::pair_violation::<Vector3D>(pair, positions).0)
-            .sum()
     }
 }
 

@@ -42,7 +42,9 @@
 //! 1. the rigid rotation's own energy ([`RIGID_ALLOWANCE`]), one energy
 //!    evaluation, which throws out 60 of 132 turns;
 //! 2. a short relaxation ([`SCREEN_ITERATIONS`]), forty gradients, which
-//!    throws out 52 of the remaining 72;
+//!    throws out 52 of the remaining 72 -- for a turned bond now twelve
+//!    iterations in torsion space instead ([`TORSION_SCREEN_ITERATIONS`]),
+//!    which judges as well and lets the stages after it halve;
 //! 3. a third of the ranking relaxation ([`PARTIAL_ITERATIONS`]), after
 //!    which a candidate that is not winning yet is abandoned, since a
 //!    truncated relaxation can only overstate the final energy.
@@ -51,7 +53,7 @@ use super::chirality::StereoConstraints;
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::bond::BondOrder;
 use crate::molecule::forcefield::Field;
-use crate::molecule::minimize::minimize;
+use crate::molecule::minimize::{Energy, minimize};
 use crate::molecule::molecule3d::Molecule3D;
 use crate::vector::Vector3D;
 
@@ -104,6 +106,55 @@ const PARTIAL_ITERATIONS: usize = 100;
 /// to rank candidates, and 500 ranks them no better than 300 at 1.7x the
 /// cost of the whole search.
 const FULL_ITERATIONS: usize = 300;
+
+/// Iterations of the screen a turned *bond* gets instead of the Cartesian
+/// one, and the partial and full budgets after it. A bond turn is screened
+/// in torsion space ([`relax_torsions`]); ring flips, ring inversions and
+/// nitrogen inversions, which move atoms no torsion reaches, keep the
+/// Cartesian screen and the budgets above.
+///
+/// A rigid turn leaves bond lengths and angles as they were and swings one
+/// side into new contacts, and what undoes those contacts is the soft
+/// modes -- the other torsions -- which is exactly what a Cartesian
+/// minimiser is slowest to find among 3N coordinates dominated by stiff
+/// stretches. Over 752 turns on 29 PubChem molecules, twelve torsion-space
+/// iterations ended *lower* than forty Cartesian ones (median 1.7 against
+/// 2.2 kcal/mol above the current structure), ranked the turns as well
+/// against their fully relaxed energies (Spearman 0.61 against 0.60), and
+/// kept as many of the eventual winners past the allowance (68 against 69
+/// of 86). The turn also arrives at the Cartesian stages near its minimum,
+/// which is what lets their budgets halve.
+///
+/// One start, against forty Cartesian iterations and 100/300:
+///
+/// | screen | partial / full | work | PubChem 287, better / worse | held-out 1600 |
+/// |---|---|---|---|---|
+/// | 12 torsion | 100 / 300 | -15% | 50 / 46, +0.05 | |
+/// | 40 Cartesian | 50 / 150 | -16% | 19 / 32, +0.09 | |
+/// | **12 torsion** | **50 / 150** | **-31%** | **46 / 45, +0.05** | **274 / 272, -0.12** |
+/// | 12 torsion | 30 / 100 | -38% | 43 / 51, +0.08 | |
+/// | 8 torsion | 50 / 150 | -35% | 41 / 53, +0.17 | |
+///
+/// (better / worse by 0.05 kcal/mol, then the mean change.) Halving the
+/// Cartesian budgets alone is the usual dial; after a torsion-space screen
+/// it is free. At the default five starts the search is a smaller share,
+/// and the same change is 17-19% of the work at -0.05 kcal/mol on both
+/// PubChem and 1200 held-out molecules.
+const TORSION_SCREEN_ITERATIONS: usize = 12;
+const TURN_PARTIAL_ITERATIONS: usize = 50;
+const TURN_FULL_ITERATIONS: usize = 150;
+
+/// The largest turn one torsion-space step may make at any bond, in
+/// radians. The first step's direction is the raw torque, whose scale is
+/// the strain of whatever contact the rigid turn made, so it needs a cap;
+/// later ones come from the curvature and rarely meet it.
+const MAX_TORSION_STEP: f64 = 0.35;
+
+/// Armijo's sufficient-decrease constant, probes per line search, and the
+/// smallest curvature `s . y` worth a BFGS update, for [`relax_torsions`].
+const TORSION_ARMIJO: f64 = 1e-4;
+const MAX_TORSION_PROBES: usize = 12;
+const MIN_TORSION_CURVATURE: f64 = 1e-10;
 
 /// How far above the current energy a screened turn may sit and still be
 /// worth relaxing properly, in kcal/mol. A rigid rotation lands in contacts
@@ -176,6 +227,15 @@ pub(super) fn refine_torsions(
     }
     let mismatches = stereo.count_mismatches(positions);
     let start_energy = energy;
+    let bonds: Vec<RotatableBond> = moves
+        .iter()
+        .filter(|candidate| candidate.about_bond)
+        .map(|candidate| RotatableBond {
+            pivot: candidate.pivot,
+            axis_end: candidate.axis_end,
+            side: candidate.side.clone(),
+        })
+        .collect();
 
     // A candidate is a function of the structure it starts from and the
     // energy it has to beat, nothing else, so one tried since the last
@@ -210,9 +270,12 @@ pub(super) fn refine_torsions(
                 {
                     continue;
                 }
-                let Some(candidate) =
-                    relax_candidate(&mut trial, field, candidate_move.screen_iterations, energy)
-                else {
+                let screen = if candidate_move.about_bond {
+                    Screen::Torsions(&bonds)
+                } else {
+                    Screen::Cartesian(candidate_move.screen_iterations)
+                };
+                let Some(candidate) = relax_candidate(&mut trial, field, screen, energy) else {
                     continue;
                 };
                 if candidate < energy - ACCEPT
@@ -260,18 +323,190 @@ pub(super) fn refine_torsions(
 /// in `a_corner_flip_finds_a_better_macrocycle_conformer` stopped improving.
 /// `minimize` answers with the energy it stopped at, so each gate reads that
 /// rather than paying for it again.
-fn relax_candidate(trial: &mut [Vector3D], field: &Field, screen: usize, energy: f64) -> Option<f64> {
-    let screened = minimize(trial, field, screen, GRADIENT_TOLERANCE);
+fn relax_candidate(trial: &mut [Vector3D], field: &Field, screen: Screen, energy: f64) -> Option<f64> {
+    let (screened, partial, full) = match screen {
+        Screen::Cartesian(iterations) => (
+            minimize(trial, field, iterations, GRADIENT_TOLERANCE),
+            PARTIAL_ITERATIONS,
+            FULL_ITERATIONS,
+        ),
+        Screen::Torsions(bonds) => (
+            relax_torsions(trial, field, bonds, TORSION_SCREEN_ITERATIONS),
+            TURN_PARTIAL_ITERATIONS,
+            TURN_FULL_ITERATIONS,
+        ),
+    };
     if !(screened < energy + SCREEN_ALLOWANCE) {
         return None;
     }
     // Third filter: a truncated relaxation can only overstate the final
     // energy, so a candidate that is not yet winning after a third of the
     // budget usually never does.
-    if !(minimize(trial, field, PARTIAL_ITERATIONS, GRADIENT_TOLERANCE) < energy) {
+    if !(minimize(trial, field, partial, GRADIENT_TOLERANCE) < energy) {
         return None;
     }
-    Some(minimize(trial, field, FULL_ITERATIONS - PARTIAL_ITERATIONS, GRADIENT_TOLERANCE))
+    Some(minimize(trial, field, full - partial, GRADIENT_TOLERANCE))
+}
+
+/// How a candidate's first relaxation is done: Cartesian for this many
+/// iterations, or in the torsion space of these bonds.
+#[derive(Clone, Copy)]
+enum Screen<'a> {
+    Cartesian(usize),
+    Torsions(&'a [RotatableBond]),
+}
+
+/// One coordinate of torsion space: turning `side` about the
+/// `pivot -> axis_end` bond.
+struct RotatableBond {
+    pivot: usize,
+    axis_end: usize,
+    side: Vec<usize>,
+}
+
+/// `dE/dtheta` for every bond at `positions`, from the Cartesian gradient:
+/// the torque of the turned side about the bond axis. A small turn `d` of
+/// bond `k` moves each side atom by `u x (r - p) d`, so its slope is
+/// `u . sum (r - p) x g` -- exact at any structure, whatever turns came
+/// before, which is why the steps below are taken about the current axes.
+fn torsion_gradient(
+    positions: &[Vector3D],
+    cartesian: &[Vector3D],
+    bonds: &[RotatableBond],
+    torsional: &mut [f64],
+) {
+    for (slot, bond) in torsional.iter_mut().zip(bonds) {
+        let pivot = positions[bond.pivot];
+        let axis = positions[bond.axis_end] - pivot;
+        let length = axis.length();
+        if length < 1e-9 {
+            *slot = 0.0;
+            continue;
+        }
+        let mut torque = Vector3D::default();
+        for &atom in &bond.side {
+            torque += (positions[atom] - pivot).cross(&cartesian[atom]);
+        }
+        *slot = torque.dot(&axis) / length;
+    }
+}
+
+/// Relaxes `positions` over the rotatable bonds alone, every bond length and
+/// angle held where it is, returning the energy reached. See
+/// [`TORSION_SCREEN_ITERATIONS`] for why a bond turn is screened this way.
+///
+/// BFGS with a dense inverse Hessian -- a molecule has tens of rotatable
+/// bonds, not hundreds of coordinates -- scaled after the first step as
+/// Nocedal and Wright 6.20 have it, which suits a space with no stiff
+/// stretches in it. The line search is Armijo backtracking with a quadratic
+/// model, and every probe takes the gradient: in a space this small the
+/// full step is nearly always taken. A step is a set of turns applied in
+/// order about the current axes, so the slope it was chosen on is exact.
+fn relax_torsions(
+    positions: &mut [Vector3D],
+    field: &Field,
+    bonds: &[RotatableBond],
+    max_iterations: usize,
+) -> f64 {
+    let m = bonds.len();
+    let mut cartesian = vec![Vector3D::default(); positions.len()];
+    let mut energy = field.energy_and_gradient(positions, &mut cartesian);
+    if m == 0 {
+        return energy;
+    }
+    let identity = |inverse: &mut [f64], scale: f64| {
+        inverse.fill(0.0);
+        for k in 0..m {
+            inverse[k * m + k] = scale;
+        }
+    };
+    let mut inverse = vec![0.0; m * m];
+    identity(&mut inverse, 1.0);
+    let mut scaled = false;
+    let mut gradient = vec![0.0; m];
+    torsion_gradient(positions, &cartesian, bonds, &mut gradient);
+    let (mut direction, mut next_gradient) = (vec![0.0; m], vec![0.0; m]);
+    let (mut step, mut change, mut curved) = (vec![0.0; m], vec![0.0; m], vec![0.0; m]);
+    let mut trial = positions.to_vec();
+    let mut trial_cartesian = cartesian.clone();
+
+    for _ in 0..max_iterations {
+        let norm_sq: f64 = gradient.iter().map(|g| g * g).sum();
+        if norm_sq < GRADIENT_TOLERANCE {
+            break;
+        }
+        for (i, slot) in direction.iter_mut().enumerate() {
+            *slot = -(0..m).map(|j| inverse[i * m + j] * gradient[j]).sum::<f64>();
+        }
+        let mut slope: f64 = direction.iter().zip(&gradient).map(|(d, g)| d * g).sum();
+        if !(slope < 0.0) {
+            identity(&mut inverse, 1.0);
+            scaled = false;
+            for (slot, g) in direction.iter_mut().zip(&gradient) {
+                *slot = -g;
+            }
+            slope = -norm_sq;
+        }
+        let largest = direction.iter().fold(0.0f64, |most, d| most.max(d.abs()));
+        let mut length = if largest > MAX_TORSION_STEP {
+            MAX_TORSION_STEP / largest
+        } else {
+            1.0
+        };
+        let mut accepted = false;
+        for _ in 0..MAX_TORSION_PROBES {
+            trial.copy_from_slice(positions);
+            for (bond, turn) in bonds.iter().zip(&direction) {
+                rotate(&mut trial, bond.pivot, bond.axis_end, &bond.side, turn * length);
+            }
+            let probe = field.energy_and_gradient(&trial, &mut trial_cartesian);
+            if probe.is_finite() && probe <= energy + TORSION_ARMIJO * length * slope {
+                energy = probe;
+                accepted = true;
+                break;
+            }
+            let next = if probe.is_finite() {
+                -slope * length * length / (2.0 * (probe - energy - slope * length))
+            } else {
+                0.5 * length
+            };
+            length = next.clamp(0.1 * length, 0.5 * length);
+        }
+        if !accepted {
+            break;
+        }
+        positions.copy_from_slice(&trial);
+        std::mem::swap(&mut cartesian, &mut trial_cartesian);
+        torsion_gradient(positions, &cartesian, bonds, &mut next_gradient);
+
+        for k in 0..m {
+            step[k] = direction[k] * length;
+            change[k] = next_gradient[k] - gradient[k];
+        }
+        let curvature: f64 = step.iter().zip(&change).map(|(s, y)| s * y).sum();
+        if curvature > MIN_TORSION_CURVATURE {
+            if !scaled {
+                let change_sq: f64 = change.iter().map(|y| y * y).sum();
+                identity(&mut inverse, curvature / change_sq);
+                scaled = true;
+            }
+            // H += -rho (Hy s' + s y'H) + (rho^2 y'Hy + rho) s s'
+            for (i, slot) in curved.iter_mut().enumerate() {
+                *slot = (0..m).map(|j| inverse[i * m + j] * change[j]).sum();
+            }
+            let along: f64 = change.iter().zip(&curved).map(|(y, hy)| y * hy).sum();
+            let rho = 1.0 / curvature;
+            let outer = rho * rho * along + rho;
+            for i in 0..m {
+                for j in 0..m {
+                    inverse[i * m + j] +=
+                        -rho * (curved[i] * step[j] + step[i] * curved[j]) + outer * step[i] * step[j];
+                }
+            }
+        }
+        std::mem::swap(&mut gradient, &mut next_gradient);
+    }
+    energy
 }
 
 /// What a move does to the atoms it names.
@@ -396,7 +631,9 @@ fn shake(
         if touched < 2 {
             continue;
         }
-        let Some(candidate) = relax_candidate(&mut trial, field, SCREEN_ITERATIONS, energy) else {
+        let Some(candidate) =
+            relax_candidate(&mut trial, field, Screen::Cartesian(SCREEN_ITERATIONS), energy)
+        else {
             continue;
         };
         if candidate < energy - ACCEPT
@@ -443,6 +680,11 @@ struct Move {
     /// they came from, and the search takes none of them. At two hundred it
     /// takes four.
     screen_iterations: usize,
+    /// Whether this turns one side of a bond about that bond -- a rotatable
+    /// bond or a hydrogen rotor -- rather than a ring corner about the line
+    /// through its two neighbours. Only these are screened in torsion space
+    /// and serve as its coordinates; see [`TORSION_SCREEN_ITERATIONS`].
+    about_bond: bool,
     operation: Operation,
 }
 
@@ -665,6 +907,7 @@ fn hydrogen_rotor(molecule: &Molecule3D, first: usize, second: usize) -> Option<
         angles: if symmetric { SIXTH_TURN } else { TURNS },
         rigid_allowance: if symmetric { 0.0 } else { RIGID_ALLOWANCE },
         screen_iterations: SCREEN_ITERATIONS,
+        about_bond: true,
         operation: Operation::Turn,
     })
 }
@@ -721,6 +964,7 @@ fn torsion_moves(molecule: &Molecule3D) -> Vec<Move> {
                 angles: TURNS,
                 rigid_allowance: RIGID_ALLOWANCE,
                 screen_iterations: SCREEN_ITERATIONS,
+                about_bond: true,
                 operation: Operation::Turn,
             });
         }
@@ -811,6 +1055,7 @@ fn inversion_moves(molecule: &Molecule3D) -> Vec<Move> {
             angles: ONCE,
             rigid_allowance: RIGID_ALLOWANCE,
             screen_iterations: SCREEN_ITERATIONS,
+            about_bond: false,
             operation: Operation::Invert { in_plane: (heavy[0], heavy[1]) },
         });
     }
@@ -900,6 +1145,7 @@ fn ring_inversion_moves(molecule: &Molecule3D) -> Vec<Move> {
             angles: ONCE,
             rigid_allowance: f64::INFINITY,
             screen_iterations: RING_SCREEN_ITERATIONS,
+            about_bond: false,
             operation: Operation::InvertRing { ring: ring.clone(), branches },
         });
     }
@@ -1003,6 +1249,7 @@ fn corner_flip_moves(molecule: &Molecule3D) -> Vec<Move> {
                 angles: FLIP,
                 rigid_allowance: f64::INFINITY,
                 screen_iterations: FLIP_SCREEN_ITERATIONS,
+                about_bond: false,
                 operation: Operation::Turn,
             });
         }
@@ -1244,5 +1491,96 @@ mod tests {
             1,
             "cyclohexane stands alone"
         );
+    }
+
+    /// An embedded structure, its rotatable bonds as torsion-space
+    /// coordinates, and the field the search would relax it in.
+    fn torsion_space(smiles: &str) -> (Vec<Vector3D>, Vec<RotatableBond>, Field) {
+        let mut graph = MolecularGraph::from_smiles_single(smiles).expect("should parse");
+        graph.add_hydrogens();
+        let embedded = graph.embed_3d().expect("should embed");
+        let positions = (0..embedded.len())
+            .map(|atom| embedded.get_atom_position(atom).unwrap())
+            .collect();
+        let bonds = torsion_moves(&molecule(smiles))
+            .into_iter()
+            .filter(|candidate| candidate.about_bond)
+            .map(|candidate| RotatableBond {
+                pivot: candidate.pivot,
+                axis_end: candidate.axis_end,
+                side: candidate.side,
+            })
+            .collect();
+        let field = Field::best_for(&embedded).expect("should type");
+        (positions, bonds, field)
+    }
+
+    /// The torque is the derivative of the energy along a turn, checked
+    /// against central differences at a structure away from any minimum.
+    #[test]
+    fn the_torsion_gradient_is_the_slope_of_a_turn() {
+        let (mut positions, bonds, field) = torsion_space("CCCCOC(=O)N");
+        assert!(bonds.len() >= 4, "the chain should have rotatable bonds");
+        for (k, bond) in bonds.iter().enumerate() {
+            rotate(&mut positions, bond.pivot, bond.axis_end, &bond.side, 0.3 + 0.2 * k as f64);
+        }
+        let mut cartesian = vec![Vector3D::default(); positions.len()];
+        field.energy_and_gradient(&positions, &mut cartesian);
+        let mut analytic = vec![0.0; bonds.len()];
+        torsion_gradient(&positions, &cartesian, &bonds, &mut analytic);
+
+        let step = 1e-5;
+        for (bond, &slope) in bonds.iter().zip(&analytic) {
+            let turned = |angle: f64| {
+                let mut turned = positions.clone();
+                rotate(&mut turned, bond.pivot, bond.axis_end, &bond.side, angle);
+                field.energy(&turned)
+            };
+            let numeric = (turned(step) - turned(-step)) / (2.0 * step);
+            assert!(
+                (numeric - slope).abs() <= 1e-4 * numeric.abs().max(1.0),
+                "bond {}-{}: analytic {slope:.6}, numeric {numeric:.6}",
+                bond.pivot,
+                bond.axis_end
+            );
+        }
+    }
+
+    /// Relaxing in torsion space lowers the energy and moves nothing else:
+    /// every bond length and every distance across an angle survives, since
+    /// each step is only turns about bonds.
+    #[test]
+    fn a_torsion_space_relaxation_only_turns_bonds() {
+        let (mut positions, bonds, field) = torsion_space("CCCCCC(C)O");
+        for bond in &bonds {
+            rotate(&mut positions, bond.pivot, bond.axis_end, &bond.side, 2.0);
+        }
+        let topology = molecule("CCCCCC(C)O");
+        let mut pairs = Vec::new();
+        for atom in 0..topology.len() {
+            let neighbours: Vec<usize> = topology
+                .get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .map(|bond| bond.target())
+                .collect();
+            for (index, &first) in neighbours.iter().enumerate() {
+                pairs.push((atom, first));
+                for &second in &neighbours[index + 1..] {
+                    pairs.push((first, second));
+                }
+            }
+        }
+        let before = positions.clone();
+        let start = field.energy(&positions);
+        let relaxed = relax_torsions(&mut positions, &field, &bonds, 50);
+
+        assert!(relaxed < start - 1.0, "{start:.3} should have relaxed, got {relaxed:.3}");
+        assert!((relaxed - field.energy(&positions)).abs() < 1e-9);
+        for (a, b) in pairs {
+            let was = before[a].distance(&before[b]);
+            let now = positions[a].distance(&positions[b]);
+            assert!((was - now).abs() < 1e-9, "{a}-{b} changed: {was:.6} to {now:.6}");
+        }
     }
 }

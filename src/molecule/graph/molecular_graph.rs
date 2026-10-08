@@ -660,14 +660,12 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut bond_indices = FxHashMap::<(usize, usize), NodeIndex<u32>>::default();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             let label = self.get_atom_label(index);
             let node_index = graph.add_node(label);
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -680,7 +678,6 @@ pub trait MoleculeGraph: MoleculeCore {
                         continue;
                     }
                     // Only process each bond once
-                    // Create bond node
                     let bond_label =
                         AtomLabel::new(bond.bond_order().to_u8(), 0, false, None, ChiralType::None);
                     let bond_node = graph.add_node(bond_label);
@@ -700,14 +697,12 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut graph = UnGraph::<AtomLabel, BondOrder>::default();
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             let label = self.get_atom_label(index);
             let node_index = graph.add_node(label);
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -727,14 +722,12 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut graph = UnGraph::<AtomLabelImplicitHydrogens, u8>::default();
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             let label = self.get_atom_label_with_hydrogens(index);
             let node_index = graph.add_node(label);
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -764,7 +757,6 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut bond_indices = FxHashMap::<(usize, usize), NodeIndex<u32>>::default();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -774,7 +766,6 @@ pub trait MoleculeGraph: MoleculeCore {
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -792,7 +783,6 @@ pub trait MoleculeGraph: MoleculeCore {
                         continue;
                     }
                     // Only process each bond once
-                    // Create bond node
                     let bond_label = AtomLabelImplicitHydrogens::new(
                         bond.bond_order().to_u8(),
                         0,
@@ -841,7 +831,6 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut unique_labels = FxHashMap::<AtomLabelImplicitHydrogens, u16>::default();
         let mut next_id: u16 = 0;
 
-        // Collect atom labels
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -853,7 +842,6 @@ pub trait MoleculeGraph: MoleculeCore {
             }
         }
 
-        // Collect bond labels
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -879,16 +867,13 @@ pub trait MoleculeGraph: MoleculeCore {
             }
         }
 
-        // Create reverse mapping for return value
         let label_map: FxHashMap<u16, AtomLabelImplicitHydrogens> =
             unique_labels.iter().map(|(k, v)| (*v, *k)).collect();
 
-        // Now build the graph with compact labels
         let mut graph = UnGraph::<u16, ()>::default();
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut bond_indices = FxHashMap::<(usize, usize), NodeIndex<u32>>::default();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -899,7 +884,6 @@ pub trait MoleculeGraph: MoleculeCore {
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -919,7 +903,6 @@ pub trait MoleculeGraph: MoleculeCore {
                     }
 
                     // Only process each bond once
-                    // Create bond node
                     let bond_label = AtomLabelImplicitHydrogens::new(
                         bond.bond_order().to_u8(),
                         0,
@@ -973,7 +956,6 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut unique_labels = FxHashMap::<AtomLabelImplicitHydrogens, usize>::default();
         let mut next_id: usize = 0;
 
-        // Collect atom labels
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -985,7 +967,6 @@ pub trait MoleculeGraph: MoleculeCore {
             }
         }
 
-        // Collect bond labels
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -1030,11 +1011,9 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut bond_indices = FxHashMap::<(usize, usize), NodeIndex<u32>>::default();
 
-        // Create reverse mapping for return value
         let label_map: FxHashMap<u8, AtomLabelImplicitHydrogens> =
             unique_labels.iter().map(|(k, v)| (*v as u8, *k)).collect();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -1045,7 +1024,6 @@ pub trait MoleculeGraph: MoleculeCore {
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -1065,7 +1043,6 @@ pub trait MoleculeGraph: MoleculeCore {
                     }
 
                     // Only process each bond once
-                    // Create bond node
                     let bond_label = AtomLabelImplicitHydrogens::new(
                         bond.bond_order().to_u8(),
                         0,
@@ -1096,11 +1073,9 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut bond_indices = FxHashMap::<(usize, usize), NodeIndex<u32>>::default();
 
-        // Create reverse mapping for return value
         let label_map: FxHashMap<u16, AtomLabelImplicitHydrogens> =
             unique_labels.iter().map(|(k, v)| (*v as u16, *k)).collect();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -1111,7 +1086,6 @@ pub trait MoleculeGraph: MoleculeCore {
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -1131,7 +1105,6 @@ pub trait MoleculeGraph: MoleculeCore {
                     }
 
                     // Only process each bond once
-                    // Create bond node
                     let bond_label = AtomLabelImplicitHydrogens::new(
                         bond.bond_order().to_u8(),
                         0,
@@ -1162,11 +1135,9 @@ pub trait MoleculeGraph: MoleculeCore {
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut bond_indices = FxHashMap::<(usize, usize), NodeIndex<u32>>::default();
 
-        // Create reverse mapping for return value
         let label_map: FxHashMap<u32, AtomLabelImplicitHydrogens> =
             unique_labels.iter().map(|(k, v)| (*v as u32, *k)).collect();
 
-        // Add atom nodes
         for (index, _) in self.atomic_numbers().iter().enumerate() {
             if self.atomic_numbers()[index] == 1 {
                 continue;
@@ -1177,7 +1148,6 @@ pub trait MoleculeGraph: MoleculeCore {
             atom_indices.insert(index, node_index);
         }
 
-        // Add bond nodes and connect them to atoms
         for (index, bonds) in self.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 let target = bond.target();
@@ -1197,7 +1167,6 @@ pub trait MoleculeGraph: MoleculeCore {
                     }
 
                     // Only process each bond once
-                    // Create bond node
                     let bond_label = AtomLabelImplicitHydrogens::new(
                         bond.bond_order().to_u8(),
                         0,
@@ -1279,7 +1248,6 @@ pub trait MoleculeGraph: MoleculeCore {
             |bond_order| BondOrderWrapper::from(bond_order), // Use wrapper for Hash implementation
         );
 
-        // Convert BondOrderWrapper back to BondOrder
         let bond_map = wrapper_map
             .into_iter()
             .map(|(id, wrapper)| (id, wrapper.inner()))
@@ -1360,14 +1328,12 @@ pub trait MoleculeGraph: MoleculeCore {
         BF: Fn(BondOrder) -> BL,
         BL: std::hash::Hash + Eq + Copy,
     {
-        // Create atom label mapping
         let mut graph = UnGraph::<u64, u64>::default();
         let mut atom_indices = IntMap::<usize, NodeIndex<u32>>::default();
         let mut atom_label_to_id = FxHashMap::<AL, u64>::default();
         let mut id_to_atom_label = FxHashMap::<u64, AL>::default();
         let mut atom_next_id: u64 = 0;
 
-        // Create bond order mapping
         let mut bond_label_to_id = FxHashMap::<BL, u64>::default();
         let mut id_to_bond_label = FxHashMap::<u64, BL>::default();
         let mut bond_next_id: u64 = 0;
@@ -1409,11 +1375,9 @@ pub trait MoleculeGraph: MoleculeCore {
                 }
 
                 if index < target {
-                    // Process each bond only once
                     let bond_order = bond.bond_order();
                     let bond_label = get_bond_label(bond_order);
 
-                    // Get or create ID for this bond label
                     let bond_id = if let Some(&id) = bond_label_to_id.get(&bond_label) {
                         id
                     } else {
@@ -1424,7 +1388,6 @@ pub trait MoleculeGraph: MoleculeCore {
                         id
                     };
 
-                    // Add edge with the bond ID
                     let source_atom = atom_indices[&index];
                     let target_atom = atom_indices[&target];
                     graph.add_edge(source_atom, target_atom, bond_id);
@@ -1492,14 +1455,12 @@ pub trait MoleculeGraph: MoleculeCore {
         BF: Fn(BondOrder) -> BL,
         BL: std::hash::Hash + Eq + Copy,
     {
-        // Create atom label mapping
         let mut graph = petgraph::graph::DiGraph::<u64, u64>::default();
         let mut atom_indices = IntMap::<usize, petgraph::graph::NodeIndex<u32>>::default();
         let mut atom_label_to_id = FxHashMap::<AL, u64>::default();
         let mut id_to_atom_label = FxHashMap::<u64, AL>::default();
         let mut atom_next_id: u64 = 0;
 
-        // Create bond order mapping
         let mut bond_label_to_id = FxHashMap::<BL, u64>::default();
         let mut id_to_bond_label = FxHashMap::<u64, BL>::default();
         let mut bond_next_id: u64 = 0;
@@ -1543,7 +1504,6 @@ pub trait MoleculeGraph: MoleculeCore {
                 let bond_order = bond.bond_order();
                 let bond_label = get_bond_label(bond_order);
 
-                // Get or create ID for this bond label
                 let bond_id = if let Some(&id) = bond_label_to_id.get(&bond_label) {
                     id
                 } else {

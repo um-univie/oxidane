@@ -289,7 +289,6 @@ pub trait MoleculeExperimental: MoleculeCore {
                 // Only add cycle if it follows alternating pattern
                 if bond.bond_order() != last_bond {
                     let cycle = current_path.clone();
-                    // Add all atoms in cycle to tracked set
                     for &atom in &cycle {
                         atoms_in_cycles.insert(atom);
                     }
@@ -421,7 +420,6 @@ pub trait MoleculeExperimental: MoleculeCore {
         }
     }
     fn is_valid_aromatic_system(&self, system: &BitSet) -> bool {
-        // Count total pi electrons for the system
         let pi_electrons = system
             .iter()
             .map(|atom_idx| self.count_atom_pi_electrons_within_system(atom_idx, system))
@@ -446,7 +444,6 @@ pub trait MoleculeExperimental: MoleculeCore {
     /// assert!(mol.get_aromatic_atoms().len() == 6);
     /// ```
     fn simple_aromatization(&mut self) {
-        // Find all potential cycles
         let mut cycles = self.enumerate_possible_cycles();
         if cycles.is_empty() {
             return;
@@ -592,7 +589,6 @@ pub trait MoleculeExperimental: MoleculeCore {
             _ => 0,
         };
 
-        // Add radical contribution
         if is_radical {
             count += 1;
         }
@@ -672,13 +668,11 @@ pub trait MoleculeExperimental: MoleculeCore {
         // First pass: Find all potential cycles
         self.find_all_conjugated_cycles(&mut cycles, &mut atoms_in_cycles);
 
-        // Group and analyze systems
         let mut fused_systems = self.group_fused_cycles(&cycles);
 
         // Order based on size in descending order
         fused_systems.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
-        // Process each system
         for system in fused_systems {
             let aromaticity_type = self.determine_aromaticity_type(&system);
             match aromaticity_type {
@@ -692,7 +686,6 @@ pub trait MoleculeExperimental: MoleculeCore {
     }
 
     fn aromatize_system(&mut self, system: &BitSet) {
-        // Get all bonds in the system
         let mut system_bonds = Vec::new();
         for atom_idx in system.iter() {
             for &bond in &self.atom_bonds()[atom_idx] {
@@ -702,7 +695,6 @@ pub trait MoleculeExperimental: MoleculeCore {
             }
         }
 
-        // Convert all bonds in the system to aromatic
         for (atom1, atom2) in system_bonds {
             if atom1 < atom2 {
                 self.change_bond_order(atom1, atom2, BondOrder::Aromatic);
@@ -794,7 +786,6 @@ pub trait MoleculeExperimental: MoleculeCore {
             }
         }
 
-        // Add valid subcycles to the result
         for subcycle in subcycles {
             if !cycles.contains(&subcycle)
                 && self.is_potentially_aromatic_cycle(&subcycle.iter().collect::<Vec<_>>())
@@ -860,7 +851,6 @@ pub trait MoleculeExperimental: MoleculeCore {
     fn count_cycle_pi_electrons(&self, cycle: &[usize]) -> usize {
         let mut total = 0;
 
-        // Count electrons from atoms
         for &atom_idx in cycle {
             total += self
                 .count_atom_pi_electrons_extended_within_system(atom_idx, &cycle_to_bitset(cycle));
@@ -890,7 +880,6 @@ pub trait MoleculeExperimental: MoleculeCore {
                         continue;
                     }
 
-                    // Check if cycle j shares atoms with current system
                     if Self::cycles_share_atoms(&current_system, &cycles[j]) {
                         // Union of bits
                         current_system.union_with(&cycles[j]);

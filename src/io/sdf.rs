@@ -315,7 +315,6 @@ pub fn parse_sdf_file<R: BufRead>(reader: R) -> Result<Vec<SDFEntry>, SDFParseEr
                         current_data_field_name.clear();
                         in_mol_block = true;
                     } else if let Some(stripped) = line.strip_prefix("> ") {
-                        // Remove < and > from the data field name
                         current_data_field_name = stripped
                             .replace("<", "")
                             .replace(">", "")

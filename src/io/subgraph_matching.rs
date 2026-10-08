@@ -76,7 +76,6 @@ impl MappingState {
         self.core_molecule_to_pattern
             .insert(molecule_atom, pattern_atom);
 
-        // Update terminal sets
         self.update_terminal_sets(pattern_atom, molecule_atom, pattern, molecule);
     }
 
@@ -103,11 +102,9 @@ impl MappingState {
         pattern: &CxSMARTSPattern,
         molecule: &MolecularGraph,
     ) {
-        // Remove from terminal sets if present
         self.terminal_pattern.remove(&pattern_atom);
         self.terminal_molecule.remove(&molecule_atom);
 
-        // Add neighbors to terminal sets if not already in core
         for &(atom1, atom2, _) in &pattern.bonds {
             let neighbor = if atom1 == pattern_atom {
                 Some(atom2)
@@ -124,7 +121,6 @@ impl MappingState {
             }
         }
 
-        // Add molecule neighbors using atom_bonds
         if let Some(bonds) = molecule.atom_bonds().get(molecule_atom) {
             for bond in bonds {
                 let neighbor_atom = bond.target();
@@ -140,7 +136,6 @@ impl MappingState {
         self.terminal_pattern.clear();
         self.terminal_molecule.clear();
 
-        // Add pattern neighbors of core atoms
         for &pattern_atom in self.core_pattern_to_molecule.keys() {
             for &(atom1, atom2, _) in &pattern.bonds {
                 let neighbor = if atom1 == pattern_atom {
@@ -159,7 +154,6 @@ impl MappingState {
             }
         }
 
-        // Add molecule neighbors of core atoms
         for &molecule_atom in self.core_molecule_to_pattern.keys() {
             if let Some(bonds) = molecule.atom_bonds().get(molecule_atom) {
                 for bond in bonds {
@@ -265,7 +259,6 @@ fn compute_ring_info(molecule: &MolecularGraph) -> RingInfo {
     let mut atom_smallest_ring = IntMap::default();
     let mut atom_ring_sizes = IntMap::default();
 
-    // Initialize all atoms as not in rings
     for atom_index in 0..molecule.number_of_atoms() {
         atom_ring_count.insert(atom_index, 0);
         atom_smallest_ring.insert(atom_index, 0);
@@ -339,7 +332,6 @@ fn compute_aromaticity_info(molecule: &MolecularGraph) -> AromaticityInfo {
     });
     let temp_molecule = molecule.clone();
 
-    // Initialize all atoms as non-aromatic
     for atom_index in 0..molecule.number_of_atoms() {
         is_aromatic.insert(atom_index, false);
     }
@@ -355,16 +347,13 @@ fn compute_aromaticity_info(molecule: &MolecularGraph) -> AromaticityInfo {
             }
         }
     } else {
-        // Extract aromatic atoms from the aromatized molecule
         let aromatic_atom_indices = temp_molecule.get_aromatic_atoms();
 
-        // Mark aromatic atoms based on the aromatization results
         for atom_index in aromatic_atom_indices {
             is_aromatic.insert(atom_index, true);
         }
     }
 
-    // Collect aromatic bonds from the aromatized molecule
     for (atom_index, bonds) in temp_molecule.atom_bonds().iter().enumerate() {
         // Only process if this atom is aromatic
         if !is_aromatic.get(&atom_index).copied().unwrap_or(false) {
@@ -374,7 +363,6 @@ fn compute_aromaticity_info(molecule: &MolecularGraph) -> AromaticityInfo {
         for bond in bonds {
             let target_index = bond.target();
 
-            // Check if this is an aromatic bond and target is also aromatic
             if bond.bond_order() == crate::molecule::bond::BondOrder::Aromatic
                 && is_aromatic.get(&target_index).copied().unwrap_or(false)
             {
@@ -796,7 +784,6 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
             }
 
             BondExpression::Ring => {
-                // Check if bond is in a ring
                 self.is_bond_in_ring(atom1, atom2)
             }
 

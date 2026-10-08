@@ -388,7 +388,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     }
                     return 0;
                 }
-                // Count number of double bonds
             }
             -1 => {
                 let valence = self.actual_valency(atom_index);
@@ -1487,7 +1486,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         visited.clear();
         visited.resize(self.len(), 0);
 
-        // Find all root atoms
         for atom_index in 0..self.len() {
             if visited[atom_index] == 0 {
                 self.find_aromatic_seed_atoms(
@@ -1984,12 +1982,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         loop {
             let mut aromatic_atoms_to_remove = BitSet::new();
             'atoms: for atom_index in aromatic_atoms.iter() {
-                // Skip atoms already marked as not aromatic
                 if aromaticity_flags[atom_index] == AromaticityFlag::NotAromatic {
                     continue;
                 }
 
-                // Get bonds for the current atom
                 let Some(bonds) = self.get_atom_bonds(atom_index) else {
                     aromaticity_flags[atom_index] = AromaticityFlag::NotAromatic;
                     continue;
@@ -2002,12 +1998,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     let neighbor_index = bond.target();
                     let atom_order = order_tuple(atom_index, neighbor_index);
 
-                    // Check if this bond is part of a ring
                     if !bonds_in_rings.contains(&atom_order) {
                         continue;
                     }
 
-                    // Check if the neighbor is potentially aromatic
                     if aromaticity_flags[neighbor_index] != AromaticityFlag::NotAromatic {
                         aromatic_ring_neighbors += 1;
                     }

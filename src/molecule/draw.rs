@@ -337,12 +337,10 @@ pub trait Draw<M: Molecule> {
     where
         Self: Molecule,
     {
-        // Find cycles in the molecule
         let cycles = self.find_cycles();
 
         for cycle in cycles {
             if cycle.len() >= 3 {
-                // Calculate the center of the cycle
                 let center = cycle.iter().fold((0.0, 0.0), |acc, &idx| {
                     (acc.0 + positions[idx].0, acc.1 + positions[idx].1)
                 });

@@ -14,7 +14,6 @@ mod tests {
     fn create_test_molecule_chain() -> MolecularGraph {
         let mut atoms = Vec::new();
 
-        // Create atoms with bonds
         // Atom 0: connected to 1
         let mut atom0 = Atom::new(6); // Carbon
         atom0.bonds.push(BondTarget::single(1));
@@ -104,7 +103,6 @@ mod tests {
     fn test_split_disconnected_molecule_success() {
         let molecule = create_test_molecule_disconnected();
 
-        // Split into two groups: [0,1] and [2,3]
         let groups = vec![vec![0, 1], vec![2, 3]];
         let result = molecule.split(groups);
 
@@ -158,7 +156,6 @@ mod tests {
     fn test_split_single_atom_groups() {
         let molecule = create_test_molecule_disconnected();
 
-        // Split into individual atoms: [0], [1], [2], [3]
         let groups = vec![vec![0], vec![1], vec![2], vec![3]];
         let result = molecule.split(groups);
 
@@ -233,7 +230,6 @@ mod tests {
 
     #[test]
     fn test_split_preserves_properties() {
-        // Create a molecule with some properties
         let mut molecule = create_test_molecule_disconnected();
         molecule.charges = vec![1, -1, 0, 0];
         molecule.radical_states = vec![0, 1, 0, 0];
@@ -324,7 +320,6 @@ mod tests {
         assert!(molecule.partial_charges.is_none());
         assert!(molecule.chiral_classes.is_none());
 
-        // Split into two groups
         let groups = vec![vec![0, 1], vec![2, 3]];
         let result = molecule.split(groups);
 
@@ -394,7 +389,6 @@ mod tests {
         // chiral_classes should still be None since no atoms have chirality
         assert!(molecule.chiral_classes.is_none());
 
-        // Split into two groups
         let groups = vec![vec![0, 1], vec![2, 3]];
         let result = molecule.split(groups);
 
@@ -462,7 +456,6 @@ mod tests {
 
         let molecule = MolecularGraph::from_atoms(&atoms);
 
-        // Create groups for each pair
         let groups: Vec<Vec<usize>> = (0..num_pairs).map(|i| vec![i * 2, i * 2 + 1]).collect();
 
         // This should succeed quickly with optimized data structures

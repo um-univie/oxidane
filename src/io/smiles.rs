@@ -331,7 +331,6 @@ impl<'a> SMILESParser<'a> {
             pointer += 1;
             match byte {
                 b'A'..=b'Z' => {
-                    // Handle the previous element
                     parser.handle_atom(Some(byte))?
                 }
                 // The wildcard atom: an atom whose element is deliberately
@@ -576,7 +575,6 @@ impl<'a> SMILESParser<'a> {
             }
         }
 
-        // Update the molecule's chiral classes
         molecule.chiral_classes = Some(chiral_classes);
         Ok(())
     }
@@ -624,7 +622,6 @@ impl<'a> SMILESParser<'a> {
             }
         }
 
-        // Assign bonds to the molecule
         for bond in self.bonds.iter_mut() {
             let atom1_index = bond.0;
             let atom2_index = bond.1;
@@ -721,7 +718,6 @@ impl<'a> SMILESParser<'a> {
             let bond_order = if let (Some(prev_atom), Some(curr_atom)) =
                 (self.atoms.get(previous_atom), self.atoms.get(current_atom))
             {
-                // Check if both connected atoms are aromatic
                 if prev_atom.aromatic && curr_atom.aromatic && self.last_bond_type.is_none() {
                     Some(BondOrder::Aromatic)
                 } else {
@@ -732,7 +728,6 @@ impl<'a> SMILESParser<'a> {
                 self.last_bond_type
             };
 
-            // Add the bond and print debug information
             self.bonds.push((previous_atom, current_atom, bond_order));
 
             // Record written neighbor order: the from-atom is current_atom's first
@@ -782,7 +777,6 @@ impl<'a> SMILESParser<'a> {
                 atom.aromatic = true;
             }
 
-            // Handle bond if additional byte is present
             if byte.is_some() {
                 self.handle_bond()?
             }
@@ -816,7 +810,6 @@ impl<'a> SMILESParser<'a> {
 
             self.atoms.push(atom);
             self.element_buffer.clear();
-            // Reset atom class after using it
             self.current_atom_class = None;
         }
 
@@ -854,7 +847,6 @@ impl<'a> SMILESParser<'a> {
             self.ring_number = Some(byte_to_number(byte) as usize);
         }
 
-        // Process the complete ring number
         let ring = self.ring_number.take().unwrap();
 
         // Record the ring bond in written order at the current atom. Pairing the
@@ -1065,7 +1057,6 @@ impl<'a> SMILESParser<'a> {
             return Err(SMILESParseError::SMILESComplexError);
         }
 
-        // Skip over the ]
         *position += 1;
         self.handle_bond()?;
         Ok(())
@@ -1399,10 +1390,8 @@ pub trait ToSMILES: Molecule {
         allene_orders: &IntMap<usize, Vec<usize>>,
     ) {
 
-        // Determine if the current bond is aromatic
         let is_current_bond_aromatic = node.bond_type() == BondOrder::Aromatic;
 
-        // Add bond type symbol only if the bond is not aromatic
         if !is_current_bond_aromatic {
             match node.bond_type() {
                 BondOrder::Single => {
@@ -1468,7 +1457,6 @@ pub trait ToSMILES: Molecule {
                 .any(|bond| self.atomic_numbers()[bond.target()] != 1);
 
         if folds_into_neighbour {
-            // Add children
             if node.children().len() == 1 {
                 self.construct_smiles(smiles, &node.children()[0], ring_closures, directional_marks, allene_orders);
             } else {
@@ -1587,12 +1575,10 @@ pub trait ToSMILES: Molecule {
             ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
         );
         let is_chiral = self.is_atom_chiral(node.index()) && !is_cis_trans_class;
-        // Determine if we need square brackets
         let needs_brackets = is_labelled
             || is_radical
             || !(!is_charged && is_organic_subset && has_standard_hydrogens)
             || (has_negative_degree);
-        // Build atom string
         if needs_brackets || is_chiral {
             let chiral_str: String = match chirality {
                 ChiralClass::Counterclockwise => "@".to_string(),
@@ -1671,7 +1657,6 @@ pub trait ToSMILES: Molecule {
             push_symbol(smiles);
         }
 
-        // Add ring closures
         if let Some(closures) = ring_closures.get(&node.index()) {
             for closure in closures {
                 let bond_order = closure.2;
@@ -1695,7 +1680,6 @@ pub trait ToSMILES: Molecule {
             }
         }
 
-        // Add children
         if node.children().len() == 1 {
             self.construct_smiles(smiles, &node.children()[0], ring_closures, directional_marks, allene_orders);
         } else {

@@ -395,7 +395,6 @@ impl MolecularFormula {
                 continue;
             };
 
-            // Reset atom buffer for the new element
             atom_buffer.fill(Complex64::new(0.0, 0.0));
 
             for isotope in isotopes {

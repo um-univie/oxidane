@@ -183,13 +183,11 @@ mod aromatization_tests {
 
     #[test]
     fn test_benzene_aromatization() {
-        // Create benzene molecule
         let molecule = MolecularGraph::from_smiles("C1=CC=CC=C1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
 
         molecule.simple_aromatization();
 
-        // Check if all bonds are aromatic
         for (i, bonds) in molecule.atom_bonds().iter().enumerate() {
             for bond in bonds {
                 if molecule.atomic_numbers()[bond.target()] != 1
@@ -429,7 +427,6 @@ mod aromatization_tests {
         for line in file.lines() {
             let line = line.unwrap();
 
-            // Skip comments and empty lines
             if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -449,14 +446,12 @@ mod aromatization_tests {
 
             let (kekulized, expected_aromatic) = (parts[0], parts[1]);
 
-            // Create molecule from kekulized form
             let molecule = MolecularGraph::from_smiles(kekulized).unwrap();
             let mut molecule = molecule.first().unwrap().clone();
 
             // Try to aromatize
             molecule.simple_aromatization();
 
-            // Compare with expected
             assert_eq!(
                 molecule.to_smiles(),
                 expected_aromatic,

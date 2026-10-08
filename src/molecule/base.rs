@@ -71,7 +71,6 @@ pub trait MoleculeCore {
     }
 
     fn remove_atom(&mut self, atom_index: usize) {
-        // Remove the atom's data
         self.atomic_numbers_mut().remove(atom_index);
         self.charges_mut().remove(atom_index);
         self.radical_states_mut().remove(atom_index);
@@ -87,9 +86,7 @@ pub trait MoleculeCore {
         }
         self.remove_atom_extras(atom_index);
 
-        // Update all remaining bonds
         for current_atom_bonds in self.atom_bonds_mut() {
-            // Remove any bonds to the deleted atom
             current_atom_bonds.retain(|bond| bond.target() != atom_index);
 
             // Update indices of bonds that pointed to atoms after the deleted one
@@ -713,9 +710,7 @@ pub trait MoleculeCore {
         visited[current] = true;
         path.push(current);
 
-        // Get all bonds for current atom
         if let Some(bonds) = self.get_atom_bonds(current) {
-            // Process each bond
             for bond in bonds {
                 let target = bond.target();
 
@@ -935,7 +930,6 @@ pub trait MoleculeCore {
         aromatic_atoms[atom1_idx] && aromatic_atoms[atom2_idx]
     }
 
-    // Helper methods
     fn get_bond_order(&self, atom1: usize, atom2: usize) -> BondOrder {
         self.atom_bonds()[atom1]
             .iter()
@@ -945,7 +939,6 @@ pub trait MoleculeCore {
     }
 
     fn check_for_metal_center(&self, system: &BitSet) -> bool {
-        // Check if any atom is a transition metal
         system.iter().any(|atom_idx| {
             let atomic_number = self.atomic_numbers()[atom_idx];
             // Transition metals: 21-30, 39-48, 57-80, 89-112
@@ -1106,7 +1099,6 @@ pub trait MoleculeCore {
             return fundamental_cycles;
         }
 
-        // Initialize tree nodes with capacity
         let mut tree = Vec::with_capacity(num_atoms);
         for _ in 0..num_atoms {
             tree.push(TreeNode { parent: None });
@@ -1121,7 +1113,6 @@ pub trait MoleculeCore {
         let mut cycle = Vec::with_capacity(num_atoms);
         let mut other_path = Vec::with_capacity(num_atoms);
 
-        // Process nodes until stack is empty
         while let Some(current_node) = node_stack.pop() {
             let mut i = 0;
             while i < remaining_bonds.len() {
@@ -1137,7 +1128,6 @@ pub trait MoleculeCore {
                     continue;
                 };
 
-                // Check if other node is already in tree
                 if tree[other_node].parent.is_some() {
                     // Found a fundamental cycle
                     cycle.clear();
@@ -1158,7 +1148,6 @@ pub trait MoleculeCore {
                     }
                     other_path.push(node);
 
-                    // Find common ancestor more efficiently
                     let mut common_ancestor = None;
                     for (i, &n1) in cycle.iter().enumerate() {
                         if let Some(j) = other_path.iter().position(|&n2| n1 == n2) {
@@ -1168,7 +1157,6 @@ pub trait MoleculeCore {
                     }
 
                     if let Some((i, j)) = common_ancestor {
-                        // Construct fundamental cycle more efficiently
                         let mut fundamental_cycle = BitSet::with_capacity(num_atoms);
                         for &atom in &cycle[..=i] {
                             fundamental_cycle.insert(atom);
@@ -1183,12 +1171,10 @@ pub trait MoleculeCore {
                         }
                     }
                 } else {
-                    // Add other node to tree
                     tree[other_node].parent = Some(current_node);
                     node_stack.push(other_node);
                 }
 
-                // Remove processed bond
                 remaining_bonds.swap_remove(i);
             }
         }
@@ -1261,12 +1247,10 @@ pub trait MoleculeCore {
         while i < cycles_vec.len() {
             let mut j = 0;
             while j < cycles_vec.len() {
-                // Find intersection of cycles
                 let shared_atoms = cycles_vec[i].intersection(&cycles_vec[j]);
 
                 // If cycles share at least 2 atoms and aren't identical
                 if shared_atoms.into_iter().sum::<usize>() >= 2 {
-                    // Create new cycle by the union of the two cycles
                     let new_cycle = cycles_vec[i].union(&cycles_vec[j]).collect::<BitSet>();
 
                     // Only add if it forms a valid cycle and isn't already present

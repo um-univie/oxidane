@@ -32,7 +32,6 @@ pub use molecular_graph::{MolecularGraph, SplitError};
 pub use molecular_system::MolecularSystem;
 pub use molecule3d::Molecule3D;
 
-// Re-export commonly used types
 pub use crate::{
     atom::Atom,
     molecule::bond::{BondOrder, BondTarget},

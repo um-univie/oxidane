@@ -424,7 +424,6 @@ impl CxSMARTSParser {
 
     /// Parse a reaction SMARTS pattern
     fn parse_reaction_smarts(&mut self) -> Result<CxSMARTSPattern, CxSMARTSError> {
-        // Find the reaction arrow
         if let Some(arrow_pos) = self.input.find(">>") {
             let reactant_part = &self.input[..arrow_pos];
             let product_part = &self.input[arrow_pos + 2..];
@@ -540,10 +539,8 @@ impl CxSMARTSParser {
         }
         self.advance_position(); // Skip ']'
 
-        // Add the atom
         self.atoms.push(atom_expression);
 
-        // Store atom class if present
         if let Some(class) = atom_class {
             self.atom_classes.insert(self.current_atom_index, class);
         }
@@ -1415,7 +1412,6 @@ impl CxSMARTSPattern {
     pub fn matches(&self, molecule: &MolecularGraph) -> bool {
         use crate::io::subgraph_matching::smarts_matches;
 
-        // Handle reaction SMARTS
         if self.is_reaction {
             // For reaction SMARTS, check if reactants and products match
             if let Some(ref reactants) = self.reactants {
@@ -1439,7 +1435,6 @@ impl CxSMARTSPattern {
     pub fn find_matches(&self, molecule: &MolecularGraph) -> Vec<Vec<usize>> {
         use crate::io::subgraph_matching::find_smarts_matches;
 
-        // Handle reaction SMARTS
         if self.is_reaction {
             // For reaction SMARTS, we would need special handling
             // For now, just return empty if it's a reaction pattern

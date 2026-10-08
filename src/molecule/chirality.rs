@@ -845,10 +845,8 @@ impl ChiralClassifier for Molecule3D {
             return ChiralClass::None;
         }
 
-        // Calculate vectors from central atom to neighbors
         let vectors: Vec<Vector3D> = positions.iter().map(|&pos| pos - self_position).collect();
 
-        // Calculate cross products to determine chirality
         let cross1: Vector3D = vectors[0].cross(&vectors[1]);
         let cross2: Vector3D = vectors[1].cross(&vectors[2]);
         let cross3: Vector3D = vectors[2].cross(&vectors[3]);
@@ -911,7 +909,6 @@ impl ChiralClassifier for Molecule3D {
             return ChiralClass::None;
         }
 
-        // Calculate vectors from central atom to neighbors
         let vectors_and_indices: Vec<(Vector3D, usize)> = neighbor_positions
             .iter()
             .map(|&(pos, index)| (pos - central_position, index))
@@ -1679,7 +1676,6 @@ fn calculate_permutation_parity(original: &[usize], permuted: &[usize]) -> bool 
     // Convert permuted sequence to positions in original
     let permuted_positions: Vec<_> = permuted.iter().map(|&x| pos_map[x]).collect();
 
-    // Count inversions
     for i in 0..n {
         for j in (i + 1)..n {
             if permuted_positions[i] > permuted_positions[j] {
@@ -1688,34 +1684,28 @@ fn calculate_permutation_parity(original: &[usize], permuted: &[usize]) -> bool 
         }
     }
 
-    // Return true for odd parity (odd number of inversions)
     inversions % 2 == 1
 }
 
 /// Updates the chirality number for a trigonal bipyramidal structure
 fn update_tb_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> ChiralClass {
     // TB chirality is based on the relative positions of axial and equatorial ligands
-    // We need to:
     // 1. Identify axial ligands (usually the most distant pair)
     // 2. Track how equatorial ligands permute
 
     let axial_indices = find_axial_indices(old_order);
     let new_axial_indices = find_axial_indices(new_order);
 
-    // Calculate how axial ligands changed
     let axial_parity = calculate_permutation_parity(
         &[axial_indices.0, axial_indices.1],
         &[new_axial_indices.0, new_axial_indices.1],
     );
 
-    // Get equatorial ligands in order
     let old_equatorial = get_equatorial_order(old_order, axial_indices);
     let new_equatorial = get_equatorial_order(new_order, new_axial_indices);
 
-    // Calculate equatorial permutation
     let equatorial_parity = calculate_permutation_parity(&old_equatorial, &new_equatorial);
 
-    // Lookup new TB number based on original number and permutations
     let new_n = tb_permutation_table(n, axial_parity, equatorial_parity);
 
     ChiralClass::TB(new_n)
@@ -1737,7 +1727,6 @@ fn update_oh_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> Chira
     }
 }
 
-// Helper functions for TB chirality
 fn find_axial_indices(order: &[usize]) -> (usize, usize) {
     // In TB geometry, axial ligands are typically the most separated
     // This is a simplified version - in practice you might want to use
@@ -1760,7 +1749,6 @@ fn tb_permutation_table(n: u8, axial_parity: bool, equatorial_parity: bool) -> u
         (1, true, false) => 2,
         (1, false, true) => 3,
         (1, true, true) => 4,
-        // Add more cases based on your TB numbering scheme
         _ => n, // Default to unchanged if not handled
     }
 }

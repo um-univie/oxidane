@@ -596,7 +596,6 @@ pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, labeling: &[usize])
         return;
     }
 
-    // Create inverse mapping
     let mut inverse_mapping = (0..mol.len()).collect::<Vec<usize>>();
     let mut new_labeling = vec![0; mol.len()];
 
@@ -698,7 +697,6 @@ pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, labeling: &[usize])
     for (new_idx, &old_idx) in labeling.iter().enumerate() {
         let atom_bonds = mol.atom_bonds();
         let mut bonds = atom_bonds[old_idx];
-        // Update bond targets according to new ordering
         for bond in &mut bonds {
             bond.target = inverse_mapping[bond.target()];
         }
@@ -953,14 +951,12 @@ fn neighbor_orders_comparable(old_order: &[usize], new_order: &[usize]) -> bool 
 /// `true` if there is an odd number of inversions (indicating a parity change),
 /// `false` otherwise
 fn has_inversion(old_neighbors: &[usize], new_neighbors: &[usize]) -> bool {
-    // Create a mapping from old positions to new positions
     let mut position_map = vec![0; old_neighbors.len()];
     for (new_pos, &value) in new_neighbors.iter().enumerate() {
         let old_pos = old_neighbors.iter().position(|&x| x == value).unwrap();
         position_map[old_pos] = new_pos;
     }
 
-    // Count inversions in the position mapping
     let mut inversions = 0;
     for i in 0..position_map.len() {
         for j in i + 1..position_map.len() {
@@ -1077,7 +1073,6 @@ pub fn canonicalize_and_sort_smiles(
         .map(|mol| canonize_perceived(mol).to_smiles())
         .collect();
 
-    // Sort the canonical SMILES strings
     canonical_smiles.sort();
 
     // Recombine the sorted canonical SMILES strings
@@ -1216,10 +1211,8 @@ mod tests {
             "I[Co@OH27](Cl)(Br)(F)(S)C",
         ];
 
-        // Get the canonical form of the first SMILES
         let first_canonical = canonicalize_and_sort_smiles(equivalent_smiles[0], false).unwrap();
 
-        // Test that all SMILES canonicalize to the same form
         for smiles in equivalent_smiles.iter().skip(1) {
             let canonical = canonicalize_and_sort_smiles(smiles, false).unwrap();
             assert_eq!(
@@ -1510,7 +1503,6 @@ mod tests {
 
         let limit = 100000;
 
-        // Open the SMILES file
         let file = File::open(smiles_file_path)
             .unwrap_or_else(|_| panic!("Failed to open SMILES file: {}", smiles_file_path));
         let reader = BufReader::new(file);
@@ -1524,42 +1516,33 @@ mod tests {
 
         // Record the start time
         let start_time = Instant::now();
-        // Build thread pool
         let _pool = rayon::ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
             .unwrap();
 
-        // Process each line in parallel and accumulate counts
         let (total_smiles, correct_smiles) = lines
           .par_iter()
           .map(|line| {
               let mut iterator = line.split_whitespace();
 
-              // Extract the comparison SMILES string
               let comparison_smiles = match iterator.next() {
                   Some(smiles) => smiles,
                   None => return (0, 0),
               };
 
-              // Canonicalize the comparison SMILES
               let canonical_comparison_smiles = canonicalize_and_sort_smiles(comparison_smiles, true).unwrap();
 
-              // Assuming `mol_canonization` and related functions are defined elsewhere
-              // Initialize local counters
               let mut local_total = 0;
               let mut local_correct = 0;
 
-              // Iterate through each SMILES in the line
               for smiles in iterator//.take(limit)
               {
                   local_total += 1;
                   //println!("Canonizing {:?}\n", smiles);
 
-                  // Canonicalize the current SMILES
                   let canonical_smiles = canonicalize_and_sort_smiles(smiles, true).unwrap();
 
-                  // Update the correct SMILES counter if canonicalizations match
                   if canonical_comparison_smiles == canonical_smiles {
                       local_correct += 1;
                   }
@@ -1590,7 +1573,6 @@ mod tests {
         // Record the end time
         let duration = start_time.elapsed();
 
-        // Calculate success rate
         let success_rate = if total_smiles > 0 {
             (correct_smiles as f64 / total_smiles as f64) * 100.0
         } else {

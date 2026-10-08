@@ -378,7 +378,6 @@ impl MolecularGraph {
     /// assert_eq!(parts.len(), 2);
     /// ```
     pub fn split(&self, atom_groups: Vec<Vec<usize>>) -> Result<Vec<MolecularGraph>, SplitError> {
-        // Validate input groups
         self.validate_split_groups(&atom_groups)?;
 
         // Check that no bonds would be broken
@@ -405,7 +404,6 @@ impl MolecularGraph {
 
         for group in atom_groups {
             for &atom_idx in group {
-                // Check if atom index is valid
                 if atom_idx >= self.atomic_numbers().len() {
                     return Err(SplitError::InvalidAtomIndex(atom_idx));
                 }
@@ -422,7 +420,6 @@ impl MolecularGraph {
 
     /// Validates that no bonds would be broken by the split
     fn validate_no_broken_bonds(&self, atom_groups: &[Vec<usize>]) -> Result<(), SplitError> {
-        // Create a mapping from atom index to group index using IntMap for better performance
         let mut atom_to_group = IntMap::default();
         for (group_idx, group) in atom_groups.iter().enumerate() {
             for &atom_idx in group {
@@ -488,13 +485,11 @@ impl MolecularGraph {
             return Err(SplitError::EmptyGroups);
         }
 
-        // Create mapping from old indices to new indices using IntMap for better performance
         let mut old_to_new = IntMap::default();
         for (new_idx, &old_idx) in atom_indices.iter().enumerate() {
             old_to_new.insert(old_idx, new_idx);
         }
 
-        // Extract atomic data for selected atoms
         let atomic_numbers: Vec<u8> = atom_indices
             .iter()
             .map(|&idx| self.atomic_numbers[idx])
@@ -529,7 +524,6 @@ impl MolecularGraph {
             .as_ref()
             .map(|charges| atom_indices.iter().map(|&idx| charges[idx]).collect());
 
-        // Extract and remap bonds
         let mut atom_bonds = vec![ArrayVec::new(); atom_indices.len()];
 
         for (new_idx, &old_idx) in atom_indices.iter().enumerate() {

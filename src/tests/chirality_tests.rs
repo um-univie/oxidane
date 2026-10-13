@@ -122,4 +122,97 @@ mod tests {
         assert_eq!(cis.to_smiles(), "C(=C/C)/C");
         assert_eq!(trans.to_smiles(), "C(=C\\C)/C");
     }
+
+    /// Every ordering of `items`, in lexicographic order of positions.
+    fn permutations(items: usize) -> Vec<Vec<usize>> {
+        if items == 0 {
+            return vec![Vec::new()];
+        }
+        let mut all = Vec::new();
+        for rest in permutations(items - 1) {
+            for slot in 0..=rest.len() {
+                let mut next = rest.clone();
+                next.insert(slot, items - 1);
+                all.push(next);
+            }
+        }
+        all
+    }
+
+    /// `update_chirality_after_relabeling_in_place` returns the class a
+    /// centre must carry once its neighbours are listed in their new label
+    /// order. Writing the centre that way with that class is therefore the
+    /// same molecule as before, which the canonical SMILES can check: for
+    /// every TB and SP class under every relabelling of the neighbours, and
+    /// every OH class under a spread of them.
+    #[test]
+    fn a_relabelled_tb_sp_or_oh_centre_keeps_its_geometry() {
+        use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+        use crate::molecule::chirality::update_chirality_after_relabeling_in_place;
+
+        let canon = |smiles: &str| canonicalize_and_sort_smiles(smiles, false).unwrap();
+        let write = |centre: &str, tag: &str, class: u8, listed: &[&str]| {
+            let middle: String = listed[1..listed.len() - 1]
+                .iter()
+                .map(|ligand| format!("({ligand})"))
+                .collect();
+            format!("{}[{centre}@{tag}{class}]{middle}{}", listed[0], listed[listed.len() - 1])
+        };
+        let cases: [(&str, &str, u8, &[&str], usize); 3] = [
+            ("As", "TB", 20, &["S", "F", "Cl", "Br", "N"], 1),
+            ("Pt", "SP", 3, &["F", "Cl", "Br", "I"], 1),
+            ("Co", "OH", 30, &["S", "F", "Cl", "Br", "N", "I"], 37),
+        ];
+        for (centre, tag, classes, ligands, stride) in cases {
+            // Ligand atoms are 0 and 2.., the centre 1, as the SMILES is written.
+            let atoms: Vec<usize> = std::iter::once(0).chain(2..=ligands.len()).collect();
+            for class in 1..=classes {
+                let written = write(centre, tag, class, ligands);
+                let expected = canon(&written);
+                for order in permutations(ligands.len()).into_iter().step_by(stride) {
+                    let mut labeling: Vec<usize> = (0..=ligands.len()).collect();
+                    for (position, &rank) in order.iter().enumerate() {
+                        labeling[atoms[position]] = atoms[rank];
+                    }
+                    let mut molecule = MolecularGraph::from_smiles_single(&written).unwrap();
+                    update_chirality_after_relabeling_in_place(&mut molecule, &labeling);
+                    let relabelled = match molecule.chiral_classes().unwrap()[1] {
+                        ChiralClass::TB(n) | ChiralClass::SP(n) | ChiralClass::OH(n) => n,
+                        other => panic!("{written}: became {other:?}"),
+                    };
+                    let mut listing: Vec<usize> = (0..ligands.len()).collect();
+                    listing.sort_by_key(|&position| order[position]);
+                    let listed: Vec<&str> = listing.iter().map(|&position| ligands[position]).collect();
+                    let rewritten = write(centre, tag, relabelled, &listed);
+                    assert_eq!(
+                        canon(&rewritten),
+                        expected,
+                        "{written} relabelled by {order:?} came back as {rewritten}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The cases the old parity rules got wrong, checked against the
+    /// OpenSMILES definitions directly. TB1 is the a-e axis with b, c, d
+    /// anticlockwise seen from a: exchanging two equatorial neighbours or the
+    /// two axial ones reverses that, a three-cycle of the equatorials does
+    /// not. SP1 is the U path a-b-c-d round the square: exchanging a and c is
+    /// a reflection of the square and leaves it a U.
+    #[test]
+    fn relabelling_follows_the_opensmiles_tb_and_sp_definitions() {
+        use crate::molecule::chirality::update_chirality_after_relabeling_in_place;
+
+        let relabel = |smiles: &str, labeling: &[usize]| {
+            let mut molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            update_chirality_after_relabeling_in_place(&mut molecule, labeling);
+            molecule.chiral_classes().unwrap()[1]
+        };
+        let tb1 = "S[As@TB1](F)(Cl)(Br)N";
+        assert_eq!(relabel(tb1, &[0, 1, 2, 4, 3, 5]), ChiralClass::TB(2));
+        assert_eq!(relabel(tb1, &[5, 1, 2, 3, 4, 0]), ChiralClass::TB(2));
+        assert_eq!(relabel(tb1, &[0, 1, 3, 4, 2, 5]), ChiralClass::TB(1));
+        assert_eq!(relabel("F[Pt@SP1](Cl)(Br)I", &[3, 1, 2, 0, 4]), ChiralClass::SP(1));
+    }
 }

@@ -1532,16 +1532,7 @@ pub fn update_chirality_after_relabeling_in_place(mol: &mut impl Molecule, label
                     .map(|b| *labeling.get(b.target()).unwrap_or(&b.target()))
                     .collect();
 
-                if calculate_permutation_parity(&old_order, &new_order) {
-                    match n {
-                        1 => ChiralClass::SP(2), // U -> Z
-                        2 => ChiralClass::SP(3), // Z -> 4
-                        3 => ChiralClass::SP(1), // 4 -> U
-                        _ => ChiralClass::SP(n),
-                    }
-                } else {
-                    ChiralClass::SP(n)
-                }
+                update_sp_chirality(n, &old_order, &new_order)
             }
 
             ChiralClass::TB(n) => {
@@ -1687,70 +1678,32 @@ fn calculate_permutation_parity(original: &[usize], permuted: &[usize]) -> bool 
     inversions % 2 == 1
 }
 
-/// Updates the chirality number for a trigonal bipyramidal structure
-fn update_tb_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> ChiralClass {
-    // TB chirality is based on the relative positions of axial and equatorial ligands
-    // 1. Identify axial ligands (usually the most distant pair)
-    // 2. Track how equatorial ligands permute
-
-    let axial_indices = find_axial_indices(old_order);
-    let new_axial_indices = find_axial_indices(new_order);
-
-    let axial_parity = calculate_permutation_parity(
-        &[axial_indices.0, axial_indices.1],
-        &[new_axial_indices.0, new_axial_indices.1],
-    );
-
-    let old_equatorial = get_equatorial_order(old_order, axial_indices);
-    let new_equatorial = get_equatorial_order(new_order, new_axial_indices);
-
-    let equatorial_parity = calculate_permutation_parity(&old_equatorial, &new_equatorial);
-
-    let new_n = tb_permutation_table(n, axial_parity, equatorial_parity);
-
-    ChiralClass::TB(new_n)
-}
-
-/// Updates the chirality number for an octahedral structure.
-///
-/// `old_order` holds the neighbor atom ids in their original listing order and
-/// `new_order` the new label of each of those neighbors (same positions). The
-/// new SMILES lists neighbors in ascending label order.
-fn update_oh_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> ChiralClass {
+/// The neighbors of a relabelled centre in the order its SMILES lists them:
+/// ascending new label. `old_order` holds the neighbor atom ids in their
+/// original listing order and `new_order` the new label of each of those
+/// neighbors, position for position.
+fn relisted(old_order: &[usize], new_order: &[usize]) -> Vec<usize> {
     let mut positions: Vec<usize> = (0..old_order.len()).collect();
     positions.sort_by_key(|&i| new_order[i]);
-    let new_listing: Vec<usize> = positions.iter().map(|&i| old_order[i]).collect();
-
-    match remap_oh_number(n, old_order, &new_listing) {
-        Some(new_n) => ChiralClass::OH(new_n),
-        None => ChiralClass::OH(n),
-    }
+    positions.iter().map(|&i| old_order[i]).collect()
 }
 
-fn find_axial_indices(order: &[usize]) -> (usize, usize) {
-    // In TB geometry, axial ligands are typically the most separated
-    // This is a simplified version - in practice you might want to use
-    // actual 3D coordinates if available
-    (order[0], order[4])
+/// Updates the chirality number for a trigonal-bipyramidal centre whose
+/// neighbors have been relabelled; see [`relisted`] for the two orders.
+fn update_tb_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> ChiralClass {
+    ChiralClass::TB(remap_tb_number(n, old_order, &relisted(old_order, new_order)).unwrap_or(n))
 }
 
-fn get_equatorial_order(order: &[usize], axial_indices: (usize, usize)) -> Vec<usize> {
-    order
-        .iter()
-        .copied()
-        .filter(|&idx| idx != axial_indices.0 && idx != axial_indices.1)
-        .collect()
+/// Updates the chirality number for a square-planar centre whose neighbors
+/// have been relabelled; see [`relisted`] for the two orders.
+fn update_sp_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> ChiralClass {
+    ChiralClass::SP(remap_sp_number(n, old_order, &relisted(old_order, new_order)).unwrap_or(n))
 }
 
-fn tb_permutation_table(n: u8, axial_parity: bool, equatorial_parity: bool) -> u8 {
-    // This is a simplified version - you'll need a complete mapping table
-    match (n, axial_parity, equatorial_parity) {
-        (1, false, false) => 1,
-        (1, true, false) => 2,
-        (1, false, true) => 3,
-        (1, true, true) => 4,
-        _ => n, // Default to unchanged if not handled
-    }
+/// Updates the chirality number for an octahedral centre whose neighbors have
+/// been relabelled; see [`relisted`] for the two orders.
+fn update_oh_chirality(n: u8, old_order: &[usize], new_order: &[usize]) -> ChiralClass {
+    ChiralClass::OH(remap_oh_number(n, old_order, &relisted(old_order, new_order)).unwrap_or(n))
 }
 
 /// Converts octahedral configuration parameters into the corresponding OH number (1-30).

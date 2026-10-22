@@ -461,3 +461,20 @@ fn enantiomers_get_opposite_descriptors() {
         }
     }
 }
+
+/// A functionalised fullerene (PubChem CID 178493059) with six quaternary
+/// stereocentres that all see each other. Each labelling had its own budget, and
+/// so did every auxiliary descriptor inside every centre's digraph, so the call
+/// never finished; one budget for the whole call bounds it at under two seconds
+/// in a release build. Ignored by default because a debug build takes far
+/// longer -- run with `cargo test --release -- --ignored`.
+#[test]
+#[ignore]
+fn a_cage_of_mutually_visible_centres_finishes() {
+    let smiles = "CC[C@@]12C3=C4C5=C1[C@@]6(C7=C8C=CC9=C7[C@]5(C1=C9C=CC5=C1[C@]4(C1=C5C=CC4=C1[C@]3(C1=C4C=CC3=C1[C@]2(C1=C3C=CC8=C16)C1=CC=C(C=C1)C(CC(=O)O)OC=O)C1=CC=C(C=C1)C(CC(=O)O)OC=O)C1=CC=C(C=C1)C(CC(=O)O)C(=O)O)C1=CC=C(C=C1)C(COC=O)C(=O)O)C1=CC=C(C=C1)C(COC=O)OC=O";
+    let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+    let start = std::time::Instant::now();
+    let labels = molecule.assign_cip_configs();
+    assert_eq!(labels.len(), molecule.len());
+    assert!(start.elapsed().as_secs() < 30, "took {:?}", start.elapsed());
+}

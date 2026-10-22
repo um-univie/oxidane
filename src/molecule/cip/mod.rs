@@ -134,6 +134,33 @@ const CONSTITUTIONAL_BUDGET: u64 = 2_000;
 /// Comparison budget for the second pass, where the full rule set runs.
 const FULL_BUDGET: u64 = 10_000_000;
 
+/// Comparison budget for one whole `assign_cip_configs` call, every centre
+/// and every auxiliary descriptor included.
+///
+/// [`FULL_BUDGET`] bounds one labelling, but a molecule asks for one per
+/// centre and [`label_auxiliary`] for one per occurrence of every other centre
+/// inside each centre's digraph. On a cage with dozens of centres that can see
+/// each other -- PubChem's CID 178493059, a functionalised fullerene, was the
+/// case -- the product never finished. Drawing every labelling from one pool
+/// bounds the call; what the pool cannot pay for stays unlabelled, the same
+/// outcome as one centre running out.
+const TOTAL_BUDGET: u64 = 20_000_000;
+
+/// Runs `label` with a comparison budget of at most `cap`, drawn from
+/// `remaining`, and charges `remaining` what it used.
+fn budgeted<T>(
+    remaining: &mut u64,
+    master: &[Rule],
+    cap: u64,
+    label: impl FnOnce(&mut Ctx) -> T,
+) -> T {
+    let granted = cap.min(*remaining);
+    let mut ctx = Ctx { master, budget: granted };
+    let result = label(&mut ctx);
+    *remaining -= granted - ctx.budget;
+    result
+}
+
 /// Rules that depend only on constitution — no descriptors involved, so they
 /// can run before anything has been labelled.
 const CONSTITUTIONAL_RULES: [Rule; 3] = [Rule::R1a, Rule::R1b, Rule::R2];
@@ -188,11 +215,13 @@ impl MolecularGraph {
             .map(|config| Digraph::new(Rc::clone(&cip_mol), config.root_atom()))
             .collect();
         let mut labels = vec![Descriptor::None; found.len()];
+        let mut remaining = TOTAL_BUDGET;
 
         // Cheap pass: constitutional rules only, tight budget.
         for (index, config) in found.iter().enumerate() {
-            let mut ctx = Ctx { master: &CONSTITUTIONAL_RULES, budget: CONSTITUTIONAL_BUDGET };
-            let descriptor = config.label(&mut digraphs[index], &mut ctx);
+            let descriptor = budgeted(&mut remaining, &CONSTITUTIONAL_RULES, CONSTITUTIONAL_BUDGET, |ctx| {
+                config.label(&mut digraphs[index], ctx)
+            });
             if descriptor != Descriptor::Unknown {
                 labels[index] = descriptor;
             }
@@ -204,16 +233,21 @@ impl MolecularGraph {
             if labels[index] != Descriptor::None {
                 continue;
             }
-            let mut ctx = Ctx { master: &CONSTITUTIONAL_RULES, budget: FULL_BUDGET };
-            let descriptor = found[index].label(&mut digraphs[index], &mut ctx);
+            if remaining == 0 {
+                break;
+            }
+            let descriptor = budgeted(&mut remaining, &CONSTITUTIONAL_RULES, FULL_BUDGET, |ctx| {
+                found[index].label(&mut digraphs[index], ctx)
+            });
             if descriptor != Descriptor::Unknown {
                 labels[index] = descriptor;
                 continue;
             }
 
-            label_auxiliary(&found, index, &mut digraphs[index]);
-            let mut ctx = Ctx { master: &ALL_RULES, budget: FULL_BUDGET };
-            let descriptor = found[index].label(&mut digraphs[index], &mut ctx);
+            label_auxiliary(&found, index, &mut digraphs[index], &mut remaining);
+            let descriptor = budgeted(&mut remaining, &ALL_RULES, FULL_BUDGET, |ctx| {
+                found[index].label(&mut digraphs[index], ctx)
+            });
             if descriptor != Descriptor::Unknown {
                 labels[index] = descriptor;
             }
@@ -242,7 +276,12 @@ impl MolecularGraph {
 /// the occurrences are labelled outermost first, and all occurrences at one
 /// distance are computed before any of them is written back, so that they
 /// cannot see each other's results.
-fn label_auxiliary(configs: &[Configuration], index: usize, digraph: &mut Digraph) {
+fn label_auxiliary(
+    configs: &[Configuration],
+    index: usize,
+    digraph: &mut Digraph,
+    remaining: &mut u64,
+) {
     let mut pending: Vec<(i32, digraph::NodeId, usize)> = Vec::new();
 
     for (other, config) in configs.iter().enumerate() {
@@ -286,8 +325,9 @@ fn label_auxiliary(configs: &[Configuration], index: usize, digraph: &mut Digrap
             }
             previous = distance;
         }
-        let mut ctx = Ctx { master: &ALL_RULES, budget: FULL_BUDGET };
-        let descriptor = configs[other].label_from(digraph, &mut ctx, node);
+        let descriptor = budgeted(remaining, &ALL_RULES, FULL_BUDGET, |ctx| {
+            configs[other].label_from(digraph, ctx, node)
+        });
         queue.push((node, descriptor));
     }
     for (node, descriptor) in queue {

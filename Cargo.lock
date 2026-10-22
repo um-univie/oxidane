@@ -210,9 +210,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "chemistry_consts"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23df45bb92ba7cc7b966aa1fcf555738e4573e2f16f5448971752359a728f61d"
+checksum = "b7360ee627437c4f435e36478946c5b01a8aeff8ca5312e4eadfa514eb179591"
 
 [[package]]
 name = "cmov"

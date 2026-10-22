@@ -352,8 +352,8 @@ pub trait MoleculeGraph: MoleculeCore {
             pattern_node_count: other.len(),
             pattern_edges,
             target_node_count: self.len(),
-            neighbours: |atom: usize| {
-                self.atom_bonds()[atom].iter().map(|bond| bond.target()).collect()
+            neighbours: |atom: usize, out: &mut Vec<usize>| {
+                out.extend(self.atom_bonds()[atom].iter().map(|bond| bond.target()))
             },
             node_match: |pattern_atom: usize, target_atom: usize| {
                 other.get_atom_label(pattern_atom) == self.get_atom_label(target_atom)

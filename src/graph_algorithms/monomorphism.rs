@@ -21,7 +21,8 @@
 
 /// A pattern to look for, plus how to recognise it in the target.
 ///
-/// - `neighbours(target_node)` lists the target nodes adjacent to one.
+/// - `neighbours(target_node, out)` appends the target nodes adjacent to one
+///   to `out`, which the search reuses rather than allocating per step.
 /// - `node_match(pattern_node, target_node)` decides whether a node may stand
 ///   for another.
 /// - `edge_match(pattern_edge, target_a, target_b)` decides whether the
@@ -40,7 +41,7 @@ pub(crate) struct Monomorphism<Neighbours, NodeMatch, EdgeMatch> {
 
 impl<Neighbours, NodeMatch, EdgeMatch> Monomorphism<Neighbours, NodeMatch, EdgeMatch>
 where
-    Neighbours: Fn(usize) -> Vec<usize>,
+    Neighbours: Fn(usize, &mut Vec<usize>),
     NodeMatch: Fn(usize, usize) -> bool,
     EdgeMatch: Fn(usize, usize, usize) -> bool,
 {
@@ -71,10 +72,41 @@ where
         if self.pattern_node_count == 0 || self.pattern_node_count > self.target_node_count {
             return;
         }
-        let order = self.search_order();
-        let mut assignment = vec![usize::MAX; self.pattern_node_count];
-        let mut used = vec![false; self.target_node_count];
-        self.extend(&order, 0, &mut assignment, &mut used, found);
+        let plan = self.plan();
+        let mut search = Search::new(self, &plan);
+        search.extend(0, found);
+    }
+
+    /// For every target node, whether some mapping with pattern node 0 held
+    /// there passes `accept` -- the question a recursive SMARTS asks.
+    ///
+    /// Each root stops at its first accepted mapping, which is never more work
+    /// than listing every mapping and reading the roots off, and on a
+    /// symmetric pattern it is far less.
+    pub(crate) fn rooted_matches(&self, accept: &mut impl FnMut(&[usize]) -> bool) -> Vec<bool> {
+        let mut roots = vec![false; self.target_node_count];
+        if self.pattern_node_count == 0 || self.pattern_node_count > self.target_node_count {
+            return roots;
+        }
+        // The search order always starts from pattern node 0, so holding it
+        // fixed is just starting one level down.
+        let plan = self.plan();
+        debug_assert_eq!(plan.first().map(|step| step.node), Some(0));
+        let mut search = Search::new(self, &plan);
+        for (target, root) in roots.iter_mut().enumerate() {
+            if !(self.node_match)(0, target) {
+                continue;
+            }
+            search.assignment[0] = target;
+            search.used[target] = true;
+            search.extend(1, &mut |assignment| {
+                *root = accept(assignment);
+                !*root
+            });
+            search.used[target] = false;
+            search.assignment[0] = usize::MAX;
+        }
+        roots
     }
 
     /// The order pattern nodes are assigned in: each one after the first is
@@ -113,86 +145,114 @@ where
         order
     }
 
-    /// Assigns `order[depth]` every way it can be, then recurses. Returns
-    /// whether the search should continue.
-    fn extend(
-        &self,
-        order: &[usize],
-        depth: usize,
-        assignment: &mut Vec<usize>,
-        used: &mut Vec<bool>,
-        found: &mut impl FnMut(&[usize]) -> bool,
-    ) -> bool {
-        if depth == order.len() {
-            return found(assignment);
-        }
-        let pattern_node = order[depth];
+    /// What each depth of the search does, worked out once from the order.
+    ///
+    /// The nodes assigned before depth `d` are always `order[..d]`, so which
+    /// neighbour a node's candidates come from and which of its edges reach an
+    /// already-placed node are the same every time that depth is entered.
+    /// Both are taken from the edges in their given order, so the candidates
+    /// and the checks come in the order a search that worked them out afresh
+    /// would use.
+    fn plan(&self) -> Vec<Step> {
+        let mut placed = vec![false; self.pattern_node_count];
+        self.search_order()
+            .into_iter()
+            .map(|node| {
+                let mut anchor = None;
+                let mut back_edges = Vec::new();
+                for (edge_index, &(first, second)) in self.pattern_edges.iter().enumerate() {
+                    let other = if first == node {
+                        second
+                    } else if second == node {
+                        first
+                    } else {
+                        continue;
+                    };
+                    if other >= self.pattern_node_count || !placed[other] {
+                        continue;
+                    }
+                    anchor.get_or_insert(other);
+                    back_edges.push((edge_index, other));
+                }
+                placed[node] = true;
+                Step { node, anchor, back_edges }
+            })
+            .collect()
+    }
+}
 
-        for target_node in self.candidates(pattern_node, assignment) {
-            if used[target_node] || !(self.node_match)(pattern_node, target_node) {
+/// One depth of the search: the pattern node it assigns, the placed node its
+/// candidates are the neighbours of (or `None` to try the whole target), and
+/// the edges back to placed nodes a candidate has to satisfy.
+struct Step {
+    node: usize,
+    anchor: Option<usize>,
+    back_edges: Vec<(usize, usize)>,
+}
+
+/// The state of one search: the mapping so far, which target nodes it uses,
+/// and a candidate buffer per depth so that no step allocates.
+struct Search<'s, Neighbours, NodeMatch, EdgeMatch> {
+    problem: &'s Monomorphism<Neighbours, NodeMatch, EdgeMatch>,
+    plan: &'s [Step],
+    assignment: Vec<usize>,
+    used: Vec<bool>,
+    candidates: Vec<Vec<usize>>,
+}
+
+impl<'s, Neighbours, NodeMatch, EdgeMatch> Search<'s, Neighbours, NodeMatch, EdgeMatch>
+where
+    Neighbours: Fn(usize, &mut Vec<usize>),
+    NodeMatch: Fn(usize, usize) -> bool,
+    EdgeMatch: Fn(usize, usize, usize) -> bool,
+{
+    fn new(problem: &'s Monomorphism<Neighbours, NodeMatch, EdgeMatch>, plan: &'s [Step]) -> Self {
+        Self {
+            problem,
+            plan,
+            assignment: vec![usize::MAX; problem.pattern_node_count],
+            used: vec![false; problem.target_node_count],
+            candidates: vec![Vec::new(); plan.len()],
+        }
+    }
+
+    /// Assigns `plan[depth]`'s node every way it can be, then recurses.
+    /// Returns whether the search should continue.
+    ///
+    /// Extra target edges are not checked -- that is exactly what makes this
+    /// a monomorphism rather than an induced isomorphism.
+    fn extend(&mut self, depth: usize, found: &mut impl FnMut(&[usize]) -> bool) -> bool {
+        if depth == self.plan.len() {
+            return found(&self.assignment);
+        }
+        let step = &self.plan[depth];
+        let mut candidates = std::mem::take(&mut self.candidates[depth]);
+        candidates.clear();
+        match step.anchor {
+            Some(anchor) => (self.problem.neighbours)(self.assignment[anchor], &mut candidates),
+            None => candidates.extend(0..self.problem.target_node_count),
+        }
+
+        let mut keep_going = true;
+        for &target in &candidates {
+            if self.used[target] || !(self.problem.node_match)(step.node, target) {
                 continue;
             }
-            if !self.edges_satisfied(pattern_node, target_node, assignment) {
+            if !step.back_edges.iter().all(|&(edge_index, other)| {
+                (self.problem.edge_match)(edge_index, target, self.assignment[other])
+            }) {
                 continue;
             }
-            assignment[pattern_node] = target_node;
-            used[target_node] = true;
-            let keep_going = self.extend(order, depth + 1, assignment, used, found);
-            used[target_node] = false;
-            assignment[pattern_node] = usize::MAX;
+            self.assignment[step.node] = target;
+            self.used[target] = true;
+            keep_going = self.extend(depth + 1, found);
+            self.used[target] = false;
+            self.assignment[step.node] = usize::MAX;
             if !keep_going {
-                return false;
+                break;
             }
         }
-        true
-    }
-
-    /// Target nodes worth trying: the neighbours of an already-assigned
-    /// pattern neighbour if there is one, otherwise the whole target.
-    fn candidates(&self, pattern_node: usize, assignment: &[usize]) -> Vec<usize> {
-        for &(first, second) in &self.pattern_edges {
-            let anchor = if first == pattern_node {
-                second
-            } else if second == pattern_node {
-                first
-            } else {
-                continue;
-            };
-            if anchor < assignment.len() && assignment[anchor] != usize::MAX {
-                return (self.neighbours)(assignment[anchor]);
-            }
-        }
-        (0..self.target_node_count).collect()
-    }
-
-    /// Every pattern edge from `pattern_node` to an already-assigned node must
-    /// be satisfied. Extra target edges are not checked — that is exactly what
-    /// makes this a monomorphism rather than an induced isomorphism.
-    fn edges_satisfied(
-        &self,
-        pattern_node: usize,
-        target_node: usize,
-        assignment: &[usize],
-    ) -> bool {
-        for (edge_index, &(first, second)) in self.pattern_edges.iter().enumerate() {
-            let other = if first == pattern_node {
-                second
-            } else if second == pattern_node {
-                first
-            } else {
-                continue;
-            };
-            if other >= assignment.len() {
-                continue;
-            }
-            let mapped = assignment[other];
-            if mapped == usize::MAX {
-                continue;
-            }
-            if !(self.edge_match)(edge_index, target_node, mapped) {
-                return false;
-            }
-        }
-        true
+        self.candidates[depth] = candidates;
+        keep_going
     }
 }

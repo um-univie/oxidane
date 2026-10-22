@@ -410,20 +410,45 @@ pub struct PetgraphSMARTSMatcher<'a> {
     /// recursive SMARTS notoriously slow elsewhere. One search per sub-pattern
     /// per molecule answers it for every atom at once.
     recursive_roots: std::cell::RefCell<HashMap<String, Vec<bool>>>,
+    /// Per pattern atom, whether its expression asks about chirality, which
+    /// the search then leaves to [`PetgraphSMARTSMatcher::stereo_matches`].
+    /// Worked out once here rather than for every candidate atom, where
+    /// walking the expression tree was a sixth of a MACCS fingerprint.
+    atom_stereo: Vec<bool>,
+    /// Whether anything in the pattern asks about stereochemistry at all.
+    stereo: bool,
+}
+
+thread_local! {
+    /// Every recursive sub-pattern this thread has met, parsed. The source of
+    /// a `[$(...)]` is all the pattern keeps, and parsing it again for every
+    /// molecule it was asked of cost more than matching it.
+    static RECURSIVE_PATTERNS: std::cell::RefCell<HashMap<String, Option<std::rc::Rc<CxSMARTSPattern>>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// The inside of a `[$(...)]`, parsed once per thread; `None` if it does not
+/// parse.
+fn parsed_recursive(source: &str) -> Option<std::rc::Rc<CxSMARTSPattern>> {
+    RECURSIVE_PATTERNS.with(|cache| {
+        if let Some(parsed) = cache.borrow().get(source) {
+            return parsed.clone();
+        }
+        let parsed = crate::io::parse_cxsmarts(source).ok().map(std::rc::Rc::new);
+        cache.borrow_mut().insert(source.to_string(), parsed.clone());
+        parsed
+    })
 }
 
 impl<'a> PetgraphSMARTSMatcher<'a> {
     /// Create a new petgraph-based SMARTS matcher
     pub fn new(pattern: &'a CxSMARTSPattern, molecule: &'a MolecularGraph) -> Self {
-        Self {
+        Self::build(
             pattern,
             molecule,
-            ring_info: std::borrow::Cow::Owned(compute_ring_info(molecule)),
-            aromaticity_info: std::borrow::Cow::Owned(compute_aromaticity_info(
-                molecule,
-            )),
-            recursive_roots: std::cell::RefCell::new(HashMap::new()),
-        }
+            std::borrow::Cow::Owned(compute_ring_info(molecule)),
+            std::borrow::Cow::Owned(compute_aromaticity_info(molecule)),
+        )
     }
 
     /// [`PetgraphSMARTSMatcher::new`] against an analysis the caller already has.
@@ -432,12 +457,28 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
         molecule: &'a MolecularGraph,
         context: &'a MoleculeMatchContext,
     ) -> Self {
+        Self::build(
+            pattern,
+            molecule,
+            std::borrow::Cow::Borrowed(&context.ring_info),
+            std::borrow::Cow::Borrowed(&context.aromaticity_info),
+        )
+    }
+
+    fn build(
+        pattern: &'a CxSMARTSPattern,
+        molecule: &'a MolecularGraph,
+        ring_info: std::borrow::Cow<'a, RingInfo>,
+        aromaticity_info: std::borrow::Cow<'a, AromaticityInfo>,
+    ) -> Self {
         Self {
             pattern,
             molecule,
-            ring_info: std::borrow::Cow::Borrowed(&context.ring_info),
-            aromaticity_info: std::borrow::Cow::Borrowed(&context.aromaticity_info),
+            ring_info,
+            aromaticity_info,
             recursive_roots: std::cell::RefCell::new(HashMap::new()),
+            atom_stereo: pattern.atoms.iter().map(super::smarts_stereo::has_atom_stereo).collect(),
+            stereo: super::smarts_stereo::has_stereo(pattern),
         }
     }
 
@@ -447,28 +488,24 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     /// is what makes `[$(CC=O)]` a carbon next to a carbonyl rather than a
     /// three-atom fragment.
     fn recursive_roots(&self, source: &str) -> Vec<bool> {
-        let mut roots = vec![false; self.molecule.number_of_atoms()];
-        let Ok(pattern) = crate::io::parse_cxsmarts(source) else {
+        let Some(pattern) = parsed_recursive(source) else {
             // An unreadable sub-pattern matches nothing. Saying it matches
             // everything -- which is what leaving it unimplemented did -- turns
             // every key built on it into a bit that is always set.
-            return roots;
+            return vec![false; self.molecule.number_of_atoms()];
         };
-        let inner = PetgraphSMARTSMatcher {
-            pattern: &pattern,
-            molecule: self.molecule,
-            ring_info: std::borrow::Cow::Borrowed(&self.ring_info),
-            aromaticity_info: std::borrow::Cow::Borrowed(&self.aromaticity_info),
-            recursive_roots: std::cell::RefCell::new(HashMap::new()),
-        };
-        for mapping in inner.find_all_matches() {
-            if let Some(&atom) = mapping.get(&0) {
-                if atom < roots.len() {
-                    roots[atom] = true;
-                }
-            }
-        }
-        roots
+        let inner = PetgraphSMARTSMatcher::build(
+            &pattern,
+            self.molecule,
+            std::borrow::Cow::Borrowed(&self.ring_info),
+            std::borrow::Cow::Borrowed(&self.aromaticity_info),
+        );
+        // One rooted search per atom, each stopping at its first match: the
+        // question is only ever whether a root has one, and listing every
+        // mapping to find out enumerated the symmetric ones many times over.
+        inner
+            .monomorphism()
+            .rooted_matches(&mut |assignment| inner.stereo_matches(assignment))
     }
 
     /// Every way the pattern can be laid over the molecule, as
@@ -491,7 +528,7 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     /// Whether the pattern matches anywhere, stopping at the first complete
     /// mapping that satisfies both constitution and stereochemistry.
     pub fn has_match(&self) -> bool {
-        if !super::smarts_stereo::has_stereo(self.pattern) {
+        if !self.stereo {
             return self.monomorphism().any();
         }
         let mut found = false;
@@ -503,7 +540,7 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     }
 
     fn stereo_matches(&self, assignment: &[usize]) -> bool {
-        if !super::smarts_stereo::has_stereo(self.pattern) {
+        if !self.stereo {
             return true;
         }
         self.pattern.atoms.iter().enumerate().all(|(atom, expression)| {
@@ -521,7 +558,7 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     fn monomorphism(
         &self,
     ) -> Monomorphism<
-        impl Fn(usize) -> Vec<usize> + '_,
+        impl Fn(usize, &mut Vec<usize>) + '_,
         impl Fn(usize, usize) -> bool + '_,
         impl Fn(usize, usize, usize) -> bool + '_,
     > {
@@ -529,14 +566,11 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
             pattern_node_count: self.pattern.atoms.len(),
             pattern_edges: self.pattern.bonds.iter().map(|&(a, b, _)| (a, b)).collect(),
             target_node_count: self.molecule.number_of_atoms(),
-            neighbours: |atom: usize| {
-                self.molecule.atom_bonds()[atom]
-                    .iter()
-                    .map(|bond| bond.target())
-                    .collect()
+            neighbours: |atom: usize, out: &mut Vec<usize>| {
+                out.extend(self.molecule.atom_bonds()[atom].iter().map(|bond| bond.target()))
             },
             node_match: |pattern_atom: usize, molecule_atom: usize| {
-                super::smarts_stereo::has_atom_stereo(&self.pattern.atoms[pattern_atom])
+                self.atom_stereo[pattern_atom]
                     || self.evaluate_atom_expression(&self.pattern.atoms[pattern_atom], molecule_atom)
             },
             edge_match: |edge_index: usize, first: usize, second: usize| {

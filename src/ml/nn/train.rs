@@ -75,6 +75,10 @@ pub struct History {
     pub best_loss: f32,
     /// Whether patience ran out before the epochs did.
     pub stopped_early: bool,
+    /// Training steps whose gradient was not finite, and which were therefore
+    /// not taken. Anything but zero means a batch produced a NaN or an
+    /// overflow; the weights are what they were before it.
+    pub skipped_steps: usize,
 }
 
 /// A model, its weights, and the optimizer stepping them.
@@ -92,6 +96,9 @@ pub struct Trainer<'a> {
     stats: Option<FeatureStats>,
     global_stats: Option<GlobalStats>,
     device: Device,
+    /// Steps [`Trainer::step`] declined to take since the last [`Trainer::fit`]
+    /// began. See [`History::skipped_steps`].
+    skipped_steps: usize,
 }
 
 impl<'a> Trainer<'a> {
@@ -118,6 +125,7 @@ impl<'a> Trainer<'a> {
             stats: None,
             global_stats: None,
             device: device.clone(),
+            skipped_steps: 0,
         })
     }
 
@@ -152,6 +160,7 @@ impl<'a> Trainer<'a> {
             ..Default::default()
         };
         let mut since_improvement = 0;
+        self.skipped_steps = 0;
 
         for epoch in 0..self.config.epochs {
             let seed = self.config.seed.wrapping_add(epoch as u64 + 1);
@@ -166,6 +175,7 @@ impl<'a> Trainer<'a> {
             history
                 .train_loss
                 .push(if batches > 0 { total / batches as f32 } else { 0.0 });
+            history.skipped_steps = self.skipped_steps;
 
             if split.valid.is_empty() {
                 history.best_epoch = epoch;
@@ -194,13 +204,24 @@ impl<'a> Trainer<'a> {
     }
 
     /// One forward, one backward, one optimizer step. Returns the batch loss.
+    ///
+    /// A gradient that is not finite is not stepped along: AdamW would write
+    /// the NaN into every weight it touches, and its moment estimates would
+    /// carry it into every step after. The step is skipped and counted in
+    /// [`History::skipped_steps`] instead, and the loss is returned as it was,
+    /// so a NaN still shows in the epoch's mean.
     pub fn step(&mut self, batch: &Batch) -> Result<f32> {
         let loss = self.batch_loss(batch, true)?;
         let mut gradients = loss.backward()?;
-        if let Some(limit) = self.config.grad_clip {
-            clip_global_norm(&mut gradients, &self.variables, limit)?;
+        let norm = global_norm(&gradients, &self.variables)?;
+        if !norm.is_finite() {
+            self.skipped_steps += 1;
+        } else {
+            if let Some(limit) = self.config.grad_clip {
+                scale_gradients(&mut gradients, &self.variables, norm, limit)?;
+            }
+            self.optimizer.step(&gradients)?;
         }
-        self.optimizer.step(&gradients)?;
         loss.to_dtype(DType::F32)?.to_scalar::<f32>()
     }
 
@@ -294,6 +315,12 @@ impl<'a> Trainer<'a> {
 /// Per-parameter clipping would change the gradient's direction as well as its
 /// size; scaling all of them together is the same step, taken shorter.
 pub fn clip_global_norm(gradients: &mut GradStore, variables: &[Var], limit: f64) -> Result<()> {
+    let norm = global_norm(gradients, variables)?;
+    scale_gradients(gradients, variables, norm, limit)
+}
+
+/// The norm of every gradient taken together, as if they were one vector.
+pub fn global_norm(gradients: &GradStore, variables: &[Var]) -> Result<f64> {
     let mut total = 0.0f64;
     for variable in variables {
         if let Some(gradient) = gradients.get(variable) {
@@ -304,8 +331,11 @@ pub fn clip_global_norm(gradients: &mut GradStore, variables: &[Var], limit: f64
                 .to_scalar::<f64>()?;
         }
     }
+    Ok(total.sqrt())
+}
 
-    let norm = total.sqrt();
+/// [`clip_global_norm`] with the norm already known.
+fn scale_gradients(gradients: &mut GradStore, variables: &[Var], norm: f64, limit: f64) -> Result<()> {
     if !norm.is_finite() || norm <= limit {
         return Ok(());
     }

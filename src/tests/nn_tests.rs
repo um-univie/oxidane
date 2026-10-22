@@ -1039,3 +1039,48 @@ fn descriptors_travel_through_the_trainer() {
     // candle seeds its own initialiser, not this test.
     assert!(last < 0.05, "final mean squared error {last}");
 }
+
+/// A batch whose loss is NaN must not reach the weights. AdamW would write the
+/// NaN into every weight it steps and keep it in its moment estimates, so one
+/// bad target used to make the whole model NaN for good.
+#[test]
+fn a_non_finite_gradient_is_skipped_rather_than_stepped() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig { hidden: 16, depth: 2, ..small_encoder() },
+            graph_head: vec![16, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let mut dataset = Dataset::new(1);
+    for (index, smiles) in TRAINING_SET.iter().enumerate() {
+        let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+        let target = if index == 3 { f64::NAN } else { index as f64 };
+        dataset.push(&molecule, &[Some(target)]);
+    }
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig { epochs: 3, batch_size: 8, patience: None, seed: 1, ..Default::default() },
+        &device,
+    )
+    .unwrap();
+
+    let history = trainer.fit(&dataset, &split).unwrap();
+    // One batch per epoch holds the NaN target.
+    assert_eq!(history.skipped_steps, 3);
+    for variable in varmap.all_vars() {
+        let values = variable.as_tensor().flatten_all().unwrap().to_vec1::<f32>().unwrap();
+        assert!(values.iter().all(|value| value.is_finite()), "a weight went non-finite");
+    }
+}

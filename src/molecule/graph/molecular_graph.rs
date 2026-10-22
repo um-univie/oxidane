@@ -418,10 +418,13 @@ pub trait MoleculeGraph: MoleculeCore {
         &self,
         labels: &[AtomInvariant],
     ) -> Option<(AdjacencyMatrix, Vec<u32>, usize)> {
+        // Everything but hydrogen is a vertex, the `*` wildcard (atomic
+        // number zero) included: `get_all_heavy_atom_bonds` gives it bonds,
+        // and a bond to an atom with no vertex is an index past the matrix.
         let number_of_heavy_atoms = self
             .atomic_numbers()
             .iter()
-            .filter(|&&atomic_number| atomic_number > 1)
+            .filter(|&&atomic_number| atomic_number != 1)
             .count();
 
         if number_of_heavy_atoms == 0 {
@@ -641,7 +644,7 @@ pub trait MoleculeGraph: MoleculeCore {
         };
         let heavy_atom_bond_count = bonds
             .iter()
-            .filter(|bond| self.atomic_numbers()[bond.target] > 1)
+            .filter(|bond| self.atomic_numbers()[bond.target] != 1)
             .count();
         let implicit_hydrogen_count = bonds.len() - heavy_atom_bond_count;
 

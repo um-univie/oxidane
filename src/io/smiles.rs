@@ -940,6 +940,12 @@ impl<'a> SMILESParser<'a> {
             self.isotope = Some(temp_number);
         }
 
+        // A bracket with no element in it -- `[]`, or an isotope alone as in
+        // `[2]` -- names no atom. Reading two bytes ahead here would also run
+        // past the closing bracket when it is the last byte of the string.
+        if bytes[*position] == b']' {
+            return Err(SMILESParseError::ElementNotFound(String::new()));
+        }
         let mut is_se_or_as = false;
         let test = [bytes[*position], bytes[*position + 1]];
         match &test {

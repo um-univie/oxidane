@@ -577,8 +577,14 @@ fn prepare_and_sort_indices_and_labels<T: Molecule>(mol: &T) -> (Vec<usize>, Vec
         .collect::<Vec<_>>();
     let indices = (0..mol.len()).collect::<Vec<usize>>();
 
+    // Hydrogens last, and everything else -- the `*` wildcard, atomic number
+    // zero, included -- ahead of them by descending invariant: the graph
+    // `prepare_canonization` builds numbers the non-hydrogen atoms first.
     let mut label_indices = indices.iter().zip(labels.iter()).collect::<Vec<_>>();
-    label_indices.sort_by(|(_, label1), (_, label2)| label2.cmp(label1));
+    label_indices.sort_by(|(index1, label1), (index2, label2)| {
+        let heavy = |index: usize| mol.get_atomic_number(index) != 1;
+        heavy(**index2).cmp(&heavy(**index1)).then_with(|| label2.cmp(label1))
+    });
 
     let indices = label_indices
         .iter()

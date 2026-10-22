@@ -990,6 +990,46 @@ mod wildcard_atom_tests {
             }
         }
     }
+
+    /// A wildcard is a vertex of the canonical graph like any other non-
+    /// hydrogen atom. It used to be counted out of the graph while its bonds
+    /// were counted in, so canonizing anything with a `*` indexed past the
+    /// adjacency matrix and panicked -- `C*C` included.
+    #[test]
+    fn wildcard_molecules_canonize_the_same_however_written() {
+        use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+        for writings in [
+            &["C*C", "C(*C)"][..],
+            &["*CCO", "OCC*", "C(*)CO"],
+            &["*c1ccc(*)cc1N", "Nc1cc(*)ccc1*", "c1(*)ccc(*)c(N)c1"],
+            &["C1CC*CC1", "*1CCCCC1"],
+            &["*C(=O)O", "OC(*)=O"],
+        ] {
+            let canonical: Vec<String> = writings
+                .iter()
+                .map(|smiles| {
+                    canonicalize_and_sort_smiles(smiles, false)
+                        .unwrap_or_else(|e| panic!("{smiles}: {e:?}"))
+                })
+                .collect();
+            assert!(
+                canonical.iter().all(|form| form == &canonical[0]),
+                "{writings:?} canonized to {canonical:?}"
+            );
+        }
+    }
+
+    /// A bracket with no element in it is an error, not a panic: the parser
+    /// read two bytes ahead for `se`/`as` and ran off the end of `C[2]`.
+    #[test]
+    fn a_bracket_without_an_element_is_rejected() {
+        for smiles in ["[]", "C[]", "C[2]", "[2]", "C.[]"] {
+            assert!(
+                MolecularGraph::from_smiles(smiles).is_err(),
+                "{smiles} should not parse"
+            );
+        }
+    }
 }
 
 mod isotope_tests {

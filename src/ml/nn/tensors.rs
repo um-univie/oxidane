@@ -30,6 +30,9 @@ pub struct GraphTensors {
     /// does not, so that a subtraction can be multiplied away instead of
     /// branched on.
     pub reverse_mask: Tensor,
+    /// Whether every edge has its reverse, so that `reverse_mask` is all ones
+    /// and a layer can skip multiplying by it.
+    pub reverse_complete: bool,
     /// `[atom_count]`, the molecule each atom belongs to.
     pub batch: Tensor,
     /// `[graph_count, 1]`, how many atoms each molecule has, floored at one so
@@ -96,6 +99,7 @@ impl GraphTensors {
             target: Tensor::from_slice(&batch.edge_targets(), batch.edge_count, device)?,
             reverse: Tensor::from_slice(&reverse, batch.edge_count, device)?,
             reverse_mask: Tensor::from_slice(&mask, (batch.edge_count, 1), device)?,
+            reverse_complete: present.iter().all(|&found| found),
             batch: Tensor::from_slice(batch.batch.as_slice(), batch.atom_count, device)?,
             atom_counts: Tensor::from_slice(&counts, (batch.graph_count, 1), device)?,
             global_features: if batch.global_width == 0 || global_features.is_empty() {

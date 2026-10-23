@@ -154,9 +154,15 @@ impl DMpnn {
             // message returns to its own source in two rounds and the network
             // spends its depth listening to itself.
             let incoming = graph.gather_sources(&arrived)?;
-            let returning = graph
-                .gather_reverse(&messages)?
-                .broadcast_mul(&graph.reverse_mask)?;
+            // Every molecule this crate builds has each bond both ways round,
+            // and then the mask is all ones and multiplying by it is a tenth
+            // of the training step spent doing nothing.
+            let returning = graph.gather_reverse(&messages)?;
+            let returning = if graph.reverse_complete {
+                returning
+            } else {
+                returning.broadcast_mul(&graph.reverse_mask)?
+            };
             let carried = incoming.sub(&returning)?;
 
             let updated = initial.add(&self.hidden.forward(&carried)?)?;

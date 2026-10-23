@@ -106,18 +106,33 @@ pub trait MolecularDescriptors: MoleculeCore {
     fn monoisotopic_mass(&self) -> f64 {
         MoleculeCore::monoisotopic_mass(self)
     }
-    /// This function calculates the number of hydrogen bond donors in the molecule.
-    /// IT IS NOT YET STABLE
+    /// Counts hydrogen-bond donors by RDKit's `NumHDonors` definition, the
+    /// donor half of the typed rules
+    /// [`MolecularDescriptors::number_of_hydrogen_bond_acceptors`] follows:
+    /// a neutral trivalent or cationic tetravalent nitrogen carrying a
+    /// hydrogen, an aromatic `[nH]`, and a neutral oxygen or sulfur carrying
+    /// exactly one -- so a thiol counts, and water and a sulfonium do not.
+    ///
+    /// Hydrogens are explicit graph atoms here, and valence counts them.
     fn number_of_hydrogen_bond_donors(&self) -> usize {
-        let mut count = 0;
-        for (index, &atomic_number) in self.atomic_numbers().iter().enumerate() {
-            if atomic_number == 8 || atomic_number == 7 {
-                if self.number_of_bonded_element(index, 1) > 0 {
-                    count += 1;
+        (0..self.len())
+            .filter(|&atom| {
+                let hydrogens = self.number_of_bonded_element(atom, 1);
+                if hydrogens == 0 {
+                    return false;
                 }
-            }
-        }
-        count
+                let charge = self.get_atom_charge(atom);
+                match self.get_atomic_number(atom) {
+                    7 if self.is_atom_aromatic(atom) => charge == 0 && hydrogens == 1,
+                    7 => {
+                        let valence = self.actual_valency(atom);
+                        (charge == 0 && valence == 3) || (charge == 1 && valence == 4)
+                    }
+                    8 | 16 => charge == 0 && hydrogens == 1,
+                    _ => false,
+                }
+            })
+            .count()
     }
 
     /// Counts chemically typed N/O/S hydrogen-bond acceptors.

@@ -82,11 +82,21 @@ impl GraphBatch {
         let mut batch = Self::collate_iter(graphs);
         batch.global_width = globals.first().map_or(0, |row| row.len());
         batch.global_features = Vec::with_capacity(globals.len() * batch.global_width);
+        // Checked in release builds too: a ragged row would shift every
+        // molecule after it onto its neighbour's descriptors, silently.
+        assert_eq!(
+            globals.len(),
+            batch.graph_count,
+            "one descriptor row per graph"
+        );
         for row in globals {
-            debug_assert_eq!(row.len(), batch.global_width);
+            assert_eq!(
+                row.len(),
+                batch.global_width,
+                "descriptor rows of different widths"
+            );
             batch.global_features.extend_from_slice(row);
         }
-        debug_assert_eq!(globals.len(), batch.graph_count);
         batch
     }
 

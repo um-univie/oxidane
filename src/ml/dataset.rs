@@ -134,6 +134,14 @@ impl Dataset {
             targets.len(),
             self.task_count
         );
+        // `push_features_with_globals` stores the row before it gets here;
+        // anything else pushing into a dataset that carries descriptors would
+        // leave every later molecule reading its predecessor's.
+        assert_eq!(
+            self.globals.len(),
+            (self.features.len() + 1) * self.global_width,
+            "a molecule without descriptors was pushed into a dataset that has them"
+        );
         self.features.push(features);
         for target in targets {
             self.targets.push(target.unwrap_or(0.0) as f32);

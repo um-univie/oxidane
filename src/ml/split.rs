@@ -183,9 +183,12 @@ pub fn scaffold_split(keys: &[String], fractions: Fractions) -> Split {
 /// A deterministic split gives one number and no idea how much of it was luck.
 /// Published scaffold results are means over three or more splits, and this is
 /// how those splits differ from each other: the groups too large to fit in a
-/// validation or test set are put in the training set first -- shuffled among
-/// themselves -- and the rest are shuffled and placed greedily. Chemprop calls
-/// this the balanced scaffold split, and it is what its reported numbers use.
+/// validation or test set are placed first -- shuffled among themselves --
+/// and the rest are shuffled after them, every group going to whichever side
+/// is furthest below its quota. The large groups so mostly land in training,
+/// as in Chemprop's balanced scaffold split, but unlike it this does not
+/// force them there: one placed once training is nearly full can go to
+/// validation or test.
 ///
 /// Groups are still never split, so the guarantee [`scaffold_split`] makes
 /// holds here too.

@@ -2192,6 +2192,30 @@ mod tests {
     }
 
     #[test]
+    fn a_selenoxide_counts_as_daylight_counts_a_sulfoxide() {
+        // Daylight gives `[Se](=O)` and `[Se+]([O-])` the two electrons it
+        // gives `S(=O)`, so selenophene oxide is aromatic however it is
+        // written, exactly as thiophene oxide is. A selenoxide outside a ring
+        // stays what it is.
+        for (smiles, written) in [
+            ("O=[Se]1C=CC=C1", "[se]1(=O)cccc1"),
+            ("O=[se]1cccc1", "[se]1(=O)cccc1"),
+            ("[O-][Se+]1C=CC=C1", "[se+]1([O-])cccc1"),
+            ("O=[Se]1C=CC2=CC=CC=C12", "[se]1(=O)ccc2ccccc12"),
+            ("O=[Se]1CCCC1", "[Se]1(=O)CCCC1"),
+        ] {
+            assert_eq!(
+                crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                    smiles, false,
+                )
+                .unwrap(),
+                written,
+                "{smiles}"
+            );
+        }
+    }
+
+    #[test]
     fn a_neutral_sulfur_is_only_aromatic_where_it_has_a_lone_pair_to_give() {
         // Thiophene's sulfur donates its lone pair, and so does the sulfoxide's
         // once its exocyclic `=O` has taken the other. A three-coordinate

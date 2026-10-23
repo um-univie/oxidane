@@ -58,7 +58,7 @@ const AROMATICITY_MODEL_DAYLIGHT: [AromaticityFlag; 34] = [
     AromaticityFlag::PotentiallyAromaticOneElectron, // 25: Phosphorus with +1 charge, valency=4, bond_count=3, exocyclic double bond to oxygen
     AromaticityFlag::PotentiallyAromaticTwoElectrons, // 26: Phosphorus with -1 charge, valency=2
     AromaticityFlag::PotentiallyAromaticOneElectron, // 27: Phosphorus with +1 charge, valency=4, bond_count=3, no exocyclic double bond to oxygen
-    AromaticityFlag::PotentiallyAromaticTwoElectrons, // 28: Selenium with 0 charge, valency=2
+    AromaticityFlag::PotentiallyAromaticTwoElectrons, // 28: Selenium with 0 charge, valency=2, or a selenoxide [Se](=O) / [Se+]([O-])
     AromaticityFlag::PotentiallyAromaticOneElectron, // 29: Selenium with +1 charge, valency=4, bond_count=2
     AromaticityFlag::NotAromatic,                    // 30: Tellurium with 0 charge, valency=2
     AromaticityFlag::NotAromatic, // 31: Tellurium with +1 charge, valency=3, bond_count=2
@@ -95,7 +95,7 @@ const AROMATICITY_MODEL_OPENSMILES: [AromaticityFlag; 34] = [
     AromaticityFlag::PotentiallyAromaticZeroElectrons, // 25: Phosphorus with +1 charge, valency=4, bond_count=3, exocyclic double bond to oxygen
     AromaticityFlag::PotentiallyAromaticTwoElectrons,  // 26: Phosphorus with -1 charge, valency=2
     AromaticityFlag::PotentiallyAromaticOneElectron, // 27: Phosphorus with +1 charge, valency=4, bond_count=3, no exocyclic double bond to oxygen
-    AromaticityFlag::PotentiallyAromaticTwoElectrons, // 28: Selenium with 0 charge, valency=2
+    AromaticityFlag::PotentiallyAromaticTwoElectrons, // 28: Selenium with 0 charge, valency=2, or a selenoxide [Se](=O) / [Se+]([O-])
     AromaticityFlag::PotentiallyAromaticOneElectron, // 29: Selenium with +1 charge, valency=4, bond_count=2
     AromaticityFlag::PotentiallyAromaticTwoElectrons, // 30: Tellurium with 0 charge, valency=2
     AromaticityFlag::PotentiallyAromaticOneElectron, // 31: Tellurium with +1 charge, valency=3, bond_count=2
@@ -259,7 +259,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             34 =>
             // Selenium
             {
-                self.handle_selenium_aromaticity(atom_index)
+                self.handle_selenium_aromaticity(atom_index, bonds_in_ring)
             }
             // Tellurium
             52 => self.handle_tellurium_aromaticity(atom_index),
@@ -962,7 +962,11 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         lookup_index
     }
 
-    fn handle_selenium_aromaticity(&self, atom_index: usize) -> u8 {
+    fn handle_selenium_aromaticity(
+        &self,
+        atom_index: usize,
+        bonds_in_rings: &FxHashSet<(usize, usize)>,
+    ) -> u8 {
         let formal_charge = self.get_atom_charge(atom_index);
         let valency = self.actual_valency(atom_index);
         let lookup_index = 0;
@@ -996,6 +1000,22 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 if valency == 2 && bond_count == 2  {
                     return 28;
                 }
+                // A selenoxide written in Kekule form: three neighbours, one
+                // of them an exocyclic `=O`. Daylight gives `[Se](=O)` the
+                // two electrons it gives the sulfoxide `S(=O)` -- the lone
+                // pair the oxygen has not taken -- and the sulfur handler has
+                // always followed that; this one only recognised the oxide
+                // when its ring bonds already arrived aromatic, so
+                // selenophene oxide was the one Daylight entry this model
+                // did not reproduce.
+                if bond_count == 3 && valency == 4 && self.has_exocyclic_oxygen(
+                    atom_index,
+                    bonds_in_rings,
+                    BondOrder::Double,
+                    0,
+                ) {
+                    return 28;
+                }
             }
             1 => {
                 let Some(bonds) = self.get_atom_bonds(atom_index) else {
@@ -1019,6 +1039,16 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 // Not 100% sure about this one
                 if valency == 3 && bond_count == 2 {
                     return 29;
+                }
+                // The same selenoxide charge-separated, `[Se+]([O-])`, which
+                // Daylight also counts as two electrons.
+                if bond_count == 3 && valency == 3 && self.has_exocyclic_oxygen(
+                    atom_index,
+                    bonds_in_rings,
+                    BondOrder::Single,
+                    -1,
+                ) {
+                    return 28;
                 }
             }
             _ => (),
@@ -1058,6 +1088,23 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             }
         }
         0
+    }
+
+    /// Whether `atom_index` carries an oxygen outside every ring, by a bond of
+    /// `order`, with `charge` on the oxygen.
+    fn has_exocyclic_oxygen(
+        &self,
+        atom_index: usize,
+        bonds_in_rings: &FxHashSet<(usize, usize)>,
+        order: BondOrder,
+        charge: i8,
+    ) -> bool {
+        self.get_atom_bonds(atom_index).unwrap_or_default().iter().any(|bond| {
+            bond.bond_order() == order
+                && self.get_atomic_number(bond.target()) == 8
+                && self.get_atom_charge(bond.target()) == charge
+                && !Self::bond_hashset_contains(bonds_in_rings, atom_index, bond.target())
+        })
     }
 
     fn bond_hashset_contains(

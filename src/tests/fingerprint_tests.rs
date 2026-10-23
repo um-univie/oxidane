@@ -593,19 +593,20 @@ mod featurize_tests {
     }
 
     #[test]
-    fn hydrogens_are_counted_rather_than_given_rows() {
+    fn hydrogens_get_rows_like_any_other_atom() {
+        // Ethanol: 2 carbons, 1 oxygen, 6 hydrogens -- every one of them a row.
         let ethanol = parse("CCO");
         let features = graph_features(&ethanol);
-        assert_eq!(features.atom_count, 3);
-        assert_eq!(features.atoms, vec![0, 1, 2]);
-        assert_eq!(features.atom_features.len(), 3 * ATOM_FEATURE_WIDTH);
-        // Two bonds, each given both ways round.
-        assert_eq!(features.edge_count, 4);
-        assert_eq!(features.bond_features.len(), 4 * BOND_FEATURE_WIDTH);
-        assert_eq!(features.edge_index.len(), 8);
+        assert_eq!(features.atom_count, 9);
+        assert_eq!(features.atoms, (0..9).collect::<Vec<_>>());
+        assert_eq!(features.atom_features.len(), 9 * ATOM_FEATURE_WIDTH);
+        // Two C-C/C-O bonds plus six C-H/O-H bonds, each given both ways round.
+        assert_eq!(features.edge_count, 16);
+        assert_eq!(features.bond_features.len(), 16 * BOND_FEATURE_WIDTH);
+        assert_eq!(features.edge_index.len(), 32);
         for edge in 0..features.edge_count {
             let (from, to) = features.edge(edge);
-            assert!(from < 3 && to < 3 && from != to);
+            assert!(from < 9 && to < 9 && from != to);
         }
     }
 
@@ -615,10 +616,10 @@ mod featurize_tests {
         let features = graph_features(&molecule);
         for row in 0..features.atom_count {
             let values = features.atom_row(row);
-            // Thirteen element columns, six degree, six charge, five hydrogen,
+            // Fourteen element columns, six degree, six charge, five hydrogen,
             // six hybridization, four chirality: each block has one entry set.
             let mut cursor = 0;
-            for width in [13usize, 6, 6, 5, 6] {
+            for width in [14usize, 6, 6, 5, 6] {
                 let block = &values[cursor..cursor + width];
                 assert_eq!(
                     block.iter().filter(|&&value| value == 1.0).count(),
@@ -663,7 +664,10 @@ mod featurize_tests {
         // tetrahedral, a thiolate on a ring does not, and an aromatic sulfur is
         // flat because its bonds are aromatic rather than single.
         assert_eq!(hybridization(&parse("CSC=C"), 1), Hybridization::Sp3);
-        assert_eq!(hybridization(&parse("CN(C)S(C)(=O)=O"), 1), Hybridization::Sp3);
+        assert_eq!(
+            hybridization(&parse("CN(C)S(C)(=O)=O"), 1),
+            Hybridization::Sp3
+        );
         assert_eq!(hybridization(&parse("c1ccccc1[S-]"), 6), Hybridization::Sp2);
         assert_eq!(hybridization(&parse("c1ccsc1"), 3), Hybridization::Sp2);
         // A hydrogen has no shape of its own and a bare ion has nothing to
@@ -687,7 +691,10 @@ mod featurize_tests {
             hybridization(&parse("FS(F)(F)(F)(F)F"), 1),
             Hybridization::Sp3d2
         );
-        assert_eq!(hybridization(&parse("FP(F)(F)(F)F"), 1), Hybridization::Sp3d);
+        assert_eq!(
+            hybridization(&parse("FP(F)(F)(F)F"), 1),
+            Hybridization::Sp3d
+        );
     }
 
     #[test]
@@ -743,7 +750,12 @@ mod featurize_tests {
             ["O=c1cc[nH]c(=O)[nH]1", "C1=CNC(=O)NC1=O"],
             ["CN1C=NC2=C1C(=O)N(C)C(=O)N2C", "Cn1cnc2c1c(=O)n(C)c(=O)n2C"],
         ] {
-            assert_eq!(sorted_rows(writings[0]), sorted_rows(writings[1]), "{}", writings[1]);
+            assert_eq!(
+                sorted_rows(writings[0]),
+                sorted_rows(writings[1]),
+                "{}",
+                writings[1]
+            );
         }
     }
 }

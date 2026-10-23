@@ -110,7 +110,8 @@ impl ModelConfig {
 /// let predictions = model.forward(&graph, false)?;
 ///
 /// assert_eq!(predictions.graph.unwrap().dims(), &[2, 1]);
-/// assert_eq!(predictions.atom.unwrap().dims(), &[9, 1]);
+/// // CCO: 3 heavy + 6 H = 9. Benzene: 6 heavy + 6 H = 12. 21 atom rows total.
+/// assert_eq!(predictions.atom.unwrap().dims(), &[21, 1]);
 /// assert!(predictions.bond.is_none());
 /// # Ok(())
 /// # }
@@ -140,7 +141,11 @@ impl MolecularNet {
         };
 
         Ok(Self {
-            graph_head: head(&config.graph_head, "graph_head", width + config.global_width)?,
+            graph_head: head(
+                &config.graph_head,
+                "graph_head",
+                width + config.global_width,
+            )?,
             atom_head: head(&config.atom_head, "atom_head", width)?,
             // See `bond_representation` for what a bond head reads.
             bond_head: head(
@@ -305,14 +310,14 @@ pub type BondPrediction = ((usize, usize), Vec<f32>);
 /// One prediction per bond rather than per directed edge.
 ///
 /// A bond head runs on edges, and every bond is two of them. The two rows are
-/// equal by construction -- [`bond_representation`] is symmetric -- so this
+/// equal by construction -- `bond_representation` is symmetric -- so this
 /// keeps whichever comes first and reports which atoms it joins.
-pub fn bond_predictions(
-    predictions: &Tensor,
-    batch: &GraphBatch,
-) -> Result<Vec<BondPrediction>> {
+pub fn bond_predictions(predictions: &Tensor, batch: &GraphBatch) -> Result<Vec<BondPrediction>> {
     let tasks = predictions.dim(1)?;
-    let values = predictions.to_dtype(candle_core::DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let values = predictions
+        .to_dtype(candle_core::DType::F32)?
+        .flatten_all()?
+        .to_vec1::<f32>()?;
 
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();

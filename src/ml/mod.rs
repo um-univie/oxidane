@@ -7,7 +7,8 @@
 //! allowed to see, and what the numbers are scaled by.
 //!
 //! Nothing in this module needs a tensor library, and none of it is behind a
-//! feature. A dependent that trains its models in Python can read
+//! feature -- [`tokenize`] included, which is the alphabet a sequence decoder
+//! writes molecules in rather than any part of the network itself. A dependent that trains its models in Python can read
 //! [`batch::GraphBatch`] and hand the flat vectors straight to `torch`; the
 //! `ml` feature adds the layers that would otherwise be the Python half.
 
@@ -17,6 +18,12 @@ pub mod dataset;
 pub mod nn;
 pub mod normalize;
 pub mod split;
+pub mod tokenize;
+
+/// `shuffle`, for a caller outside this crate that wants the same order.
+pub fn shuffled(order: &mut [usize], seed: u64) {
+    shuffle(order, seed);
+}
 
 /// A Fisher--Yates shuffle over a seeded SplitMix64 stream.
 ///
@@ -37,4 +44,3 @@ pub(crate) fn shuffle(order: &mut [usize], seed: u64) {
         order.swap(position, other);
     }
 }
-

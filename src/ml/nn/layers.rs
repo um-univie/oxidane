@@ -93,7 +93,9 @@ impl Mlp {
 
     /// How wide the input has to be, or `None` for an empty stack.
     pub fn input_width(&self) -> Option<usize> {
-        self.layers.first().map(|layer| layer.weight().dim(1).unwrap_or(0))
+        self.layers
+            .first()
+            .map(|layer| layer.weight().dim(1).unwrap_or(0))
     }
 
     pub fn forward(&self, xs: &Tensor, train: bool) -> Result<Tensor> {

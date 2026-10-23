@@ -33,7 +33,9 @@ use crate::ml::shuffle;
 use crate::ml::split::{Side, Split};
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::descriptors::MolecularDescriptors;
-use crate::molecule::featurize::{GraphFeatures, graph_features, molecule_features};
+use crate::molecule::featurize::{
+    GraphFeatures, atom_class, bond_class, graph_features, molecule_features,
+};
 
 /// Featurised molecules and their targets.
 ///
@@ -47,6 +49,27 @@ pub struct Dataset {
     targets: Vec<f32>,
     mask: Vec<bool>,
     task_count: usize,
+    atom_targets: Vec<f32>,
+    atom_mask: Vec<bool>,
+    atom_task_count: usize,
+    /// One entry per atom row -- see [`crate::molecule::featurize::atom_class`].
+    /// Populated whenever `atom_task_count > 0`; unlike `atom_targets`, this
+    /// is indexed by row alone, not by `row * atom_task_count`, since a class
+    /// is a property of the atom rather than of one of its tasks.
+    atom_class: Vec<u32>,
+    /// Where each molecule's atom-row targets start, in atom-row units, with
+    /// a final entry equal to the total atom row count. Length `len() + 1`.
+    atom_row_offsets: Vec<usize>,
+    bond_targets: Vec<f32>,
+    bond_mask: Vec<bool>,
+    bond_task_count: usize,
+    /// One entry per directed edge -- see [`crate::molecule::featurize::bond_class`].
+    /// Populated whenever `bond_task_count > 0`, indexed by edge alone like
+    /// `atom_class` is by row.
+    bond_class: Vec<u32>,
+    /// Where each molecule's bond targets start, in directed-edge units, with
+    /// a final entry equal to the total edge count. Length `len() + 1`.
+    bond_row_offsets: Vec<usize>,
 }
 
 impl Dataset {
@@ -56,6 +79,22 @@ impl Dataset {
             task_count,
             ..Default::default()
         }
+    }
+
+    /// Adds `tasks` per-atom targets to a freshly built dataset.
+    ///
+    /// Call before the first push -- every molecule pushed afterwards must
+    /// supply that many targets per atom row (see [`Dataset::push_features`]).
+    pub fn with_atom_tasks(mut self, tasks: usize) -> Self {
+        self.atom_task_count = tasks;
+        self
+    }
+
+    /// Adds `tasks` per-bond targets to a freshly built dataset. See
+    /// [`Dataset::with_atom_tasks`].
+    pub fn with_bond_tasks(mut self, tasks: usize) -> Self {
+        self.bond_task_count = tasks;
+        self
     }
 
     /// Featurises a molecule and stores it with its targets.
@@ -69,7 +108,7 @@ impl Dataset {
     /// the caller's reader, and one that would otherwise show up as a model
     /// that trains but does not learn.
     pub fn push<M: MoleculeCore + ?Sized>(&mut self, molecule: &M, targets: &[Option<f64>]) {
-        self.push_features(graph_features(molecule), targets);
+        self.push_features(graph_features(molecule), targets, &[], &[]);
     }
 
     /// [`Dataset::push`] with a row of whole-molecule descriptors as well.
@@ -109,7 +148,7 @@ impl Dataset {
             self.global_width
         );
         self.globals.extend_from_slice(globals);
-        self.push_features(features, targets);
+        self.push_features(features, targets, &[], &[]);
     }
 
     /// How wide a row of whole-molecule descriptors is; zero if there are none.
@@ -126,7 +165,24 @@ impl Dataset {
     }
 
     /// [`Dataset::push`] for a molecule already featurised.
-    pub fn push_features(&mut self, features: GraphFeatures, targets: &[Option<f64>]) {
+    ///
+    /// `atom_targets` is one entry per atom row, [`Dataset::atom_task_count`]
+    /// wide -- empty when this dataset carries no per-atom tasks. `bond_targets`
+    /// is the same, one entry per **directed edge** (both directions of a
+    /// bond get the same value; see [`crate::molecule::featurize::GraphFeatures::bond_targets_from`]),
+    /// [`Dataset::bond_task_count`] wide.
+    ///
+    /// # Panics
+    ///
+    /// If `targets`, `atom_targets` or `bond_targets` is not the width its
+    /// task count and row count demand.
+    pub fn push_features(
+        &mut self,
+        features: GraphFeatures,
+        targets: &[Option<f64>],
+        atom_targets: &[Option<f64>],
+        bond_targets: &[Option<f64>],
+    ) {
         assert_eq!(
             targets.len(),
             self.task_count,
@@ -134,6 +190,23 @@ impl Dataset {
             targets.len(),
             self.task_count
         );
+        assert_eq!(
+            atom_targets.len(),
+            features.atom_count * self.atom_task_count,
+            "a molecule with {} atom rows was given {} atom targets in a dataset of {} atom tasks",
+            features.atom_count,
+            atom_targets.len(),
+            self.atom_task_count
+        );
+        assert_eq!(
+            bond_targets.len(),
+            features.edge_count * self.bond_task_count,
+            "a molecule with {} edges was given {} bond targets in a dataset of {} bond tasks",
+            features.edge_count,
+            bond_targets.len(),
+            self.bond_task_count
+        );
+
         // `push_features_with_globals` stores the row before it gets here;
         // anything else pushing into a dataset that carries descriptors would
         // leave every later molecule reading its predecessor's.
@@ -142,10 +215,42 @@ impl Dataset {
             (self.features.len() + 1) * self.global_width,
             "a molecule without descriptors was pushed into a dataset that has them"
         );
+        if self.atom_row_offsets.is_empty() {
+            self.atom_row_offsets.push(0);
+            self.bond_row_offsets.push(0);
+        }
+        self.atom_row_offsets
+            .push(self.atom_row_offsets.last().unwrap() + features.atom_count);
+        self.bond_row_offsets
+            .push(self.bond_row_offsets.last().unwrap() + features.edge_count);
+
+        if self.atom_task_count > 0 {
+            self.atom_class
+                .extend((0..features.atom_count).map(|row| atom_class(features.atom_row(row))));
+        }
+        if self.bond_task_count > 0 {
+            self.bond_class.extend((0..features.edge_count).map(|edge| {
+                let (source, target) = features.edge(edge);
+                bond_class(
+                    features.atom_row(source),
+                    features.atom_row(target),
+                    features.bond_row(edge),
+                )
+            }));
+        }
+
         self.features.push(features);
         for target in targets {
             self.targets.push(target.unwrap_or(0.0) as f32);
             self.mask.push(target.is_some());
+        }
+        for target in atom_targets {
+            self.atom_targets.push(target.unwrap_or(0.0) as f32);
+            self.atom_mask.push(target.is_some());
+        }
+        for target in bond_targets {
+            self.bond_targets.push(target.unwrap_or(0.0) as f32);
+            self.bond_mask.push(target.is_some());
         }
     }
 
@@ -161,6 +266,18 @@ impl Dataset {
         self.task_count
     }
 
+    /// How many per-atom targets each atom row carries; zero if this dataset
+    /// has none.
+    pub fn atom_task_count(&self) -> usize {
+        self.atom_task_count
+    }
+
+    /// How many per-bond targets each bond carries; zero if this dataset has
+    /// none.
+    pub fn bond_task_count(&self) -> usize {
+        self.bond_task_count
+    }
+
     /// One molecule's feature matrices.
     pub fn features(&self, index: usize) -> &GraphFeatures {
         &self.features[index]
@@ -172,9 +289,43 @@ impl Dataset {
         (&self.targets[span.clone()], &self.mask[span])
     }
 
+    /// One molecule's per-atom targets and mask, one row per atom row, in the
+    /// same order [`Dataset::features`] gives them.
+    pub fn atom_targets(&self, index: usize) -> (&[f32], &[bool]) {
+        let span = self.atom_row_offsets[index] * self.atom_task_count
+            ..self.atom_row_offsets[index + 1] * self.atom_task_count;
+        (&self.atom_targets[span.clone()], &self.atom_mask[span])
+    }
+
+    /// One molecule's per-bond targets and mask, one row per directed edge.
+    pub fn bond_targets(&self, index: usize) -> (&[f32], &[bool]) {
+        let span = self.bond_row_offsets[index] * self.bond_task_count
+            ..self.bond_row_offsets[index + 1] * self.bond_task_count;
+        (&self.bond_targets[span.clone()], &self.bond_mask[span])
+    }
+
+    /// One molecule's per-atom classes, one per atom row -- empty unless
+    /// `atom_task_count() > 0`. See [`crate::molecule::featurize::atom_class`].
+    pub fn atom_classes(&self, index: usize) -> &[u32] {
+        if self.atom_task_count == 0 {
+            return &[];
+        }
+        &self.atom_class[self.atom_row_offsets[index]..self.atom_row_offsets[index + 1]]
+    }
+
+    /// One molecule's per-bond classes, one per directed edge -- empty unless
+    /// `bond_task_count() > 0`. See [`crate::molecule::featurize::bond_class`].
+    pub fn bond_classes(&self, index: usize) -> &[u32] {
+        if self.bond_task_count == 0 {
+            return &[];
+        }
+        &self.bond_class[self.bond_row_offsets[index]..self.bond_row_offsets[index + 1]]
+    }
+
     /// The molecules named by `indices`, collated into one batch.
     pub fn batch(&self, indices: &[usize]) -> Batch {
-        let mut graph = GraphBatch::collate_iter(indices.iter().map(|&index| &self.features[index]));
+        let mut graph =
+            GraphBatch::collate_iter(indices.iter().map(|&index| &self.features[index]));
         if self.global_width > 0 {
             graph.global_width = self.global_width;
             graph.global_features = Vec::with_capacity(indices.len() * self.global_width);
@@ -184,16 +335,38 @@ impl Dataset {
         }
         let mut targets = Vec::with_capacity(indices.len() * self.task_count);
         let mut mask = Vec::with_capacity(indices.len() * self.task_count);
+        let mut atom_targets = Vec::with_capacity(graph.atom_count * self.atom_task_count);
+        let mut atom_mask = Vec::with_capacity(graph.atom_count * self.atom_task_count);
+        let mut atom_class = Vec::with_capacity(graph.atom_count);
+        let mut bond_targets = Vec::with_capacity(graph.edge_count * self.bond_task_count);
+        let mut bond_mask = Vec::with_capacity(graph.edge_count * self.bond_task_count);
+        let mut bond_class = Vec::with_capacity(graph.edge_count);
         for &index in indices {
             let (row, row_mask) = self.targets(index);
             targets.extend_from_slice(row);
             mask.extend_from_slice(row_mask);
+            let (arow, arow_mask) = self.atom_targets(index);
+            atom_targets.extend_from_slice(arow);
+            atom_mask.extend_from_slice(arow_mask);
+            atom_class.extend_from_slice(self.atom_classes(index));
+            let (brow, brow_mask) = self.bond_targets(index);
+            bond_targets.extend_from_slice(brow);
+            bond_mask.extend_from_slice(brow_mask);
+            bond_class.extend_from_slice(self.bond_classes(index));
         }
         Batch {
             graph,
             targets,
             target_mask: mask,
             task_count: self.task_count,
+            atom_targets,
+            atom_mask,
+            atom_task_count: self.atom_task_count,
+            atom_class,
+            bond_targets,
+            bond_mask,
+            bond_task_count: self.bond_task_count,
+            bond_class,
             indices: indices.to_vec(),
         }
     }
@@ -253,6 +426,31 @@ pub struct Batch {
     pub target_mask: Vec<bool>,
     /// How many targets each molecule has.
     pub task_count: usize,
+    /// `graph.atom_count * atom_task_count` targets, row-major by atom row --
+    /// lines up one to one with `predictions.atom` from
+    /// `crate::ml::nn::MolecularNet::forward`.
+    pub atom_targets: Vec<f32>,
+    /// Which of `atom_targets` were measured. Same shape.
+    pub atom_mask: Vec<bool>,
+    /// How many targets each atom row has; zero if this dataset has none.
+    pub atom_task_count: usize,
+    /// `graph.atom_count` classes, one per atom row (not per task) -- empty
+    /// unless `atom_task_count > 0`. See
+    /// [`crate::molecule::featurize::atom_class`] and
+    /// [`crate::ml::normalize::ClassMeans`].
+    pub atom_class: Vec<u32>,
+    /// `graph.edge_count * bond_task_count` targets, row-major by directed
+    /// edge (both directions of a bond carry the same value) -- lines up one
+    /// to one with `predictions.bond`.
+    pub bond_targets: Vec<f32>,
+    /// Which of `bond_targets` were measured. Same shape.
+    pub bond_mask: Vec<bool>,
+    /// How many targets each bond has; zero if this dataset has none.
+    pub bond_task_count: usize,
+    /// `graph.edge_count` classes, one per directed edge (not per task) --
+    /// empty unless `bond_task_count > 0`. See
+    /// [`crate::molecule::featurize::bond_class`].
+    pub bond_class: Vec<u32>,
     /// Which molecules of the dataset these are, in batch order -- for
     /// reporting a prediction against the molecule it came from.
     pub indices: Vec<usize>,
@@ -271,7 +469,10 @@ impl Batch {
     /// that divides by it should return zero rather than a NaN that then
     /// spreads through every weight in the model.
     pub fn measured_count(&self) -> usize {
-        self.target_mask.iter().filter(|&&measured| measured).count()
+        self.target_mask
+            .iter()
+            .filter(|&&measured| measured)
+            .count()
     }
 }
 

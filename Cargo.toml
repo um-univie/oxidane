@@ -55,3 +55,19 @@ codegen-units = 1
 [[example]]
 name = "train_mpnn"
 required-features = ["ml"]
+
+[[example]]
+name = "autoencode_smiles"
+required-features = ["ml"]
+
+[[example]]
+name = "encoder_reference"
+required-features = ["ml"]
+
+[[example]]
+name = "pretrain_encoder"
+required-features = ["ml"]
+
+[[example]]
+name = "pretrain_supervised"
+required-features = ["ml"]

@@ -133,19 +133,9 @@ impl GraphAutoencoder {
         })
     }
 
-    /// A sample from the encoded distribution, or the mean if there is none.
-    ///
-    /// The noise is added to the mean rather than drawn from the distribution
-    /// directly -- the reparameterisation trick -- so that the gradient reaches
-    /// the encoder. Sampling properly would put a random number between the
-    /// loss and the weights, and nothing would learn.
+    /// [`sample`], for a caller that has the model to hand.
     pub fn sample(&self, latent: &Latent, train: bool) -> Result<Tensor> {
-        let (Some(log_variance), true) = (&latent.log_variance, train) else {
-            return Ok(latent.mean.clone());
-        };
-        let deviation = log_variance.affine(0.5, 0.0)?.exp()?;
-        let noise = latent.mean.randn_like(0.0, 1.0)?;
-        latent.mean.add(&deviation.mul(&noise)?)
+        sample(latent, train)
     }
 
     /// Binary cross entropy over bonded and non-bonded pairs.
@@ -193,29 +183,20 @@ impl GraphAutoencoder {
         crate::ml::nn::loss::masked_bce_with_logits(&logits, &labels, &ones)
     }
 
-    /// The KL divergence of the encoded distribution from a standard normal,
-    /// per atom.
-    ///
-    /// Zero when the autoencoder is not variational, so a training loop can
-    /// add it unconditionally.
+    /// [`kl_divergence`], for a caller that has the model to hand.
     pub fn kl_divergence(&self, latent: &Latent) -> Result<Tensor> {
-        let Some(log_variance) = &latent.log_variance else {
-            return Tensor::new(0.0f32, latent.mean.device())?.to_dtype(latent.mean.dtype());
-        };
-        // -0.5 * sum(1 + log s^2 - mu^2 - s^2), averaged over atoms.
-        let term = log_variance
-            .affine(1.0, 1.0)?
-            .sub(&latent.mean.sqr()?)?
-            .sub(&log_variance.exp()?)?;
-        term.sum_all()?
-            .affine(-0.5 / latent.mean.dim(0)?.max(1) as f64, 0.0)
+        kl_divergence(latent)
     }
 
     /// How likely the model thinks each of `pairs` is to be a bond.
     ///
     /// The decoder, run forwards -- for looking at what the latent space
     /// learned rather than for training on it.
-    pub fn bond_probabilities(&self, latent: &Tensor, pairs: &[(usize, usize)]) -> Result<Vec<f32>> {
+    pub fn bond_probabilities(
+        &self,
+        latent: &Tensor,
+        pairs: &[(usize, usize)],
+    ) -> Result<Vec<f32>> {
         if pairs.is_empty() {
             return Ok(Vec::new());
         }
@@ -247,6 +228,42 @@ pub struct Latent {
     pub log_variance: Option<Tensor>,
 }
 
+/// A sample from an encoded distribution, or the mean if there is none.
+///
+/// The noise is added to the mean rather than drawn from the distribution
+/// directly -- the reparameterisation trick -- so that the gradient reaches the
+/// encoder. Sampling properly would put a random number between the loss and
+/// the weights, and nothing would learn.
+///
+/// Evaluation takes the mean: a reconstruction is supposed to be a reading of
+/// what went in, not a draw from the neighbourhood of it.
+pub fn sample(latent: &Latent, train: bool) -> Result<Tensor> {
+    let (Some(log_variance), true) = (&latent.log_variance, train) else {
+        return Ok(latent.mean.clone());
+    };
+    let deviation = log_variance.affine(0.5, 0.0)?.exp()?;
+    let noise = latent.mean.randn_like(0.0, 1.0)?;
+    latent.mean.add(&deviation.mul(&noise)?)
+}
+
+/// The KL divergence of an encoded distribution from a standard normal,
+/// averaged over rows.
+///
+/// Zero when the latent carries no spread, so a training loop can add it
+/// unconditionally.
+pub fn kl_divergence(latent: &Latent) -> Result<Tensor> {
+    let Some(log_variance) = &latent.log_variance else {
+        return Tensor::new(0.0f32, latent.mean.device())?.to_dtype(latent.mean.dtype());
+    };
+    // -0.5 * sum(1 + log s^2 - mu^2 - s^2), averaged over rows.
+    let term = log_variance
+        .affine(1.0, 1.0)?
+        .sub(&latent.mean.sqr()?)?
+        .sub(&log_variance.exp()?)?;
+    term.sum_all()?
+        .affine(-0.5 / latent.mean.dim(0)?.max(1) as f64, 0.0)
+}
+
 /// A pair of atom rows, as index-tensor material.
 type Pair = (u32, u32);
 
@@ -257,10 +274,7 @@ type Pair = (u32, u32);
 /// from the batch's own shape rather than from a clock: two runs of the same
 /// training script then see the same negatives, and a difference between them
 /// is a difference in the model.
-fn pair_samples(
-    batch: &GraphBatch,
-    negatives_per_positive: usize,
-) -> (Vec<Pair>, Vec<Pair>) {
+fn pair_samples(batch: &GraphBatch, negatives_per_positive: usize) -> (Vec<Pair>, Vec<Pair>) {
     let mut positives = Vec::with_capacity(batch.edge_count / 2);
     let mut bonded = std::collections::HashSet::with_capacity(batch.edge_count);
     for edge in 0..batch.edge_count {

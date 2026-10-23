@@ -211,8 +211,9 @@ pub fn scaffold_split_balanced(keys: &[String], fractions: Fractions, seed: u64)
 
     let (_, valid_quota, test_quota) = fractions.sizes(keys.len());
     let threshold = valid_quota.max(test_quota) / 2;
-    let (mut large, mut small): (Vec<Vec<usize>>, Vec<Vec<usize>>) =
-        ordered.into_iter().partition(|group| group.len() > threshold);
+    let (mut large, mut small): (Vec<Vec<usize>>, Vec<Vec<usize>>) = ordered
+        .into_iter()
+        .partition(|group| group.len() > threshold);
 
     shuffle_groups(&mut large, seed);
     shuffle_groups(&mut small, seed.wrapping_add(1));
@@ -224,7 +225,8 @@ pub fn scaffold_split_balanced(keys: &[String], fractions: Fractions, seed: u64)
 fn shuffle_groups(groups: &mut [Vec<usize>], seed: u64) {
     let mut order: Vec<usize> = (0..groups.len()).collect();
     shuffle(&mut order, seed);
-    let mut taken: Vec<Option<Vec<usize>>> = groups.iter_mut().map(|g| Some(std::mem::take(g))).collect();
+    let mut taken: Vec<Option<Vec<usize>>> =
+        groups.iter_mut().map(|g| Some(std::mem::take(g))).collect();
     for (slot, &from) in order.iter().enumerate() {
         groups[slot] = taken[from].take().unwrap_or_default();
     }
@@ -270,7 +272,6 @@ fn place_groups(groups: &[Vec<usize>], count: usize, fractions: Fractions) -> Sp
 
     Split::from_sides(&assigned)
 }
-
 
 /// Keeps [`hashed_side`]'s hash space apart from the fingerprints'.
 const SPLIT_SEED: u64 = 0x5350_4C49_5400_0001;

@@ -23,10 +23,11 @@
 //! let batch = GraphBatch::collate(&[graph_features(&ethanol), graph_features(&benzene)]);
 //!
 //! assert_eq!(batch.graph_count, 2);
-//! assert_eq!(batch.atom_count, 3 + 6);
-//! // Benzene's first atom is row 3 of the batch, and its edges point there.
-//! assert_eq!(batch.batch[3], 1);
-//! assert!(batch.edge_index[batch.edge_offsets[1] as usize * 2] >= 3);
+//! // Ethanol: 3 heavy + 6 H. Benzene: 6 heavy + 6 H.
+//! assert_eq!(batch.atom_count, 9 + 12);
+//! // Benzene's first atom is row 9 of the batch, and its edges point there.
+//! assert_eq!(batch.batch[9], 1);
+//! assert!(batch.edge_index[batch.edge_offsets[1] as usize * 2] >= 9);
 //! ```
 
 use crate::molecule::featurize::{ATOM_FEATURE_WIDTH, BOND_FEATURE_WIDTH, GraphFeatures};
@@ -118,9 +119,10 @@ impl GraphBatch {
             batch
                 .edge_index
                 .extend(graph.edge_index.iter().map(|&row| row + atom_base));
-            batch
-                .batch
-                .extend(std::iter::repeat_n(batch.graph_count as u32, graph.atom_count));
+            batch.batch.extend(std::iter::repeat_n(
+                batch.graph_count as u32,
+                graph.atom_count,
+            ));
 
             batch.atom_count += graph.atom_count;
             batch.edge_count += graph.edge_count;
@@ -176,9 +178,10 @@ impl GraphBatch {
     ///     graph_features(&MolecularGraph::from_smiles_single("CCO").unwrap()),
     ///     graph_features(&MolecularGraph::from_smiles_single("CC").unwrap()),
     /// ]);
-    /// // One number per atom, all of them 1: the sum counts each molecule's atoms.
+    /// // One number per atom, all of them 1: the sum counts each molecule's
+    /// // atoms -- CCO has 9 (3 heavy + 6 H), CC has 8 (2 heavy + 6 H).
     /// let ones = vec![1.0f32; batch.atom_count];
-    /// assert_eq!(batch.segment_sum(&ones, 1), vec![3.0, 2.0]);
+    /// assert_eq!(batch.segment_sum(&ones, 1), vec![9.0, 8.0]);
     /// ```
     pub fn segment_sum(&self, rows: &[f32], width: usize) -> Vec<f32> {
         debug_assert_eq!(rows.len(), self.atom_count * width);

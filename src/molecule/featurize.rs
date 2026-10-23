@@ -12,9 +12,11 @@
 //! version must go up whenever it changes, and columns should be added at the
 //! end rather than inserted.
 //!
-//! Hydrogens do not get rows. They are counted into the atom that carries them,
-//! which is what nearly every published featurization does and what makes a
-//! molecule parsed from SMILES and one read from a file give the same matrix.
+//! Hydrogens get a row like any other atom, and an X-H bond gets an edge like
+//! any other bond -- there is nothing about a hydrogen a molecular graph does
+//! not already know, and a model that reads one directly can answer a
+//! question ("which of this atom's two hydrogens is the reactive one") that
+//! folding hydrogens into their neighbour's row cannot even ask.
 //!
 //! ```
 //! use oxidane::prelude::*;
@@ -23,8 +25,9 @@
 //! let caffeine =
 //!     MolecularGraph::from_smiles_single("CN1C=NC2=C1C(=O)N(C)C(=O)N2C").unwrap();
 //! let features = graph_features(&caffeine);
-//! assert_eq!(features.atom_count, 14);
-//! assert_eq!(features.atom_features.len(), 14 * ATOM_FEATURE_WIDTH);
+//! // 14 heavy atoms (C8H10N4O2) plus its 10 hydrogens.
+//! assert_eq!(features.atom_count, 24);
+//! assert_eq!(features.atom_features.len(), 24 * ATOM_FEATURE_WIDTH);
 //! // Every bond is given both ways round, since a message has a direction.
 //! assert_eq!(features.edge_index.len(), features.edge_count * 2);
 //! ```
@@ -33,17 +36,21 @@ use crate::molecule::base::MoleculeCore;
 use crate::molecule::bond::BondOrder;
 use crate::molecule::chirality::ChiralClass;
 use crate::molecule::descriptors::MolecularDescriptors;
+use crate::vector::Vector3D;
 
 /// The version of the column layout below.
 ///
 /// A model is trained against a schema, not against a crate, so this is what a
 /// stored model should record.
-// Version 3 changes the acceptor column from a N/O proxy to typed N/O/S counts.
-// Version 4 makes the molecular-weight column honor explicit isotope labels.
-pub const FEATURE_SCHEMA_VERSION: u32 = 4;
+// Version 5 changes the acceptor column from a N/O proxy to typed N/O/S counts.
+// Version 6 makes the molecular-weight column honor explicit isotope labels.
+// Version 7 gives a double bond's stereo column its geometry relative to the
+// highest-ranked substituents, and no other bond a stereo column at all; and the
+// donor column follows RDKit's typed definition (thiols in, water out).
+pub const FEATURE_SCHEMA_VERSION: u32 = 7;
 
 /// The elements that get a column of their own. Anything else shares the last.
-pub const FEATURED_ELEMENTS: [u8; 12] = [5, 6, 7, 8, 9, 14, 15, 16, 17, 34, 35, 53];
+pub const FEATURED_ELEMENTS: [u8; 13] = [1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 34, 35, 53];
 
 /// How many numbers describe one atom.
 pub const ATOM_FEATURE_WIDTH: usize = FEATURED_ELEMENTS.len()
@@ -55,7 +62,23 @@ pub const ATOM_FEATURE_WIDTH: usize = FEATURED_ELEMENTS.len()
     + 1  // aromatic
     + 1  // in a ring
     + 4  // chirality
-    + 1; // mass
+    + 1  // mass
+    + 1; // mean local bond angle (radians; 0 without 3D geometry -- see graph_features_with_geometry)
+
+/// How many element classes an atom row distinguishes: the featured elements,
+/// and one more for everything else.
+pub const ATOM_ELEMENT_CLASSES: usize = FEATURED_ELEMENTS.len() + 1;
+
+/// The columns that say which element an atom is, taken together as a one-hot
+/// block at the front of the row.
+///
+/// Named because a pretraining objective has to be able to hide the answer it
+/// is asking for. Masking an atom's element means clearing these *and* the
+/// mass -- see [`ATOM_CONTINUOUS_COLUMNS`], which for schema 2 is the mass
+/// alone. Leaving the mass behind would leave the element written on the row
+/// in another hand, and the model would learn to read it rather than to infer
+/// anything from the neighbourhood.
+pub const ATOM_ELEMENT_COLUMNS: std::ops::Range<usize> = 0..ATOM_ELEMENT_CLASSES;
 
 /// Which atom columns hold a quantity rather than an indicator.
 ///
@@ -63,13 +86,19 @@ pub const ATOM_FEATURE_WIDTH: usize = FEATURED_ELEMENTS.len()
 /// already on. These are the columns [`crate::ml::normalize::FeatureStats`]
 /// standardises; the positions are part of the schema, so a column added here
 /// is a schema change like any other.
-pub const ATOM_CONTINUOUS_COLUMNS: [usize; 1] = [ATOM_FEATURE_WIDTH - 1]; // mass
+pub const ATOM_CONTINUOUS_COLUMNS: [usize; 2] = [ATOM_FEATURE_WIDTH - 2, ATOM_FEATURE_WIDTH - 1]; // mass, mean local bond angle
 
 /// How many numbers describe one bond.
 pub const BOND_FEATURE_WIDTH: usize = 4  // order
     + 1  // conjugated
     + 1  // in a ring
-    + 4; // stereochemistry
+    + 4  // double-bond geometry: none, cis, trans, given but unrankable -- see double_bond_geometry
+    + 1; // 3D distance (angstroms; 0 without geometry -- see graph_features_with_geometry)
+
+/// Which bond columns hold a quantity rather than an indicator -- the 3D
+/// distance alone, standardised by [`crate::ml::normalize::BondFeatureStats`]
+/// the same way [`ATOM_CONTINUOUS_COLUMNS`] are.
+pub const BOND_CONTINUOUS_COLUMNS: [usize; 1] = [BOND_FEATURE_WIDTH - 1];
 
 /// How many orbitals an atom's bonding uses, as far as a graph can tell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +153,8 @@ pub fn hybridization<M: MoleculeCore + ?Sized>(molecule: &M, atom: usize) -> Hyb
     let neighbours = bonds.len() as i32;
     // What is left of the outer shell once the bonds and the charge have taken
     // their share, rounded up into pairs.
-    let spare = outer - molecule.actual_valency(atom) as i32 - molecule.get_atom_charge(atom) as i32;
+    let spare =
+        outer - molecule.actual_valency(atom) as i32 - molecule.get_atom_charge(atom) as i32;
     let lone_pairs = if spare > 0 { (spare + 1) / 2 } else { 0 };
 
     match neighbours + lone_pairs {
@@ -192,48 +222,133 @@ impl GraphFeatures {
             self.edge_index[edge * 2 + 1] as usize,
         )
     }
+
+    /// The distinct bonds, each named by its two atom rows, in the order they
+    /// are first seen among the directed edges above.
+    ///
+    /// A bond-level dataset wants one label per bond rather than one per
+    /// directed edge; this is the canonical order to attach them in --
+    /// the same one `crate::ml::nn::model::bond_predictions` reports
+    /// predictions in.
+    pub fn bonds(&self) -> Vec<(usize, usize)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for edge in 0..self.edge_count {
+            let (first, second) = self.edge(edge);
+            let key = (first.min(second), first.max(second));
+            if seen.insert(key) {
+                out.push(key);
+            }
+        }
+        out
+    }
+
+    /// Atom-indexed labels, mapped onto one entry per atom row.
+    ///
+    /// `labels` is keyed by the atom's index in the original molecule (what
+    /// [`crate::molecule::base::MoleculeCore`] methods take), not by row --
+    /// that is what a caller reading an external dataset has. An index with
+    /// no label gets `None`.
+    pub fn atom_targets_from(
+        &self,
+        labels: &std::collections::HashMap<usize, f64>,
+    ) -> Vec<Option<f64>> {
+        self.atoms
+            .iter()
+            .map(|atom| labels.get(atom).copied())
+            .collect()
+    }
+
+    /// Bond-indexed labels, mapped onto one entry per **directed edge**.
+    ///
+    /// `labels` is keyed by an unordered pair of original molecule atom
+    /// indices. Both directions of a bond get the same value, matching the
+    /// duplication [`GraphFeatures::bond_features`] already has, so the
+    /// result lines up with a bond head's predictions row for row.
+    pub fn bond_targets_from(
+        &self,
+        labels: &std::collections::HashMap<(usize, usize), f64>,
+    ) -> Vec<Option<f64>> {
+        (0..self.edge_count)
+            .map(|edge| {
+                let (first, second) = self.edge(edge);
+                let (a, b) = (self.atoms[first], self.atoms[second]);
+                labels.get(&(a.min(b), a.max(b))).copied()
+            })
+            .collect()
+    }
 }
 
 /// Builds the feature matrices of a molecule.
 pub fn graph_features<M: MoleculeCore + ?Sized>(molecule: &M) -> GraphFeatures {
+    build_graph_features(molecule, None)
+}
+
+/// [`graph_features`], with two extra columns filled in from a 3D embedding:
+/// each atom's mean local bond angle, and each bond's 3D length -- the
+/// information a 2D graph alone doesn't have, in the spirit of the
+/// higher-body-order terms an equivariant model like MACE would use, without
+/// building the equivariance itself.
+///
+/// `positions` is indexed exactly like `molecule`'s own atoms: what
+/// [`crate::molecule::embed::Embed3D::embed_3d`] gives back as the `positions`
+/// field of the [`crate::molecule::molecule3d::Molecule3D`] it returns. Its
+/// own `add_hydrogens()` call is a no-op on a molecule from this crate's own
+/// parsers, which already carry explicit hydrogens as real atoms, so the
+/// indices already line up with no remapping.
+pub fn graph_features_with_geometry<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    positions: &[Vector3D],
+) -> GraphFeatures {
+    build_graph_features(molecule, Some(positions))
+}
+
+fn build_graph_features<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    positions: Option<&[Vector3D]>,
+) -> GraphFeatures {
     let atom_count = molecule.len();
     let cyclic_atoms = molecule.cyclic_atoms();
     let (_, cyclic_bonds) = molecule.find_cyclic_bonds_and_atoms();
 
-    let mut row_of = vec![usize::MAX; atom_count];
-    let mut atoms = Vec::new();
+    // Every atom gets a row now, so the row a given atom occupies is just its
+    // own index -- there is no longer a heavy/light distinction to track.
+    let atoms: Vec<usize> = (0..atom_count).collect();
+
+    let mut atom_features = vec![0.0f32; atom_count * ATOM_FEATURE_WIDTH];
     for atom in 0..atom_count {
-        if molecule.get_atomic_number(atom) != 1 {
-            row_of[atom] = atoms.len();
-            atoms.push(atom);
-        }
+        let angle = positions.map_or(0.0, |p| mean_local_angle(molecule, atom, p));
+        let target = &mut atom_features[atom * ATOM_FEATURE_WIDTH..(atom + 1) * ATOM_FEATURE_WIDTH];
+        write_atom_row(molecule, atom, cyclic_atoms.contains(atom), angle, target);
     }
 
-    let mut atom_features = vec![0.0f32; atoms.len() * ATOM_FEATURE_WIDTH];
-    for (row, &atom) in atoms.iter().enumerate() {
-        let target = &mut atom_features[row * ATOM_FEATURE_WIDTH..(row + 1) * ATOM_FEATURE_WIDTH];
-        write_atom_row(molecule, atom, cyclic_atoms.contains(atom), target);
-    }
-
+    let geometry = double_bond_geometry(molecule);
     let mut bond_features: Vec<f32> = Vec::new();
     let mut edge_index: Vec<u32> = Vec::new();
-    for &atom in &atoms {
+    for atom in 0..atom_count {
         for bond in molecule.get_atom_bonds(atom).unwrap_or_default() {
             let target = bond.target();
-            if target >= atom_count || row_of[target] == usize::MAX {
+            if target >= atom_count {
                 continue;
             }
-            edge_index.push(row_of[atom] as u32);
-            edge_index.push(row_of[target] as u32);
+            edge_index.push(atom as u32);
+            edge_index.push(target as u32);
             let start = bond_features.len();
             bond_features.resize(start + BOND_FEATURE_WIDTH, 0.0);
             let in_ring = cyclic_bonds.contains(&(atom.min(target), atom.max(target)));
+            let distance = positions.map_or(0.0, |p| p[atom].distance(&p[target]) as f32);
+            let stereo = geometry
+                .get(&(atom.min(target), atom.max(target)))
+                .copied()
+                .unwrap_or(0);
             write_bond_row(
                 molecule,
                 atom,
                 target,
                 bond.bond_order(),
                 in_ring,
+                stereo,
+                distance,
                 &mut bond_features[start..start + BOND_FEATURE_WIDTH],
             );
         }
@@ -246,6 +361,43 @@ pub fn graph_features<M: MoleculeCore + ?Sized>(molecule: &M) -> GraphFeatures {
         bond_features,
         edge_index,
         atoms,
+    }
+}
+
+/// The mean of every bond angle centred on `atom` (`positions` indexed like
+/// `molecule`'s own atoms) -- `0.0` if it has fewer than two neighbours,
+/// since no angle exists there. True of every hydrogen, and of any terminal
+/// heavy atom.
+fn mean_local_angle<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    atom: usize,
+    positions: &[Vector3D],
+) -> f32 {
+    let neighbours: Vec<usize> = molecule
+        .get_atom_bonds(atom)
+        .unwrap_or_default()
+        .iter()
+        .map(|bond| bond.target())
+        .collect();
+    if neighbours.len() < 2 {
+        return 0.0;
+    }
+    let mut total = 0.0f64;
+    let mut count = 0u32;
+    for i in 0..neighbours.len() {
+        for &other in &neighbours[i + 1..] {
+            if let Some(angle) =
+                positions[neighbours[i]].angle_between_points(&positions[atom], &positions[other])
+            {
+                total += angle;
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        0.0
+    } else {
+        (total / count as f64) as f32
     }
 }
 
@@ -301,11 +453,14 @@ pub fn molecule_features<M: MolecularDescriptors + ?Sized>(molecule: &M) -> Vec<
     ]
 }
 
-/// Fills one atom's row. See the module documentation for what the columns are.
+/// Fills one atom's row. See the module documentation for what the columns
+/// are. `mean_angle` is this atom's mean local bond angle in radians, or
+/// `0.0` when no 3D geometry was given -- see [`graph_features_with_geometry`].
 fn write_atom_row<M: MoleculeCore + ?Sized>(
     molecule: &M,
     atom: usize,
     in_ring: bool,
+    mean_angle: f32,
     row: &mut [f32],
 ) {
     let atomic_number = molecule.get_atomic_number(atom);
@@ -337,8 +492,9 @@ fn write_atom_row<M: MoleculeCore + ?Sized>(
         Hybridization::Sp3 => 2,
         Hybridization::Sp3d => 3,
         Hybridization::Sp3d2 => 4,
-        // One column for the states a molecular graph does not describe. No
-        // hydrogen ever reaches it, since hydrogens are given no row at all.
+        // One column for the states a molecular graph does not describe --
+        // every hydrogen row lands here too, since `hybridization` gives a
+        // hydrogen no shape of its own.
         Hybridization::S | Hybridization::Unspecified => 5,
     };
     one_hot(row, &mut cursor, 6, hybridization_slot);
@@ -356,15 +512,21 @@ fn write_atom_row<M: MoleculeCore + ?Sized>(
     // Scaled so that every column is of the same order, which a network that
     // has not been told otherwise will assume.
     row[cursor] = atomic_number as f32 / 100.0;
+    cursor += 1;
+    row[cursor] = mean_angle;
 }
 
-/// Fills one directed bond's row.
+/// Fills one directed bond's row. `distance` is the bond's 3D length in
+/// angstroms, or `0.0` when no geometry was given -- see
+/// [`graph_features_with_geometry`].
 fn write_bond_row<M: MoleculeCore + ?Sized>(
     molecule: &M,
     first: usize,
     second: usize,
     order: BondOrder,
     in_ring: bool,
+    stereo_slot: usize,
+    distance: f32,
     row: &mut [f32],
 ) {
     let mut cursor = 0usize;
@@ -379,15 +541,162 @@ fn write_bond_row<M: MoleculeCore + ?Sized>(
     cursor += 1;
     row[cursor] = f32::from(in_ring);
     cursor += 1;
-    let stereo_slot = match (
-        molecule.get_chiral_class(first),
-        molecule.get_chiral_class(second),
-    ) {
-        (ChiralClass::CisTransClockwise, _) | (_, ChiralClass::CisTransClockwise) => 1,
-        (ChiralClass::CisTransCounterclockwise, _) | (_, ChiralClass::CisTransCounterclockwise) => 2,
-        _ => 0,
-    };
     one_hot(row, &mut cursor, 4, stereo_slot);
+    row[cursor] = distance;
+}
+
+/// The stereo column of every double bond whose geometry the molecule states,
+/// keyed by its two atoms in ascending order: 1 when the highest-ranked
+/// substituents on its two ends are cis, 2 when they are trans, 3 when the
+/// geometry is given but an end carries two substituents nothing tells apart.
+///
+/// The stored cis/trans classes are relative to whichever neighbour happens to
+/// come first in each end's bond list, which is an accident of how the SMILES
+/// was written -- reading the class straight into the column gave the same
+/// molecule opposite features from two spellings. Re-reading it against
+/// [`refined_ranks`] makes it a property of the molecule. Only the double bond
+/// itself is labelled; the single bonds beside it carry no geometry.
+fn double_bond_geometry<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+) -> rustc_hash::FxHashMap<(usize, usize), usize> {
+    let mut geometry = rustc_hash::FxHashMap::default();
+    let is_cis_trans = |atom: usize| {
+        matches!(
+            molecule.get_chiral_class(atom),
+            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+        )
+    };
+    if !(0..molecule.len()).any(is_cis_trans) {
+        return geometry;
+    }
+    let ranks = refined_ranks(molecule);
+    // The substituents of a double-bond end, in bond-list order: everything
+    // but the double bond itself.
+    let carriers = |end: usize| -> Vec<usize> {
+        molecule
+            .get_atom_bonds(end)
+            .unwrap_or_default()
+            .iter()
+            .filter(|bond| bond.bond_order() != BondOrder::Double)
+            .map(|bond| bond.target())
+            .collect()
+    };
+    // Which of them ranks highest, or `None` when the top two tie.
+    let highest = |list: &[usize]| -> Option<usize> {
+        let best = (0..list.len()).max_by_key(|&index| ranks[list[index]])?;
+        let tied =
+            (0..list.len()).any(|index| index != best && ranks[list[index]] == ranks[list[best]]);
+        (!tied).then_some(best)
+    };
+
+    for atom in 0..molecule.len() {
+        if !is_cis_trans(atom) {
+            continue;
+        }
+        let Some(other) = molecule
+            .get_atom_bonds(atom)
+            .unwrap_or_default()
+            .iter()
+            .find(|bond| bond.bond_order() == BondOrder::Double)
+            .map(|bond| bond.target())
+        else {
+            continue;
+        };
+        if other <= atom || !is_cis_trans(other) {
+            continue;
+        }
+        let (first, second) = (carriers(atom), carriers(other));
+        if first.is_empty() || second.is_empty() {
+            continue;
+        }
+        // The convention the parser and canonisation keep: equal classes put
+        // the first carriers of the two ends on the same side.
+        let first_carriers_trans =
+            molecule.get_chiral_class(atom) != molecule.get_chiral_class(other);
+        let slot = match (highest(&first), highest(&second)) {
+            (Some(a), Some(b)) => {
+                // Taking an end's other carrier instead of its first flips
+                // which side the reference sits on.
+                let flips = usize::from(a != 0) + usize::from(b != 0);
+                if first_carriers_trans ^ (flips % 2 == 1) {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => 3,
+        };
+        geometry.insert((atom, other), slot);
+    }
+    geometry
+}
+
+/// A rank for every atom that depends on the molecule and not on its
+/// numbering: element, charge, aromaticity and degree first -- so a heavier
+/// substituent outranks a lighter one, as it would under CIP's first rule --
+/// then refined by the ranks of the neighbours, Weisfeiler-Lehman style, until
+/// a round splits no more classes.
+///
+/// Directional single bonds are read as single: which way a `/` leans is part
+/// of how the SMILES was written, not of the molecule.
+fn refined_ranks<M: MoleculeCore + ?Sized>(molecule: &M) -> Vec<(u64, u64)> {
+    use crate::molecule::fingerprint::StableHasher;
+    const SEED: u64 = 0x4442_5354_4552_454f;
+
+    let count = molecule.len();
+    let order_code = |order: BondOrder| -> u64 {
+        match order {
+            BondOrder::Double => 2,
+            BondOrder::Triple => 3,
+            BondOrder::Aromatic => 4,
+            _ => 1,
+        }
+    };
+    let element: Vec<u64> = (0..count)
+        .map(|atom| {
+            let degree = molecule.get_atom_bonds(atom).unwrap_or_default().len() as u64;
+            ((molecule.get_atomic_number(atom) as u64) << 24)
+                | (((molecule.get_atom_charge(atom) as i64 + 128) as u64 & 0xFF) << 16)
+                | ((molecule.is_atom_aromatic(atom) as u64) << 8)
+                | degree.min(0xFF)
+        })
+        .collect();
+    let distinct = |values: &[u64]| {
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        sorted.len()
+    };
+
+    let mut refined = element.clone();
+    let mut classes = distinct(&refined);
+    for _ in 0..count {
+        let next: Vec<u64> = (0..count)
+            .map(|atom| {
+                let mut neighbours: Vec<(u64, u64)> = molecule
+                    .get_atom_bonds(atom)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|bond| (refined[bond.target()], order_code(bond.bond_order())))
+                    .collect();
+                neighbours.sort_unstable();
+                let mut hasher = StableHasher::new(SEED);
+                hasher.write_u64(refined[atom]);
+                for (rank, order) in neighbours {
+                    hasher.write_u64(rank);
+                    hasher.write_u64(order);
+                }
+                hasher.finish_u64()
+            })
+            .collect();
+        let next_classes = distinct(&next);
+        refined = next;
+        if next_classes <= classes {
+            break;
+        }
+        classes = next_classes;
+    }
+    element.into_iter().zip(refined).collect()
 }
 
 /// Whether a bond is part of a run of overlapping p orbitals.
@@ -446,4 +755,48 @@ fn one_hot(row: &mut [f32], cursor: &mut usize, width: usize, slot: usize) {
         row[*cursor + slot] = 1.0;
     }
     *cursor += width;
+}
+
+/// A coarse class for a heavy atom -- element, hybridization, and
+/// aromaticity -- for grouping atoms whose bond to a hydrogen shares a
+/// baseline dissociation energy before a model has to learn anything about
+/// its specific surroundings. See [`crate::ml::normalize::ClassMeans`].
+///
+/// `row` is one atom's row, in `write_atom_row`'s column order: element
+/// one-hot, heavy-neighbour count, formal charge, attached hydrogens,
+/// hybridization, aromatic, in-ring, chirality, mass. Only the first three
+/// blocks matter here -- an atom's degree, charge and exact neighbourhood are
+/// exactly the finer structure a class is meant to leave for the residual to
+/// learn, not bake in.
+pub fn atom_class(row: &[f32]) -> u32 {
+    let element = argmax(&row[ATOM_ELEMENT_COLUMNS]);
+    let hybridization_start = ATOM_ELEMENT_CLASSES + 6 + 6 + 5;
+    let hybridization = argmax(&row[hybridization_start..hybridization_start + 6]);
+    let aromatic = row[hybridization_start + 6] > 0.5;
+    (element as u32 * 6 + hybridization as u32) * 2 + u32::from(aromatic)
+}
+
+/// A coarse class for a bond between two heavy atoms -- their elements,
+/// order-independent, and the bond's own order -- for the same reason as
+/// [`atom_class`].
+///
+/// `source_atom_row`/`target_atom_row` are the two atoms' own rows;
+/// `bond_row` is the directed edge's row, in `write_bond_row`'s column
+/// order: order one-hot, then conjugated, in-ring, stereochemistry.
+pub fn bond_class(source_atom_row: &[f32], target_atom_row: &[f32], bond_row: &[f32]) -> u32 {
+    let first = argmax(&source_atom_row[ATOM_ELEMENT_COLUMNS]) as u32;
+    let second = argmax(&target_atom_row[ATOM_ELEMENT_COLUMNS]) as u32;
+    let (low, high) = (first.min(second), first.max(second));
+    let order = argmax(&bond_row[0..4]) as u32;
+    (low * ATOM_ELEMENT_CLASSES as u32 + high) * 4 + order
+}
+
+/// The position of the largest entry in a one-hot (or nearly one-hot) slice.
+fn argmax(values: &[f32]) -> usize {
+    values
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(index, _)| index)
+        .unwrap_or(0)
 }

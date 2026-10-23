@@ -146,7 +146,10 @@ impl DMpnn {
         };
 
         let atoms = Tensor::cat(&[&graph.atom_features, &arrived], 1)?;
-        let atoms = self.config.activation.apply(&self.output.forward(&atoms)?)?;
+        let atoms = self
+            .config
+            .activation
+            .apply(&self.output.forward(&atoms)?)?;
         Ok((self.maybe_drop(atoms, train)?, messages))
     }
 

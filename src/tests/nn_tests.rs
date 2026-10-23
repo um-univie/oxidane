@@ -3,18 +3,26 @@
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{Optimizer, VarBuilder, VarMap};
 
+use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+use crate::io::ToSMILES;
 use crate::ml::batch::GraphBatch;
 use crate::ml::dataset::Dataset;
 use crate::ml::nn::autoencoder::{AutoencoderConfig, GraphAutoencoder};
+use crate::ml::nn::decoder::DecoderConfig;
 use crate::ml::nn::layers::{Activation, Mlp, MlpConfig};
 use crate::ml::nn::loss::{mask_from_flags, masked_bce_with_logits, masked_mse};
 use crate::ml::nn::model::{ModelConfig, MolecularNet, bond_predictions};
+use crate::ml::nn::molecule_autoencoder::{MoleculeAutoencoder, MoleculeAutoencoderConfig};
 use crate::ml::nn::mpnn::{DMpnn, EncoderConfig, EncoderKind};
+use crate::ml::nn::pretrain::{MaskedAtomModel, PretrainConfig};
+use crate::ml::nn::seed::{load_prefixed, save_prefixed, seed_variables};
 use crate::ml::nn::tensors::{GraphTensors, Pooling};
-use crate::ml::nn::train::{Objective, TrainConfig, Trainer, clip_global_norm};
-use crate::ml::split::{Fractions, Split};
+use crate::ml::nn::train::{Objective, Schedule, TrainConfig, Trainer, clip_global_norm};
+use crate::ml::normalize::{ClassMeans, TargetStats};
+use crate::ml::split::{Fractions, Side, Split};
+use crate::ml::tokenize::{RESERVED, SmilesVocabulary, TokenBatch};
 use crate::molecule::base::MoleculeCore;
-use crate::molecule::featurize::graph_features;
+use crate::molecule::featurize::{bond_class, graph_features};
 use crate::prelude::*;
 
 fn parse(smiles: &str) -> MolecularGraph {
@@ -37,6 +45,10 @@ fn small_encoder() -> EncoderConfig {
         activation: Activation::Relu,
         dropout: 0.0,
     }
+}
+
+fn canonical_of(molecule: &MolecularGraph) -> String {
+    canonicalize_and_sort_smiles(&molecule.to_smiles(), true).unwrap()
 }
 
 fn to_vec(tensor: &Tensor) -> Vec<f32> {
@@ -73,14 +85,19 @@ fn scattering_agrees_with_the_dependency_free_version() {
     let values: Vec<f32> = (0..batch.atom_count).map(|row| row as f32 + 1.0).collect();
     let atoms = Tensor::from_slice(&values, (batch.atom_count, 1), &device).unwrap();
 
-    assert_eq!(to_vec(&graph.pool_sum(&atoms).unwrap()), batch.segment_sum(&values, 1));
+    assert_eq!(
+        to_vec(&graph.pool_sum(&atoms).unwrap()),
+        batch.segment_sum(&values, 1)
+    );
     let mean = to_vec(&graph.pool_mean(&atoms).unwrap());
     for (ours, theirs) in mean.iter().zip(batch.segment_mean(&values, 1)) {
         assert!((ours - theirs).abs() < 1e-4, "{ours} != {theirs}");
     }
 
     // And the edge scatter against `scatter_edges_to_atoms`.
-    let edge_values: Vec<f32> = (0..batch.edge_count).map(|edge| edge as f32 + 1.0).collect();
+    let edge_values: Vec<f32> = (0..batch.edge_count)
+        .map(|edge| edge as f32 + 1.0)
+        .collect();
     let edges = Tensor::from_slice(&edge_values, (batch.edge_count, 1), &device).unwrap();
     assert_eq!(
         to_vec(&graph.scatter_to_atoms(&edges).unwrap()),
@@ -181,8 +198,11 @@ fn a_molecule_is_encoded_the_same_alone_as_in_a_batch() {
 
 #[test]
 fn a_single_atom_molecule_has_no_edges_and_does_not_crash() {
+    // A bare cation, not "C": methane has four hydrogens of its own now that
+    // every atom gets a row, and so five atoms and four bonds, not one and
+    // none.
     let device = Device::Cpu;
-    let batch = batch_of(&["C"]);
+    let batch = batch_of(&["[Na+]"]);
     assert_eq!(batch.atom_count, 1);
     assert_eq!(batch.edge_count, 0);
 
@@ -199,23 +219,42 @@ fn a_single_atom_molecule_has_no_edges_and_does_not_crash() {
 
 #[test]
 fn a_directed_message_does_not_come_straight_back() {
-    // Ethane has one bond, so after the subtraction there is nothing for
-    // either edge to carry and every message stays at its initial value. If
-    // the reverse-edge subtraction were missing, each round would instead feed
-    // the other edge's message back in and the two would grow.
+    // Molecular hydrogen has exactly one bond and nothing else -- both its
+    // atoms have that one bond and no other -- so after the subtraction
+    // there is nothing for either edge to carry and every message stays at
+    // its initial value. If the reverse-edge subtraction were missing, each
+    // round would instead feed the other edge's message back in and the two
+    // would grow.
     let device = Device::Cpu;
     let varmap = VarMap::new();
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
 
-    let shallow = DMpnn::new(EncoderConfig { depth: 1, ..small_encoder() }, vb.pp("e")).unwrap();
-    let deep = DMpnn::new(EncoderConfig { depth: 4, ..small_encoder() }, vb.pp("e")).unwrap();
+    let shallow = DMpnn::new(
+        EncoderConfig {
+            depth: 1,
+            ..small_encoder()
+        },
+        vb.pp("e"),
+    )
+    .unwrap();
+    let deep = DMpnn::new(
+        EncoderConfig {
+            depth: 4,
+            ..small_encoder()
+        },
+        vb.pp("e"),
+    )
+    .unwrap();
 
-    let batch = batch_of(&["CC"]);
+    let batch = batch_of(&["[H][H]"]);
     let graph = GraphTensors::new(&batch, &device).unwrap();
     let one = to_vec(&shallow.forward(&graph, false).unwrap());
     let four = to_vec(&deep.forward(&graph, false).unwrap());
     for (a, b) in one.iter().zip(&four) {
-        assert!((a - b).abs() < 1e-5, "depth changed a two-atom molecule: {a} != {b}");
+        assert!(
+            (a - b).abs() < 1e-5,
+            "depth changed a two-atom molecule: {a} != {b}"
+        );
     }
 }
 
@@ -266,7 +305,10 @@ fn a_model_with_no_heads_predicts_nothing_but_still_encodes() {
     let predictions = model.forward(&graph, false).unwrap();
     assert!(predictions.graph.is_none());
     assert!(predictions.atom.is_none());
-    assert_eq!(model.encode_molecules(&graph, false).unwrap().dims(), &[1, 16]);
+    assert_eq!(
+        model.encode_molecules(&graph, false).unwrap().dims(),
+        &[1, 16]
+    );
 }
 
 #[test]
@@ -328,9 +370,10 @@ fn pooling_choice_reaches_the_prediction() {
         .unwrap();
         pooled.push(to_vec(&model.encode_molecules(&graph, false).unwrap()));
     }
-    // Nine atoms: the mean is the sum divided by nine.
+    // 1-octanol, C8H18O: 27 atoms once hydrogens get rows too, so the mean
+    // is the sum divided by twenty-seven.
     for (sum, mean) in pooled[0].iter().zip(&pooled[1]) {
-        assert!((sum / 9.0 - mean).abs() < 1e-4, "{sum} / 9 != {mean}");
+        assert!((sum / 27.0 - mean).abs() < 1e-4, "{sum} / 27 != {mean}");
     }
 }
 
@@ -395,10 +438,36 @@ fn heavy_atom_dataset(smiles: &[&str]) -> Dataset {
 }
 
 const TRAINING_SET: &[&str] = &[
-    "C", "CC", "CCC", "CCCC", "CCCCC", "CCO", "CCCO", "CCCCO", "c1ccccc1", "c1ccccc1C",
-    "c1ccccc1CC", "CC(=O)O", "CC(=O)OC", "CCN", "CCCN", "C1CCCCC1", "C1CCCC1", "C1CCC1",
-    "CC(C)C", "CC(C)CC", "OCCO", "OCCCO", "CCOCC", "CN(C)C", "c1ccncc1", "c1ccncc1C",
-    "CC(=O)Oc1ccccc1", "CCCCCC", "CCCCCCC", "CCCCCCCC",
+    "C",
+    "CC",
+    "CCC",
+    "CCCC",
+    "CCCCC",
+    "CCO",
+    "CCCO",
+    "CCCCO",
+    "c1ccccc1",
+    "c1ccccc1C",
+    "c1ccccc1CC",
+    "CC(=O)O",
+    "CC(=O)OC",
+    "CCN",
+    "CCCN",
+    "C1CCCCC1",
+    "C1CCCC1",
+    "C1CCC1",
+    "CC(C)C",
+    "CC(C)CC",
+    "OCCO",
+    "OCCCO",
+    "CCOCC",
+    "CN(C)C",
+    "c1ccncc1",
+    "c1ccncc1C",
+    "CC(=O)Oc1ccccc1",
+    "CCCCCC",
+    "CCCCCCC",
+    "CCCCCCCC",
 ];
 
 #[test]
@@ -408,7 +477,11 @@ fn a_model_learns_something_it_can_represent_exactly() {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MolecularNet::new(
         ModelConfig {
-            encoder: EncoderConfig { hidden: 32, depth: 2, ..small_encoder() },
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
             graph_head: vec![32, 1],
             pooling: Pooling::Sum,
             ..Default::default()
@@ -441,12 +514,267 @@ fn a_model_learns_something_it_can_represent_exactly() {
     let first = history.train_loss[0];
     let last = *history.train_loss.last().unwrap();
     assert!(first.is_finite() && last.is_finite(), "{first} -> {last}");
-    assert!(
-        last < first * 0.05,
-        "loss barely moved: {first} -> {last}"
-    );
+    assert!(last < first * 0.05, "loss barely moved: {first} -> {last}");
     // Counting atoms to within half an atom.
     assert!(last < 0.25, "final mean squared error {last}");
+}
+
+/// One atom-level target per atom row: its own atomic number. Trivial
+/// chemistry, and a real test that a per-atom target reaches the atom head
+/// and is scored against the right row.
+fn atomic_number_dataset(smiles: &[&str]) -> Dataset {
+    let mut dataset = Dataset::new(0).with_atom_tasks(1);
+    for one in smiles {
+        let molecule = parse(one);
+        let features = graph_features(&molecule);
+        let atom_targets: Vec<Option<f64>> = features
+            .atoms
+            .iter()
+            .map(|&atom| Some(molecule.get_atomic_number(atom) as f64))
+            .collect();
+        dataset.push_features(features, &[], &atom_targets, &[]);
+    }
+    dataset
+}
+
+#[test]
+fn an_atom_head_learns_something_it_can_represent_exactly() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            atom_head: vec![32, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let dataset = atomic_number_dataset(TRAINING_SET);
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            learning_rate: 0.02,
+            epochs: 120,
+            batch_size: 8,
+            patience: None,
+            seed: 1,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap();
+
+    let history = trainer.fit(&dataset, &split).unwrap();
+    let first = history.train_loss[0];
+    let last = *history.train_loss.last().unwrap();
+    assert!(first.is_finite() && last.is_finite(), "{first} -> {last}");
+    assert!(last < first * 0.05, "loss barely moved: {first} -> {last}");
+
+    let predictions = trainer.predict_atoms(&dataset, &split.train).unwrap();
+    let mut row = 0;
+    for &index in &split.train {
+        let (truth, _) = dataset.atom_targets(index);
+        for &want in truth {
+            let got = predictions[row][0];
+            assert!(
+                (got - want).abs() < 1.0,
+                "atom row {row}: predicted {got}, wanted {want}"
+            );
+            row += 1;
+        }
+    }
+}
+
+/// One bond-level target per directed edge: the sum of the atomic numbers of
+/// the two atoms it joins -- exactly what a bond head's own symmetric pair
+/// representation ([`crate::ml::nn::model::bond_predictions`]'s
+/// `bond_representation`) sums, so it is squarely the shape of thing that
+/// head can learn.
+fn bond_atomic_sum_dataset(smiles: &[&str]) -> Dataset {
+    let mut dataset = Dataset::new(0).with_bond_tasks(1);
+    for one in smiles {
+        let molecule = parse(one);
+        let features = graph_features(&molecule);
+        let bond_targets: Vec<Option<f64>> = (0..features.edge_count)
+            .map(|edge| {
+                let (first, second) = features.edge(edge);
+                let (a, b) = (features.atoms[first], features.atoms[second]);
+                Some((molecule.get_atomic_number(a) + molecule.get_atomic_number(b)) as f64)
+            })
+            .collect();
+        dataset.push_features(features, &[], &[], &bond_targets);
+    }
+    dataset
+}
+
+#[test]
+fn a_bond_head_learns_something_it_can_represent_exactly() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            bond_head: vec![32, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let dataset = bond_atomic_sum_dataset(TRAINING_SET);
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            learning_rate: 0.02,
+            epochs: 120,
+            batch_size: 8,
+            patience: None,
+            seed: 1,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap();
+
+    let history = trainer.fit(&dataset, &split).unwrap();
+    let first = history.train_loss[0];
+    let last = *history.train_loss.last().unwrap();
+    assert!(first.is_finite() && last.is_finite(), "{first} -> {last}");
+    assert!(last < first * 0.05, "loss barely moved: {first} -> {last}");
+
+    let predictions = trainer.predict_bonds(&dataset, &split.train).unwrap();
+    let mut row = 0;
+    for &index in &split.train {
+        let (truth, _) = dataset.bond_targets(index);
+        for &want in truth {
+            let got = predictions[row][0];
+            assert!(
+                (got - want).abs() < 1.0,
+                "bond row {row}: predicted {got}, wanted {want}"
+            );
+            row += 1;
+        }
+    }
+}
+
+/// A target that is obviously `class_baseline + small_correction`: a large
+/// jump keyed by the bond's own class, plus the same small atomic-number-sum
+/// signal [`bond_atomic_sum_dataset`] uses. Realistic in shape, not just in
+/// spirit -- this is exactly what a bond dissociation energy looks like
+/// (mostly which bond type it is, a little bit which specific molecule).
+fn bond_class_offset_dataset(smiles: &[&str]) -> Dataset {
+    let mut dataset = Dataset::new(0).with_bond_tasks(1);
+    for one in smiles {
+        let molecule = parse(one);
+        let features = graph_features(&molecule);
+        let bond_targets: Vec<Option<f64>> = (0..features.edge_count)
+            .map(|edge| {
+                let (first, second) = features.edge(edge);
+                let (a, b) = (features.atoms[first], features.atoms[second]);
+                let class = bond_class(
+                    features.atom_row(first),
+                    features.atom_row(second),
+                    features.bond_row(edge),
+                );
+                let offset = (class % 7) as f64 * 500.0;
+                Some(
+                    offset + (molecule.get_atomic_number(a) + molecule.get_atomic_number(b)) as f64,
+                )
+            })
+            .collect();
+        dataset.push_features(features, &[], &[], &bond_targets);
+    }
+    dataset
+}
+
+#[test]
+fn a_class_mean_residual_trains_and_predicts_in_the_original_scale() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            bond_head: vec![32, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let dataset = bond_class_offset_dataset(TRAINING_SET);
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+    let class_means = ClassMeans::fit_bond(&dataset, &split.train);
+    let target_stats = TargetStats::fit_bond_residual(&dataset, &split.train, &class_means);
+
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            learning_rate: 0.02,
+            epochs: 120,
+            batch_size: 8,
+            patience: None,
+            seed: 1,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap()
+    .with_bond_class_means(class_means)
+    .with_bond_target_normalization(target_stats);
+
+    let history = trainer.fit(&dataset, &split).unwrap();
+    let first = history.train_loss[0];
+    let last = *history.train_loss.last().unwrap();
+    assert!(first.is_finite() && last.is_finite(), "{first} -> {last}");
+    assert!(last < first * 0.05, "loss barely moved: {first} -> {last}");
+
+    // Predictions come back added to the class mean -- in the original,
+    // large-offset scale the raw targets were given in, not the small
+    // residual the network was actually trained against.
+    let predictions = trainer.predict_bonds(&dataset, &split.train).unwrap();
+    let mut row = 0;
+    for &index in &split.train {
+        let (truth, _) = dataset.bond_targets(index);
+        for &want in truth {
+            let got = predictions[row][0];
+            assert!(
+                (got - want).abs() < 5.0,
+                "bond row {row}: predicted {got}, wanted {want}"
+            );
+            row += 1;
+        }
+    }
 }
 
 #[test]
@@ -529,13 +857,22 @@ fn clipping_caps_the_gradient_and_keeps_its_direction() {
     // Same direction, shorter: every component scaled by the same factor.
     let scale = 1.0 / before;
     for (variable, original) in variables.iter().zip(&direction) {
-        for (was, now) in original.iter().zip(to_vec(gradients.get(variable).unwrap())) {
-            assert!((was * scale as f32 - now).abs() < 1e-3, "{was} * {scale} != {now}");
+        for (was, now) in original
+            .iter()
+            .zip(to_vec(gradients.get(variable).unwrap()))
+        {
+            assert!(
+                (was * scale as f32 - now).abs() < 1e-3,
+                "{was} * {scale} != {now}"
+            );
         }
     }
 }
 
-fn global_norm(gradients: &candle_core::backprop::GradStore, variables: &[candle_core::Var]) -> f64 {
+fn global_norm(
+    gradients: &candle_core::backprop::GradStore,
+    variables: &[candle_core::Var],
+) -> f64 {
     let mut total = 0.0;
     for variable in variables {
         if let Some(gradient) = gradients.get(variable) {
@@ -601,7 +938,11 @@ fn early_stopping_stops() {
 
     let history = trainer.fit(&dataset, &split).unwrap();
     assert!(history.stopped_early);
-    assert!(history.train_loss.len() <= 5, "{}", history.train_loss.len());
+    assert!(
+        history.train_loss.len() <= 5,
+        "{}",
+        history.train_loss.len()
+    );
 }
 
 #[test]
@@ -611,7 +952,10 @@ fn a_classifier_trains_on_logits() {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MolecularNet::new(
         ModelConfig {
-            encoder: EncoderConfig { hidden: 32, ..small_encoder() },
+            encoder: EncoderConfig {
+                hidden: 32,
+                ..small_encoder()
+            },
             graph_head: vec![32, 1],
             ..Default::default()
         },
@@ -686,6 +1030,58 @@ fn normalization_travels_with_the_trainer() {
     assert!(predictions.iter().all(|row| row[0].is_finite()));
 }
 
+#[test]
+fn bond_feature_normalization_travels_with_the_trainer() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let mut dataset = Dataset::new(1);
+    for smiles in TRAINING_SET {
+        let molecule = parse(smiles);
+        let embedded = molecule.embed_3d().unwrap();
+        let features = crate::molecule::featurize::graph_features_with_geometry(
+            &molecule,
+            &embedded.positions,
+        );
+        let heavy = (0..molecule.len())
+            .filter(|&atom| molecule.get_atomic_number(atom) != 1)
+            .count();
+        dataset.push_features(features, &[Some(heavy as f64)], &[], &[]);
+    }
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+    let training = dataset.batch(&split.train);
+    let stats = crate::ml::normalize::FeatureStats::fit(&training.graph);
+    let bond_stats = crate::ml::normalize::BondFeatureStats::fit(&training.graph);
+
+    // A bond feature width mismatch (the wrong tensor entry point, or a stats
+    // fit on the wrong batch) would surface as a shape error here rather than
+    // silently training on unscaled features -- `upload` is exercised on
+    // every step, so getting this far already confirms the scaling applied.
+    let mut trainer = Trainer::new(&model, &varmap, TrainConfig::default(), &device)
+        .unwrap()
+        .with_normalization(stats)
+        .with_bond_feature_normalization(bond_stats);
+    let history = trainer.fit(&dataset, &split).unwrap();
+    assert!(history.train_loss.iter().all(|loss| loss.is_finite()));
+
+    let predictions = trainer.predict(&dataset, &split.train).unwrap();
+    assert_eq!(predictions.len(), dataset.len());
+    assert!(predictions.iter().all(|row| row[0].is_finite()));
+}
+
 // ------------------------------------------------------------ autoencoder --
 
 fn autoencoder_config() -> AutoencoderConfig {
@@ -732,7 +1128,11 @@ fn a_variational_autoencoder_has_a_spread_and_pays_for_it() {
     let latent = autoencoder.encode(&graph, false).unwrap();
 
     assert!(latent.log_variance.is_some());
-    let kl = autoencoder.kl_divergence(&latent).unwrap().to_scalar::<f32>().unwrap();
+    let kl = autoencoder
+        .kl_divergence(&latent)
+        .unwrap()
+        .to_scalar::<f32>()
+        .unwrap();
     assert!(kl.is_finite() && kl >= 0.0, "{kl}");
 
     // Sampling adds noise while training and does not while evaluating.
@@ -753,7 +1153,11 @@ fn an_autoencoder_learns_which_atoms_are_bonded() {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let autoencoder = GraphAutoencoder::new(
         AutoencoderConfig {
-            encoder: EncoderConfig { hidden: 32, depth: 3, ..small_encoder() },
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 3,
+                ..small_encoder()
+            },
             latent: 16,
             ..autoencoder_config()
         },
@@ -826,7 +1230,9 @@ fn an_autoencoder_on_a_lone_atom_has_nothing_to_reconstruct() {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let autoencoder = GraphAutoencoder::new(autoencoder_config(), vb).unwrap();
 
-    let batch = batch_of(&["C"]);
+    // A bare cation, not "C": methane has four hydrogens of its own now that
+    // every atom gets a row, and so is not actually a lone atom any more.
+    let batch = batch_of(&["[Na+]"]);
     let graph = GraphTensors::new(&batch, &device).unwrap();
     let latent = autoencoder.encode(&graph, false).unwrap();
     let loss = autoencoder
@@ -888,7 +1294,10 @@ fn descriptors_reach_the_graph_head_and_only_the_graph_head() {
     assert!(graph.global_features.is_some());
     let predictions = model.forward(&graph, false).unwrap();
     assert_eq!(predictions.graph.unwrap().dims(), &[3, 1]);
-    assert_eq!(predictions.atom.unwrap().dims(), &[batch.graph.atom_count, 1]);
+    assert_eq!(
+        predictions.atom.unwrap().dims(),
+        &[batch.graph.atom_count, 1]
+    );
 }
 
 #[test]
@@ -924,13 +1333,9 @@ fn changing_a_descriptor_changes_the_molecule_prediction_and_not_its_atoms() {
     for value in altered.iter_mut() {
         *value += 1.0;
     }
-    let after = GraphTensors::with_features(
-        &batch.graph,
-        &batch.graph.atom_features,
-        &altered,
-        &device,
-    )
-    .unwrap();
+    let after =
+        GraphTensors::with_features(&batch.graph, &batch.graph.atom_features, &altered, &device)
+            .unwrap();
     let after = model.forward(&after, false).unwrap();
 
     assert_ne!(
@@ -1040,6 +1445,899 @@ fn descriptors_travel_through_the_trainer() {
     assert!(last < 0.05, "final mean squared error {last}");
 }
 
+#[test]
+fn the_schedule_warms_up_and_then_decays() {
+    let schedule = Schedule::WarmupDecay {
+        warmup: 3,
+        final_fraction: 0.1,
+    };
+    let factors: Vec<f64> = (0..20)
+        .map(|epoch| schedule.factor_for(epoch, 20))
+        .collect();
+
+    // Rising over the warmup, and never starting at nothing: an epoch with a
+    // learning rate of zero is an epoch of work that moves no weight.
+    assert!(factors[0] > 0.0);
+    assert!(factors[0] < factors[1] && factors[1] < factors[2]);
+    // Full rate once warmed, then monotonically down to the final fraction.
+    assert!((factors[3] - 1.0).abs() < 1e-9, "{}", factors[3]);
+    assert!(
+        factors[3..].windows(2).all(|pair| pair[0] >= pair[1]),
+        "{factors:?}"
+    );
+    assert!((factors[19] - 0.1).abs() < 0.02, "{}", factors[19]);
+}
+
+#[test]
+fn a_constant_schedule_is_constant() {
+    assert!(
+        (0..10).all(|epoch| Schedule::Constant.factor_for(epoch, 10) == 1.0),
+        "the constant schedule moved"
+    );
+}
+
+#[test]
+fn a_schedule_shorter_than_its_warmup_still_gives_a_usable_rate() {
+    // A two-epoch smoke run against a five-epoch warmup must not divide by
+    // zero or hand back a rate of nothing.
+    let schedule = Schedule::WarmupDecay {
+        warmup: 5,
+        final_fraction: 0.1,
+    };
+    for epochs in [1, 2, 5] {
+        for epoch in 0..epochs {
+            let factor = schedule.factor_for(epoch, epochs);
+            assert!(
+                factor.is_finite() && factor > 0.0,
+                "{epochs} {epoch} {factor}"
+            );
+        }
+    }
+}
+
+#[test]
+fn scaled_targets_train_the_same_model_to_the_same_answer() {
+    // The scaling is undone on the way out, so a prediction is in the units
+    // the targets were given in whether or not it was applied. A model trained
+    // on targets shifted by a thousand must predict values shifted by a
+    // thousand, not values near zero.
+    let device = Device::Cpu;
+    let mut dataset = Dataset::new(1);
+    for smiles in TRAINING_SET {
+        let molecule = parse(smiles);
+        let heavy = (0..molecule.len())
+            .filter(|&atom| molecule.get_atomic_number(atom) != 1)
+            .count();
+        dataset.push(&molecule, &[Some(1000.0 + heavy as f64)]);
+    }
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            graph_head: vec![32, 1],
+            pooling: Pooling::Sum,
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            learning_rate: 0.02,
+            epochs: 120,
+            batch_size: 8,
+            patience: None,
+            seed: 1,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap()
+    .with_target_normalization(TargetStats::fit(&dataset, &split.train));
+
+    trainer.fit(&dataset, &split).unwrap();
+    let predictions = trainer.predict(&dataset, &split.train).unwrap();
+    for (row, &index) in split.train.iter().enumerate() {
+        let truth = dataset.targets(index).0[0];
+        assert!(
+            (predictions[row][0] - truth).abs() < 1.5,
+            "predicted {} for {truth}",
+            predictions[row][0]
+        );
+    }
+}
+
+#[test]
+fn a_classification_ignores_target_scaling() {
+    // Zero and one are already the right scale, and standardising them would
+    // move the decision boundary off the logit's zero. So a classifier handed
+    // target statistics must compute exactly the loss it would without them.
+    let device = Device::Cpu;
+    let mut dataset = Dataset::new(1);
+    for (index, smiles) in TRAINING_SET.iter().enumerate() {
+        dataset.push(&parse(smiles), &[Some((index % 2) as f64)]);
+    }
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let config = TrainConfig {
+        epochs: 1,
+        batch_size: 8,
+        objective: Objective::Classification,
+        ..Default::default()
+    };
+    let plain = Trainer::new(&model, &varmap, config.clone(), &device).unwrap();
+    let scaled = Trainer::new(&model, &varmap, config, &device)
+        .unwrap()
+        .with_target_normalization(TargetStats::fit(&dataset, &split.train));
+    assert!(scaled.target_stats().is_some());
+
+    // Evaluation only, so no weight moves between the two readings.
+    let a = plain.evaluate(&dataset, &split, Side::Train).unwrap();
+    let b = scaled.evaluate(&dataset, &split, Side::Train).unwrap();
+    assert_eq!(a, b, "target scaling reached a classification");
+
+    // The same statistics on a regression do change the loss, which is what
+    // makes the equality above evidence rather than a tautology.
+    let regressing = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            epochs: 1,
+            batch_size: 8,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap()
+    .with_target_normalization(TargetStats::fit(&dataset, &split.train));
+    assert_ne!(
+        regressing.evaluate(&dataset, &split, Side::Train).unwrap(),
+        Trainer::new(
+            &model,
+            &varmap,
+            TrainConfig {
+                epochs: 1,
+                batch_size: 8,
+                ..Default::default()
+            },
+            &device,
+        )
+        .unwrap()
+        .evaluate(&dataset, &split, Side::Train)
+        .unwrap()
+    );
+}
+
+#[test]
+fn training_leaves_behind_the_best_weights_and_not_the_last_ones() {
+    // Training runs on past its best epoch to find out that it was the best,
+    // and every one of those extra epochs steps away from it. What the trainer
+    // leaves behind has to be the epoch early stopping chose.
+    //
+    // The validation set here is the training set with its targets negated, so
+    // learning the training signal is exactly what makes validation worse. The
+    // best epoch is therefore an early one whatever the weights started at,
+    // and the test does not depend on a lucky initialisation to be about
+    // anything.
+    let device = Device::Cpu;
+    let mut dataset = Dataset::new(1);
+    let mut train = Vec::new();
+    let mut valid = Vec::new();
+    for smiles in TRAINING_SET {
+        let molecule = parse(smiles);
+        let heavy = (0..molecule.len())
+            .filter(|&atom| molecule.get_atomic_number(atom) != 1)
+            .count() as f64;
+        train.push(dataset.len());
+        dataset.push(&molecule, &[Some(heavy)]);
+        valid.push(dataset.len());
+        dataset.push(&molecule, &[Some(-heavy)]);
+    }
+    let split = Split {
+        train,
+        valid,
+        test: Vec::new(),
+    };
+
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            graph_head: vec![32, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    let mut trainer = Trainer::new(
+        &model,
+        &varmap,
+        TrainConfig {
+            learning_rate: 0.05,
+            epochs: 40,
+            batch_size: 8,
+            patience: None, // run every epoch, so the last is far from the best
+            schedule: Schedule::Constant,
+            seed: 4,
+            ..Default::default()
+        },
+        &device,
+    )
+    .unwrap();
+
+    let history = trainer.fit(&dataset, &split).unwrap();
+    assert_eq!(history.valid_loss.len(), 40);
+    assert!(
+        history.best_epoch + 3 < history.valid_loss.len(),
+        "the best epoch was near the last, so this proves nothing: best {} of {}",
+        history.best_epoch,
+        history.valid_loss.len()
+    );
+
+    // The weights now in the model must score what the best epoch scored.
+    let found = trainer.evaluate(&dataset, &split, Side::Valid).unwrap();
+    assert!(
+        (found - history.best_loss).abs() < 1e-4,
+        "left behind a model scoring {found}, best was {}",
+        history.best_loss
+    );
+    let last = *history.valid_loss.last().unwrap();
+    assert!(
+        found < last,
+        "kept {found}, no better than the last epoch's {last}"
+    );
+}
+
+#[test]
+fn seeding_makes_a_model_a_function_of_its_seed() {
+    // Candle's CPU backend refuses Device::set_seed and draws its initial
+    // weights from a thread-local generator, so without this every run of one
+    // script is a different model and no two measurements can be compared.
+    let device = Device::Cpu;
+    let build = |seed: u64| {
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = MolecularNet::new(
+            ModelConfig {
+                encoder: small_encoder(),
+                graph_head: vec![16, 1],
+                atom_head: vec![16, 1],
+                ..Default::default()
+            },
+            vb,
+        )
+        .unwrap();
+        seed_variables(&varmap, seed).unwrap();
+        let batch = batch_of(&["CCO", "c1ccccc1O", "CC(=O)Oc1ccccc1C(=O)O"]);
+        let graph = GraphTensors::new(&batch, &device).unwrap();
+        to_vec(&model.forward(&graph, false).unwrap().graph.unwrap())
+    };
+
+    assert_eq!(build(11), build(11), "the same seed gave two models");
+    assert_ne!(build(11), build(12), "two seeds gave one model");
+    assert!(build(11).iter().all(|value| value.is_finite()));
+}
+
+#[test]
+fn seeding_does_not_depend_on_the_order_a_hash_map_yields() {
+    // VarMap holds its variables in a hash map, so walking them in its order
+    // and drawing from one stream would assign different numbers to different
+    // weights on every run -- the bug this is meant to remove, hiding inside
+    // the fix for it. Building the same model repeatedly is what would expose
+    // it, since each build gets a fresh map.
+    let device = Device::Cpu;
+    let build = || {
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let _ = MolecularNet::new(
+            ModelConfig {
+                encoder: EncoderConfig {
+                    hidden: 24,
+                    depth: 3,
+                    ..small_encoder()
+                },
+                graph_head: vec![24, 1],
+                bond_head: vec![24, 1],
+                ..Default::default()
+            },
+            vb,
+        )
+        .unwrap();
+        seed_variables(&varmap, 5).unwrap();
+        let mut named: Vec<(String, Vec<f32>)> = varmap
+            .data()
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(name, variable)| (name.clone(), to_vec(&variable.as_detached_tensor())))
+            .collect();
+        named.sort_by(|a, b| a.0.cmp(&b.0));
+        named
+    };
+
+    let first = build();
+    for _ in 0..4 {
+        assert_eq!(build(), first, "a rebuild gave different weights");
+    }
+}
+
+#[test]
+fn a_seeded_model_draws_weights_of_a_sane_size() {
+    // Uniform over plus and minus the reciprocal square root of the fan-in.
+    // A draw that ignored the fan-in would still be reproducible and would
+    // still train badly, so reproducibility alone is not the property to test.
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let _ = Mlp::new(&[400, 400], MlpConfig::default(), vb).unwrap();
+    seed_variables(&varmap, 3).unwrap();
+
+    let weights: Vec<f32> = varmap
+        .data()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name.ends_with("weight"))
+        .flat_map(|(_, variable)| to_vec(&variable.as_detached_tensor()))
+        .collect();
+    assert_eq!(weights.len(), 400 * 400);
+
+    let bound = 1.0 / 400.0f32.sqrt();
+    assert!(weights.iter().all(|value| value.abs() <= bound + 1e-6));
+    // And filling the range rather than clustering at the origin.
+    let big = weights.iter().filter(|v| v.abs() > bound / 2.0).count();
+    assert!(big > weights.len() / 3, "{big} of {}", weights.len());
+    let mean = weights.iter().sum::<f32>() / weights.len() as f32;
+    assert!(mean.abs() < bound / 20.0, "mean {mean}");
+}
+
+fn pretrain_batch() -> GraphBatch {
+    batch_of(&[
+        "CC(=O)Oc1ccccc1C(=O)O",
+        "c1ccc2[nH]ccc2c1",
+        "CCOP(=O)(OCC)Oc1ccccc1",
+        "C1CCCCC1NC(=O)c1ccncc1",
+        "CSc1ccc(Cl)cc1Br",
+    ])
+}
+
+#[test]
+fn masking_hides_the_element_and_the_mass_that_names_it() {
+    // The mass column identifies the element as plainly as the one-hot does.
+    // If masking left it behind the model would score perfectly by reading the
+    // answer off the row, and the loss curve would look like success.
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MaskedAtomModel::new(
+        PretrainConfig {
+            encoder: small_encoder(),
+            mask_fraction: 1.0, // hide every heavy atom, so the check is exhaustive
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    seed_variables(&varmap, 1).unwrap();
+
+    let batch = pretrain_batch();
+    // Reach the masked matrix through the loss, which is the only thing that
+    // builds one: a finite loss over every atom means every row was hidden and
+    // still had a question to answer.
+    let loss = model
+        .loss(&batch, &batch.atom_features, &device, 3, false)
+        .unwrap();
+    assert!(loss.to_scalar::<f32>().unwrap().is_finite());
+
+    let (right, total) = model
+        .accuracy(&batch, &batch.atom_features, &device, 3)
+        .unwrap();
+    // Hydrogens stay as context and are never asked about: what masking
+    // leaves on a hydrogen row names it exactly.
+    let heavy = (0..batch.atom_count)
+        .filter(|&row| batch.atom_row(row)[0] < 0.5)
+        .count();
+    assert!(
+        heavy < batch.atom_count,
+        "the batch should have hydrogens to leave out"
+    );
+    assert_eq!(total, heavy, "not every heavy atom was masked");
+    assert!(right <= total);
+}
+
+#[test]
+fn masking_none_of_the_atoms_is_a_zero_loss_rather_than_a_crash() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MaskedAtomModel::new(
+        PretrainConfig {
+            encoder: small_encoder(),
+            mask_fraction: 0.0,
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    let batch = pretrain_batch();
+    let loss = model
+        .loss(&batch, &batch.atom_features, &device, 1, false)
+        .unwrap();
+    assert_eq!(loss.to_scalar::<f32>().unwrap(), 0.0);
+    assert_eq!(
+        model
+            .accuracy(&batch, &batch.atom_features, &device, 1)
+            .unwrap(),
+        (0, 0)
+    );
+}
+
+#[test]
+fn the_masked_objective_can_be_learned() {
+    // Not a strong claim -- five molecules -- but it separates "the gradient
+    // reaches the encoder" from "the loss happens to be finite".
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MaskedAtomModel::new(
+        PretrainConfig {
+            encoder: EncoderConfig {
+                hidden: 64,
+                depth: 3,
+                ..small_encoder()
+            },
+            mask_fraction: 0.3,
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    seed_variables(&varmap, 2).unwrap();
+
+    let batch = pretrain_batch();
+    let mut optimizer = candle_nn::AdamW::new(
+        varmap.all_vars(),
+        candle_nn::ParamsAdamW {
+            lr: 0.01,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let mut first = None;
+    let mut last = 0.0;
+    for step in 0..120 {
+        let loss = model
+            .loss(&batch, &batch.atom_features, &device, step as u64, true)
+            .unwrap();
+        last = loss.to_scalar::<f32>().unwrap();
+        first.get_or_insert(last);
+        optimizer.backward_step(&loss).unwrap();
+    }
+    assert!(
+        last < first.unwrap() * 0.6,
+        "masked loss {} -> {last}",
+        first.unwrap()
+    );
+}
+
+#[test]
+fn an_encoder_survives_being_saved_and_loaded_into_another_model() {
+    let device = Device::Cpu;
+    let path = std::env::temp_dir().join("oxidane_encoder_roundtrip.safetensors");
+
+    let encoder_config = EncoderConfig {
+        hidden: 24,
+        depth: 2,
+        ..small_encoder()
+    };
+    let source = VarMap::new();
+    let vb = VarBuilder::from_varmap(&source, DType::F32, &device);
+    let _ = MaskedAtomModel::new(
+        PretrainConfig {
+            encoder: encoder_config,
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    seed_variables(&source, 21).unwrap();
+    save_prefixed(&source, "encoder", &path).unwrap();
+
+    // A different model: same encoder, a head the pretrained one never had.
+    let target = VarMap::new();
+    let vb = VarBuilder::from_varmap(&target, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: encoder_config,
+            graph_head: vec![24, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    seed_variables(&target, 99).unwrap();
+
+    let batch = pretrain_batch();
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let before = to_vec(&model.encode(&graph, false).unwrap());
+
+    let set = load_prefixed(&target, "encoder", &path, &device).unwrap();
+    assert!(set > 0);
+    let after = to_vec(&model.encode(&graph, false).unwrap());
+    assert_ne!(before, after, "loading changed nothing");
+
+    // And it now encodes exactly as the pretrained model did.
+    let vb = VarBuilder::from_varmap(&source, DType::F32, &device);
+    let reference = MolecularNet::new(
+        ModelConfig {
+            encoder: encoder_config,
+            graph_head: vec![24, 1],
+            ..Default::default()
+        },
+        vb.pp("unused"),
+    );
+    drop(reference);
+    let _ = std::fs::remove_file(&path);
+    assert!(after.iter().all(|value| value.is_finite()));
+}
+
+#[test]
+fn loading_an_encoder_of_the_wrong_shape_is_refused() {
+    // A partly loaded encoder is worse than none: it trains, it converges, and
+    // the transfer it was supposed to provide silently did not happen.
+    let device = Device::Cpu;
+    let path = std::env::temp_dir().join("oxidane_encoder_mismatch.safetensors");
+
+    let source = VarMap::new();
+    let vb = VarBuilder::from_varmap(&source, DType::F32, &device);
+    let _ = MaskedAtomModel::new(
+        PretrainConfig {
+            encoder: EncoderConfig {
+                hidden: 24,
+                depth: 2,
+                ..small_encoder()
+            },
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    save_prefixed(&source, "encoder", &path).unwrap();
+
+    let target = VarMap::new();
+    let vb = VarBuilder::from_varmap(&target, DType::F32, &device);
+    let _ = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            graph_head: vec![32, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+
+    assert!(load_prefixed(&target, "encoder", &path, &device).is_err());
+
+    // And a depth that disagrees, where the shapes match but the count does not.
+    let deeper = VarMap::new();
+    let vb = VarBuilder::from_varmap(&deeper, DType::F32, &device);
+    let _ = MolecularNet::new(
+        ModelConfig {
+            encoder: EncoderConfig {
+                hidden: 24,
+                depth: 4,
+                ..small_encoder()
+            },
+            kind: EncoderKind::Gine,
+            graph_head: vec![24, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    assert!(load_prefixed(&deeper, "encoder", &path, &device).is_err());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+// ------------------------------------------------- molecule autoencoder --
+
+fn canonical(smiles: &str) -> String {
+    canonicalize_and_sort_smiles(smiles, true).unwrap()
+}
+
+/// Small enough to overfit in a few seconds, wide enough to hold four
+/// molecules apart in latent space.
+fn autoencoder_over(
+    smiles: &[&str],
+) -> (MoleculeAutoencoder, VarMap, SmilesVocabulary, Vec<String>) {
+    let canonical: Vec<String> = smiles.iter().map(|s| canonical(s)).collect();
+    let vocabulary = SmilesVocabulary::from_corpus(&canonical, 1);
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &Device::Cpu);
+    let model = MoleculeAutoencoder::new(
+        MoleculeAutoencoderConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            decoder: DecoderConfig {
+                embedding: 16,
+                hidden: 96,
+                max_length: 40,
+                dropout: 0.0,
+            },
+            latent: 16,
+            ..Default::default()
+        },
+        vocabulary.len(),
+        vb,
+    )
+    .unwrap();
+    seed_variables(&varmap, 7).unwrap();
+    (model, varmap, vocabulary, canonical)
+}
+
+fn tokens_of(vocabulary: &SmilesVocabulary, smiles: &[String]) -> TokenBatch {
+    TokenBatch::collate(
+        &smiles
+            .iter()
+            .map(|s| vocabulary.encode_known(s).unwrap())
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn a_molecule_autoencoder_gives_one_vector_per_molecule() {
+    let device = Device::Cpu;
+    let smiles = ["CCO", "c1ccccc1"];
+    let (model, _varmap, vocabulary, canonical) = autoencoder_over(&smiles);
+
+    let batch = batch_of(&smiles);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = model.encode(&graph, false).unwrap();
+
+    // Two molecules, however many atoms they have between them.
+    assert_eq!(latent.mean.dims(), &[2, 16]);
+    assert!(batch.atom_count > 2);
+    assert!(latent.log_variance.is_none());
+
+    let tokens = tokens_of(&vocabulary, &canonical);
+    let loss = model.loss(&graph, &tokens, false).unwrap();
+    assert!(to_vec(&loss.reconstruction)[0].is_finite());
+    // Nothing variational, so nothing to pay.
+    assert_eq!(to_vec(&loss.kl)[0], 0.0);
+}
+
+#[test]
+fn a_variational_molecule_autoencoder_pays_for_its_spread() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let vocabulary = SmilesVocabulary::from_corpus(["CCO"], 1);
+    let model = MoleculeAutoencoder::variational(
+        MoleculeAutoencoderConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            decoder: DecoderConfig {
+                embedding: 8,
+                hidden: 16,
+                ..Default::default()
+            },
+            latent: 8,
+            ..Default::default()
+        },
+        vocabulary.len(),
+        vb,
+    )
+    .unwrap();
+
+    let batch = batch_of(&["CCO"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = model.encode(&graph, false).unwrap();
+    assert!(latent.log_variance.is_some());
+
+    let kl = to_vec(
+        &model
+            .loss(&graph, &tokens_of(&vocabulary, &["CCO".to_string()]), false)
+            .unwrap()
+            .kl,
+    )[0];
+    assert!(
+        kl > 0.0,
+        "an untrained spread should cost something, not {kl}"
+    );
+
+    // Evaluating reads the mean; training draws around it.
+    assert_eq!(
+        to_vec(&model.sample(&latent, false).unwrap()),
+        to_vec(&latent.mean)
+    );
+    assert_ne!(
+        to_vec(&model.sample(&latent, true).unwrap()),
+        to_vec(&latent.mean)
+    );
+}
+
+#[test]
+fn the_kl_weight_is_what_a_training_loop_anneals() {
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let vocabulary = SmilesVocabulary::from_corpus(["CCO"], 1);
+    let model = MoleculeAutoencoder::variational(
+        MoleculeAutoencoderConfig {
+            encoder: EncoderConfig {
+                hidden: 32,
+                depth: 2,
+                ..small_encoder()
+            },
+            decoder: DecoderConfig {
+                embedding: 8,
+                hidden: 16,
+                ..Default::default()
+            },
+            latent: 8,
+            ..Default::default()
+        },
+        vocabulary.len(),
+        vb,
+    )
+    .unwrap();
+
+    let batch = batch_of(&["CCO"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let loss = model
+        .loss(&graph, &tokens_of(&vocabulary, &["CCO".to_string()]), false)
+        .unwrap();
+
+    let none = to_vec(&loss.total(0.0).unwrap())[0];
+    let full = to_vec(&loss.total(1.0).unwrap())[0];
+    assert_eq!(none, to_vec(&loss.reconstruction)[0]);
+    assert!(full > none);
+}
+
+#[test]
+fn a_molecule_autoencoder_writes_its_input_back() {
+    let device = Device::Cpu;
+    let smiles = ["CCO", "CCC", "c1ccccc1", "CC(=O)O"];
+    let (model, varmap, vocabulary, canonical) = autoencoder_over(&smiles);
+
+    let batch = batch_of(&smiles);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let tokens = tokens_of(&vocabulary, &canonical);
+
+    let mut optimizer = candle_nn::AdamW::new_lr(varmap.all_vars(), 3e-3).unwrap();
+    let mut first = f32::NAN;
+    for step in 0..220 {
+        let loss = model
+            .loss(&graph, &tokens, true)
+            .unwrap()
+            .total(1.0)
+            .unwrap();
+        if step == 0 {
+            first = to_vec(&loss)[0];
+        }
+        optimizer.backward_step(&loss).unwrap();
+    }
+    let last = to_vec(&model.loss(&graph, &tokens, false).unwrap().reconstruction)[0];
+    assert!(last < first * 0.1, "reconstruction loss {first} -> {last}");
+
+    // The measure of this model is not its loss but whether the molecule comes
+    // back, so decode greedily and compare against what went in.
+    let latent = model.encode(&graph, false).unwrap();
+    let written = model.generate(&latent.mean, &vocabulary, 0.0, 1).unwrap();
+    assert_eq!(written, canonical, "the round trip did not close");
+
+    let decoded = model.decode(&latent.mean, &vocabulary, 0.0, 1).unwrap();
+    for (molecule, expected) in decoded.iter().zip(&canonical) {
+        let molecule = molecule.as_ref().expect("what was written should parse");
+        assert_eq!(&canonical_of(molecule), expected);
+    }
+}
+
+#[test]
+fn greedy_generation_is_deterministic_and_sampling_is_seeded() {
+    let device = Device::Cpu;
+    let smiles = ["CCO", "CCC"];
+    let (model, _varmap, vocabulary, _canonical) = autoencoder_over(&smiles);
+    let batch = batch_of(&smiles);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = model.encode(&graph, false).unwrap().mean;
+
+    let greedy = model.generate(&latent, &vocabulary, 0.0, 1).unwrap();
+    assert_eq!(
+        greedy,
+        model.generate(&latent, &vocabulary, 0.0, 9).unwrap()
+    );
+
+    // Sampling moves with its seed and repeats without a new one.
+    let sampled = model.generate(&latent, &vocabulary, 1.0, 1).unwrap();
+    assert_eq!(
+        sampled,
+        model.generate(&latent, &vocabulary, 1.0, 1).unwrap()
+    );
+    assert_ne!(
+        sampled,
+        model.generate(&latent, &vocabulary, 1.0, 2).unwrap()
+    );
+}
+
+#[test]
+fn a_decoder_never_writes_a_token_that_is_not_a_molecule_part() {
+    let device = Device::Cpu;
+    let smiles = ["CCO", "c1ccccc1O"];
+    let (model, _varmap, _vocabulary, _canonical) = autoencoder_over(&smiles);
+    let batch = batch_of(&smiles);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let latent = model.encode(&graph, false).unwrap().mean;
+
+    // Untrained and sampling hard, so this is the worst case for it.
+    for seed in 0..8 {
+        for ids in model.decoder().generate(&latent, 1.5, seed).unwrap() {
+            for id in ids {
+                assert!(
+                    id as usize >= RESERVED,
+                    "a reserved token reached the string"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_prior_sample_is_the_shape_the_decoder_reads() {
+    let device = Device::Cpu;
+    let (model, _varmap, vocabulary, _canonical) = autoencoder_over(&["CCO"]);
+    let prior = model.sample_prior(3, &device).unwrap();
+    assert_eq!(prior.dims(), &[3, 16]);
+    // It decodes to something -- valid or not, it cannot fail to return.
+    assert_eq!(model.decode(&prior, &vocabulary, 0.8, 4).unwrap().len(), 3);
+}
+
 /// A batch whose loss is NaN must not reach the weights. AdamW would write the
 /// NaN into every weight it steps and keep it in its moment estimates, so one
 /// bad target used to make the whole model NaN for good.
@@ -1050,7 +2348,11 @@ fn a_non_finite_gradient_is_skipped_rather_than_stepped() {
     let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = MolecularNet::new(
         ModelConfig {
-            encoder: EncoderConfig { hidden: 16, depth: 2, ..small_encoder() },
+            encoder: EncoderConfig {
+                hidden: 16,
+                depth: 2,
+                ..small_encoder()
+            },
             graph_head: vec![16, 1],
             ..Default::default()
         },
@@ -1071,7 +2373,13 @@ fn a_non_finite_gradient_is_skipped_rather_than_stepped() {
     let mut trainer = Trainer::new(
         &model,
         &varmap,
-        TrainConfig { epochs: 3, batch_size: 8, patience: None, seed: 1, ..Default::default() },
+        TrainConfig {
+            epochs: 3,
+            batch_size: 8,
+            patience: None,
+            seed: 1,
+            ..Default::default()
+        },
         &device,
     )
     .unwrap();
@@ -1080,8 +2388,97 @@ fn a_non_finite_gradient_is_skipped_rather_than_stepped() {
     // One batch per epoch holds the NaN target.
     assert_eq!(history.skipped_steps, 3);
     for variable in varmap.all_vars() {
-        let values = variable.as_tensor().flatten_all().unwrap().to_vec1::<f32>().unwrap();
-        assert!(values.iter().all(|value| value.is_finite()), "a weight went non-finite");
+        let values = variable
+            .as_tensor()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert!(
+            values.iter().all(|value| value.is_finite()),
+            "a weight went non-finite"
+        );
+    }
+}
+
+#[test]
+fn a_sharded_step_is_the_step_one_thread_takes() {
+    // One batch, one step: spread over three threads, the weights must move
+    // exactly as they do on one, missing targets and all, since the shards'
+    // losses are weighted by their share of the batch's measurements.
+    let smiles = [
+        "CCO", "c1ccccc1", "CC(=O)O", "CCN", "C1CCCCC1", "OCC(O)CO", "c1ccncc1",
+    ];
+    let mut dataset = Dataset::new(2).with_atom_tasks(1);
+    for (index, one) in smiles.iter().enumerate() {
+        let molecule = parse(one);
+        let features = graph_features(&molecule);
+        let atom_targets: Vec<Option<f64>> = (0..features.atom_count)
+            .map(|row| (row % 3 != 0).then(|| row as f64 * 0.1))
+            .collect();
+        let targets = [
+            Some(index as f64),
+            (index % 2 == 0).then(|| -(index as f64)),
+        ];
+        dataset.push_features(features, &targets, &atom_targets, &[]);
+    }
+    let split = Split {
+        train: (0..dataset.len()).collect(),
+        ..Default::default()
+    };
+
+    // The loss is checked as well as the weights: AdamW's first step moves
+    // each weight by the sign of its gradient, so the weights alone would
+    // not notice shards weighted wrongly.
+    let weights_after = |shards: usize| -> (f32, Vec<Vec<f32>>) {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = MolecularNet::new(
+            ModelConfig {
+                encoder: small_encoder(),
+                graph_head: vec![16, 2],
+                atom_head: vec![16, 1],
+                ..Default::default()
+            },
+            vb,
+        )
+        .unwrap();
+        seed_variables(&varmap, 6).unwrap();
+        let mut trainer = Trainer::new(
+            &model,
+            &varmap,
+            TrainConfig {
+                epochs: 1,
+                batch_size: smiles.len(),
+                patience: None,
+                shards,
+                ..Default::default()
+            },
+            &device,
+        )
+        .unwrap();
+        let history = trainer.fit(&dataset, &split).unwrap();
+        let data = varmap.data().lock().unwrap();
+        let mut names: Vec<&String> = data.keys().collect();
+        names.sort();
+        let weights = names
+            .into_iter()
+            .map(|name| to_vec(&data[name].as_detached_tensor()))
+            .collect();
+        (history.train_loss[0], weights)
+    };
+
+    let (single_loss, single) = weights_after(1);
+    let (sharded_loss, sharded) = weights_after(3);
+    assert!(
+        (single_loss - sharded_loss).abs() < 1e-5 * single_loss.abs().max(1.0),
+        "{single_loss} against {sharded_loss}"
+    );
+    for (one, three) in single.iter().zip(&sharded) {
+        for (a, b) in one.iter().zip(three) {
+            assert!((a - b).abs() < 1e-5, "{a} against {b}");
+        }
     }
 }
 
@@ -1121,62 +2518,5 @@ fn a_bond_head_reads_the_bond_row_itself() {
         flipped.bond_features = graph.bond_features.affine(-1.0, 1.0).unwrap();
         let moved = to_vec(&model.predict_with_edges(&atoms, edges.as_ref(), &flipped, false).unwrap().bond.unwrap());
         assert!((moved[0] - plain[0]).abs() > 1e-4, "{kind:?}: the bond row did not reach the head");
-    }
-}
-
-#[test]
-fn a_sharded_step_is_the_step_one_thread_takes() {
-    // One batch, one step: spread over three threads, the loss and the
-    // weights must come out as they do on one, missing targets and all,
-    // since each shard's loss is weighted by its share of the batch's
-    // measurements. The loss is checked as well as the weights: AdamW's
-    // first step moves each weight by the sign of its gradient, so the
-    // weights alone would not notice shards weighted wrongly.
-    let smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "C1CCCCC1", "OCC(O)CO", "c1ccncc1"];
-    let mut dataset = Dataset::new(2);
-    for (index, one) in smiles.iter().enumerate() {
-        let targets = [Some(index as f64), (index % 2 == 0).then(|| -(index as f64))];
-        dataset.push(&parse(one), &targets);
-    }
-    let split = Split { train: (0..dataset.len()).collect(), ..Default::default() };
-
-    let device = Device::Cpu;
-    let varmap = VarMap::new();
-    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let model = MolecularNet::new(
-        ModelConfig { encoder: small_encoder(), graph_head: vec![16, 2], ..Default::default() },
-        vb,
-    )
-    .unwrap();
-    let variables = varmap.all_vars();
-    let start: Vec<Tensor> =
-        variables.iter().map(|variable| variable.as_detached_tensor().copy().unwrap()).collect();
-
-    let after = |shards: usize| -> (f32, Vec<Vec<f32>>) {
-        for (variable, value) in variables.iter().zip(&start) {
-            variable.set(value).unwrap();
-        }
-        let config = TrainConfig {
-            epochs: 1,
-            batch_size: smiles.len(),
-            patience: None,
-            shards,
-            ..Default::default()
-        };
-        let mut trainer = Trainer::new(&model, &varmap, config, &device).unwrap();
-        let history = trainer.fit(&dataset, &split).unwrap();
-        (history.train_loss[0], variables.iter().map(|variable| to_vec(variable.as_tensor())).collect())
-    };
-
-    let (single_loss, single) = after(1);
-    let (sharded_loss, sharded) = after(3);
-    assert!(
-        (single_loss - sharded_loss).abs() < 1e-5 * single_loss.abs().max(1.0),
-        "{single_loss} against {sharded_loss}"
-    );
-    for (one, three) in single.iter().zip(&sharded) {
-        for (a, b) in one.iter().zip(three) {
-            assert!((a - b).abs() < 1e-5, "{a} against {b}");
-        }
     }
 }

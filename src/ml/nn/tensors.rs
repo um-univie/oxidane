@@ -75,6 +75,24 @@ impl GraphTensors {
         global_features: &[f32],
         device: &Device,
     ) -> Result<Self> {
+        Self::with_bond_features(
+            batch,
+            atom_features,
+            &batch.bond_features,
+            global_features,
+            device,
+        )
+    }
+
+    /// [`GraphTensors::with_features`] with the bond features scaled by the
+    /// caller as well -- see [`crate::ml::normalize::BondFeatureStats`].
+    pub fn with_bond_features(
+        batch: &GraphBatch,
+        atom_features: &[f32],
+        bond_features: &[f32],
+        global_features: &[f32],
+        device: &Device,
+    ) -> Result<Self> {
         let (reverse, present) = batch.reverse_edges();
         let mask: Vec<f32> = present
             .iter()
@@ -91,7 +109,7 @@ impl GraphTensors {
                 device,
             )?,
             bond_features: Tensor::from_slice(
-                batch.bond_features.as_slice(),
+                bond_features,
                 (batch.edge_count, BOND_FEATURE_WIDTH),
                 device,
             )?,
@@ -142,8 +160,11 @@ impl GraphTensors {
     /// featurization gives every bond twice.
     pub fn scatter_to_atoms(&self, edges: &Tensor) -> Result<Tensor> {
         let width = edges.dim(1)?;
-        Tensor::zeros((self.atom_count, width), edges.dtype(), &self.device)?
-            .index_add(&self.target, edges, 0)
+        Tensor::zeros((self.atom_count, width), edges.dtype(), &self.device)?.index_add(
+            &self.target,
+            edges,
+            0,
+        )
     }
 
     /// Adds every atom's row into the molecule it belongs to.
@@ -151,8 +172,11 @@ impl GraphTensors {
     /// `atoms` is `[atom_count, width]`; the result is `[graph_count, width]`.
     pub fn pool_sum(&self, atoms: &Tensor) -> Result<Tensor> {
         let width = atoms.dim(1)?;
-        Tensor::zeros((self.graph_count, width), atoms.dtype(), &self.device)?
-            .index_add(&self.batch, atoms, 0)
+        Tensor::zeros((self.graph_count, width), atoms.dtype(), &self.device)?.index_add(
+            &self.batch,
+            atoms,
+            0,
+        )
     }
 
     /// [`GraphTensors::pool_sum`] divided by each molecule's atom count.

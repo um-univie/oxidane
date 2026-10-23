@@ -116,25 +116,41 @@ impl DMpnn {
 
     /// One vector per atom row, `[atom_count, hidden]`.
     pub fn forward(&self, graph: &GraphTensors, train: bool) -> Result<Tensor> {
-        let arrived = if graph.edge_count == 0 {
+        Ok(self.forward_with_edges(graph, train)?.0)
+    }
+
+    /// [`DMpnn::forward`], and the last round's message on every directed
+    /// edge, `[edge_count, hidden]` -- `None` for a batch with no edges.
+    ///
+    /// The messages are what this network knows about a bond as such, which
+    /// the atom vectors only hold summed over every bond an atom has.
+    pub fn forward_with_edges(
+        &self,
+        graph: &GraphTensors,
+        train: bool,
+    ) -> Result<(Tensor, Option<Tensor>)> {
+        let (arrived, messages) = if graph.edge_count == 0 {
             // A molecule of one heavy atom has no bonds, and there is nothing
             // for message passing to do. Its atom vector is its own features
             // put through the output projection, which is what the zeros here
             // arrange.
-            Tensor::zeros(
+            let zeros = Tensor::zeros(
                 (graph.atom_count, self.config.hidden),
                 graph.atom_features.dtype(),
                 &graph.device,
-            )?
+            )?;
+            (zeros, None)
         } else {
-            self.pass_messages(graph, train)?
+            let messages = self.pass_messages(graph, train)?;
+            (graph.scatter_to_atoms(&messages)?, Some(messages))
         };
 
         let atoms = Tensor::cat(&[&graph.atom_features, &arrived], 1)?;
         let atoms = self.config.activation.apply(&self.output.forward(&atoms)?)?;
-        self.maybe_drop(atoms, train)
+        Ok((self.maybe_drop(atoms, train)?, messages))
     }
 
+    /// Every directed edge's message after the last round.
     fn pass_messages(&self, graph: &GraphTensors, train: bool) -> Result<Tensor> {
         // What an edge starts out knowing: the atom it leaves and the bond it
         // is.
@@ -170,7 +186,7 @@ impl DMpnn {
             messages = self.maybe_drop(messages, train)?;
         }
 
-        graph.scatter_to_atoms(&messages)
+        Ok(messages)
     }
 
     fn maybe_drop(&self, xs: Tensor, train: bool) -> Result<Tensor> {
@@ -295,6 +311,25 @@ impl Encoder {
             Encoder::Directed(encoder) => encoder.forward(graph, train),
             Encoder::Gine(encoder) => encoder.forward(graph, train),
         }
+    }
+
+    /// The atom vectors, and a vector per directed edge where the encoder
+    /// keeps one: [`DMpnn::forward_with_edges`]'s messages. GINE passes
+    /// messages between atoms and has none.
+    pub fn forward_with_edges(
+        &self,
+        graph: &GraphTensors,
+        train: bool,
+    ) -> Result<(Tensor, Option<Tensor>)> {
+        match self {
+            Encoder::Directed(encoder) => encoder.forward_with_edges(graph, train),
+            Encoder::Gine(encoder) => Ok((encoder.forward(graph, train)?, None)),
+        }
+    }
+
+    /// Whether [`Encoder::forward_with_edges`] gives edge vectors.
+    pub fn has_edge_states(&self) -> bool {
+        matches!(self, Encoder::Directed(_))
     }
 }
 

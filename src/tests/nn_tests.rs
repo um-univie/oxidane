@@ -1084,3 +1084,42 @@ fn a_non_finite_gradient_is_skipped_rather_than_stepped() {
         assert!(values.iter().all(|value| value.is_finite()), "a weight went non-finite");
     }
 }
+
+#[test]
+fn a_bond_head_reads_the_bond_row_itself() {
+    // The two directions of a bond get one prediction, and the bond's own
+    // feature row reaches the head itself, not only through the encoder. Before, the head read the
+    // two atom vectors alone, and a bond's order or ring membership had to be
+    // inferred back out of the sums of every bond its atoms have.
+    for kind in [EncoderKind::Directed, EncoderKind::Gine] {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = MolecularNet::new(
+            ModelConfig {
+                kind,
+                encoder: small_encoder(),
+                bond_head: vec![16, 1],
+                ..Default::default()
+            },
+            vb,
+        )
+        .unwrap();
+        let batch = batch_of(&["c1ccccc1-c1ccccc1", "CC(=O)N"]);
+        let graph = GraphTensors::new(&batch, &device).unwrap();
+        let (atoms, edges) = model.encode_with_edges(&graph, false).unwrap();
+        let plain = to_vec(&model.predict_with_edges(&atoms, edges.as_ref(), &graph, false).unwrap().bond.unwrap());
+        let (reverse, _) = batch.reverse_edges();
+        for edge in 0..batch.edge_count {
+            let other = reverse[edge] as usize;
+            assert!((plain[edge] - plain[other]).abs() < 1e-5, "{kind:?}: edge {edge}");
+        }
+
+        // The same encoding, read by the heads against flipped bond rows:
+        // only a head that reads the bond itself can answer differently.
+        let mut flipped = graph.clone();
+        flipped.bond_features = graph.bond_features.affine(-1.0, 1.0).unwrap();
+        let moved = to_vec(&model.predict_with_edges(&atoms, edges.as_ref(), &flipped, false).unwrap().bond.unwrap());
+        assert!((moved[0] - plain[0]).abs() > 1e-4, "{kind:?}: the bond row did not reach the head");
+    }
+}

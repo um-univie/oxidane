@@ -17,6 +17,7 @@ use crate::ml::batch::GraphBatch;
 use crate::ml::nn::layers::{Mlp, MlpConfig};
 use crate::ml::nn::mpnn::{Encoder, EncoderConfig, EncoderKind};
 use crate::ml::nn::tensors::{GraphTensors, Pooling};
+use crate::molecule::featurize::BOND_FEATURE_WIDTH;
 
 /// What a model is asked to predict, and how much network to do it with.
 ///
@@ -141,11 +142,12 @@ impl MolecularNet {
         Ok(Self {
             graph_head: head(&config.graph_head, "graph_head", width + config.global_width)?,
             atom_head: head(&config.atom_head, "atom_head", width)?,
-            // A bond sees the two atoms it joins, symmetrically: their sum and
-            // the size of their difference. Concatenating the two atom vectors
-            // in edge order would instead make a prediction that depends on
-            // which way round the bond happened to be written.
-            bond_head: head(&config.bond_head, "bond_head", 2 * width)?,
+            // See `bond_representation` for what a bond head reads.
+            bond_head: head(
+                &config.bond_head,
+                "bond_head",
+                2 * width + BOND_FEATURE_WIDTH + if encoder.has_edge_states() { width } else { 0 },
+            )?,
             encoder,
             config,
         })
@@ -159,6 +161,16 @@ impl MolecularNet {
         self.encoder.forward(graph, train)
     }
 
+    /// [`MolecularNet::encode`], and the encoder's edge messages where it
+    /// keeps them -- what [`MolecularNet::predict_with_edges`] takes.
+    pub fn encode_with_edges(
+        &self,
+        graph: &GraphTensors,
+        train: bool,
+    ) -> Result<(Tensor, Option<Tensor>)> {
+        self.encoder.forward_with_edges(graph, train)
+    }
+
     /// One vector per molecule, `[graph_count, width]`.
     pub fn encode_molecules(&self, graph: &GraphTensors, train: bool) -> Result<Tensor> {
         let atoms = self.encode(graph, train)?;
@@ -166,7 +178,11 @@ impl MolecularNet {
     }
 
     pub fn forward(&self, graph: &GraphTensors, train: bool) -> Result<Predictions> {
-        self.predict(&self.encode(graph, train)?, graph, train)
+        if self.bond_head.is_none() {
+            return self.predict(&self.encode(graph, train)?, graph, train);
+        }
+        let (atoms, edges) = self.encoder.forward_with_edges(graph, train)?;
+        self.predict_with_edges(&atoms, edges.as_ref(), graph, train)
     }
 
     /// The heads, applied to atom vectors already computed.
@@ -175,9 +191,25 @@ impl MolecularNet {
     /// encoding feeds something else as well -- a contrastive term, an
     /// autoencoder's decoder -- and running the encoder twice would be both
     /// slower and, under dropout, not the same encoding.
+    ///
+    /// A bond head on a D-MPNN also reads the encoder's edge messages, which
+    /// atom vectors alone do not carry; this passes it zeros in their place.
+    /// [`MolecularNet::predict_with_edges`] takes them as well.
     pub fn predict(
         &self,
         atoms: &Tensor,
+        graph: &GraphTensors,
+        train: bool,
+    ) -> Result<Predictions> {
+        self.predict_with_edges(atoms, None, graph, train)
+    }
+
+    /// [`MolecularNet::predict`] with the edge messages
+    /// [`crate::ml::nn::Encoder::forward_with_edges`] gave beside the atoms.
+    pub fn predict_with_edges(
+        &self,
+        atoms: &Tensor,
+        edges: Option<&Tensor>,
         graph: &GraphTensors,
         train: bool,
     ) -> Result<Predictions> {
@@ -200,7 +232,17 @@ impl MolecularNet {
         };
         let bond_predictions = match &self.bond_head {
             Some(head) if graph.edge_count > 0 => {
-                Some(head.forward(&bond_representation(atoms, graph)?, train)?)
+                let edges = match edges {
+                    Some(edges) => Some(edges.clone()),
+                    None if self.encoder.has_edge_states() => Some(Tensor::zeros(
+                        (graph.edge_count, self.encoder.width()),
+                        atoms.dtype(),
+                        atoms.device(),
+                    )?),
+                    None => None,
+                };
+                let read = bond_representation(atoms, edges.as_ref(), graph)?;
+                Some(head.forward(&read, train)?)
             }
             Some(_) => None,
             None => None,
@@ -230,12 +272,31 @@ pub struct Predictions {
     pub bond: Option<Tensor>,
 }
 
-/// The symmetric pair vector a bond head reads: the two atoms' sum, and the
-/// size of their difference.
-fn bond_representation(atoms: &Tensor, graph: &GraphTensors) -> Result<Tensor> {
+/// What a bond head reads, the same from either end of the bond: the two
+/// atoms' sum and the size of their difference, the bond's own feature row,
+/// and -- from an encoder that keeps them -- the messages along both of its
+/// directions, summed.
+///
+/// Concatenating the two atom vectors in edge order would make a prediction
+/// that depends on which way round the bond happened to be written. And the
+/// atom vectors alone are not enough: each holds every bond its atom has,
+/// summed, so what is particular to this one bond -- its order, whether it
+/// closes a ring, its geometry -- has to be inferred back out of two sums.
+/// The bond row says it directly, and a D-MPNN's messages are the network's
+/// own view of the bond, which is what ALFABET's bond model reads too.
+fn bond_representation(
+    atoms: &Tensor,
+    edges: Option<&Tensor>,
+    graph: &GraphTensors,
+) -> Result<Tensor> {
     let sources = graph.gather_sources(atoms)?;
     let targets = graph.gather_targets(atoms)?;
-    Tensor::cat(&[&sources.add(&targets)?, &sources.sub(&targets)?.abs()?], 1)
+    let bond = graph.bond_features.to_dtype(atoms.dtype())?;
+    let mut parts = vec![sources.add(&targets)?, sources.sub(&targets)?.abs()?, bond];
+    if let Some(edges) = edges {
+        parts.push(edges.add(&graph.gather_reverse(edges)?)?);
+    }
+    Tensor::cat(&parts, 1)
 }
 
 /// A bond, named by the two atom rows it joins, and what was predicted for it.

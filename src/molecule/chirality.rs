@@ -27,7 +27,16 @@ pub trait MoleculeChirality: MoleculeCore {
         // carbon: `/` is Up, `\` is Down; a substituent written before its carbon
         // reads the opposite way to one written after it (atoms are indexed in
         // written order, so `carbon < sub` means the carbon is written first).
+        //
+        // Every mark on the carbon is read, not only the first: its two
+        // substituents sit on opposite sides of the double bond, so two marks
+        // placing them on the same side contradict each other and say nothing
+        // about the geometry. Such an end gives `None` and the bond gets no
+        // tag -- which is what RDKit does. Taking the first mark instead
+        // invented a geometry PubChem's
+        // `C(=C\1\C=CC...)` never stated.
         let side_of = |mol: &Self, carbon: usize| -> Option<(usize, bool)> {
+            let mut first: Option<(usize, bool)> = None;
             for bond in mol.get_atom_bonds(carbon).unwrap_or_default().iter() {
                 let order = bond.bond_order();
                 if order == BondOrder::Up || order == BondOrder::Down {
@@ -38,10 +47,14 @@ pub trait MoleculeChirality: MoleculeCore {
                     } else {
                         order == BondOrder::Down
                     };
-                    return Some((sub, up_side));
+                    match first {
+                        None => first = Some((sub, up_side)),
+                        Some((_, side)) if side == up_side => return None,
+                        Some(_) => {}
+                    }
                 }
             }
-            None
+            first
         };
 
         let first_single_neighbor = |mol: &Self, atom: usize, exclude: usize| -> Option<usize> {
@@ -96,6 +109,21 @@ pub trait MoleculeChirality: MoleculeCore {
             ));
             to_convert.push(a);
             to_convert.push(b);
+        }
+
+        // An end whose marks contradict each other was refused above; its
+        // marks say nothing, so they go back to being the single bonds they
+        // stand on rather than lingering to be written out again.
+        for atom in 0..self.len() {
+            let marks = self
+                .get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .filter(|bond| matches!(bond.bond_order(), BondOrder::Up | BondOrder::Down))
+                .count();
+            if marks >= 2 && side_of(self, atom).is_none() {
+                to_convert.push(atom);
+            }
         }
 
         for atom_idx in to_convert {

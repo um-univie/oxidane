@@ -1248,4 +1248,47 @@ mod organic_subset_tests {
             assert_eq!(mol.to_smiles(), smiles, "{smiles}");
         }
     }
+
+    /// The two substituents on one end of a double bond sit on opposite
+    /// sides, so marks putting them on the same side contradict each other.
+    /// The bond then has no geometry -- RDKit reads it that way too -- rather
+    /// than the one the first mark happened to suggest. PubChem writes this
+    /// across a ring closure: `C(=C\1\C=CC...)`.
+    #[test]
+    fn contradictory_marks_give_a_bond_no_geometry() {
+        for smiles in [
+            "F/C(\\Cl)=C/F",
+            "F/C(Cl)=C(/Br)/I",
+            "C/C(=C\\1\\CCCC1C)/C#N",
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            assert_eq!(cis_trans_atoms(&molecule), 0, "{smiles} kept a geometry");
+        }
+        for smiles in [
+            "F/C(/Cl)=C/F",
+            "F/C(Cl)=C(\\Br)/I",
+            "C/C(=C/1\\CCCC1C)/C#N",
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            assert_eq!(cis_trans_atoms(&molecule), 2, "{smiles} lost its geometry");
+        }
+    }
+
+    fn cis_trans_atoms(molecule: &MolecularGraph) -> usize {
+        use crate::molecule::chirality::ChiralClass;
+        molecule
+            .chiral_classes()
+            .map(|classes| {
+                classes
+                    .iter()
+                    .filter(|class| {
+                        matches!(
+                            class,
+                            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
 }

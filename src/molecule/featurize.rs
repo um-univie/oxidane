@@ -47,7 +47,9 @@ use crate::vector::Vector3D;
 // Version 7 gives a double bond's stereo column its geometry relative to the
 // highest-ranked substituents, and no other bond a stereo column at all; and the
 // donor column follows RDKit's typed definition (thiols in, water out).
-pub const FEATURE_SCHEMA_VERSION: u32 = 7;
+// Version 8 fills the chirality columns: a tetrahedral centre's hand relative
+// to its neighbours' ranks, where before every centre landed in "other".
+pub const FEATURE_SCHEMA_VERSION: u32 = 8;
 
 /// The elements that get a column of their own. Anything else shares the last.
 pub const FEATURED_ELEMENTS: [u8; 13] = [1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 34, 35, 53];
@@ -61,7 +63,7 @@ pub const ATOM_FEATURE_WIDTH: usize = FEATURED_ELEMENTS.len()
     + 6  // hybridization
     + 1  // aromatic
     + 1  // in a ring
-    + 4  // chirality
+    + 4  // chirality: none, clockwise, anticlockwise, other -- see tetrahedral_hands
     + 1  // mass
     + 1; // mean local bond angle (radians; 0 without 3D geometry -- see graph_features_with_geometry)
 
@@ -315,14 +317,28 @@ fn build_graph_features<M: MoleculeCore + ?Sized>(
     // own index -- there is no longer a heavy/light distinction to track.
     let atoms: Vec<usize> = (0..atom_count).collect();
 
+    // Both stereo features read the stated configuration against these, and
+    // a molecule stating none needs neither.
+    let ranks = (0..atom_count)
+        .any(|atom| molecule.get_chiral_class(atom) != ChiralClass::None)
+        .then(|| refined_ranks(molecule));
+    let hands = tetrahedral_hands(molecule, ranks.as_deref());
+
     let mut atom_features = vec![0.0f32; atom_count * ATOM_FEATURE_WIDTH];
     for atom in 0..atom_count {
         let angle = positions.map_or(0.0, |p| mean_local_angle(molecule, atom, p));
         let target = &mut atom_features[atom * ATOM_FEATURE_WIDTH..(atom + 1) * ATOM_FEATURE_WIDTH];
-        write_atom_row(molecule, atom, cyclic_atoms.contains(atom), angle, target);
+        write_atom_row(
+            molecule,
+            atom,
+            cyclic_atoms.contains(atom),
+            angle,
+            hands[atom],
+            target,
+        );
     }
 
-    let geometry = double_bond_geometry(molecule);
+    let geometry = double_bond_geometry(molecule, ranks.as_deref());
     let mut bond_features: Vec<f32> = Vec::new();
     let mut edge_index: Vec<u32> = Vec::new();
     for atom in 0..atom_count {
@@ -456,11 +472,13 @@ pub fn molecule_features<M: MolecularDescriptors + ?Sized>(molecule: &M) -> Vec<
 /// Fills one atom's row. See the module documentation for what the columns
 /// are. `mean_angle` is this atom's mean local bond angle in radians, or
 /// `0.0` when no 3D geometry was given -- see [`graph_features_with_geometry`].
+/// `chirality_slot` is the atom's entry from [`tetrahedral_hands`].
 fn write_atom_row<M: MoleculeCore + ?Sized>(
     molecule: &M,
     atom: usize,
     in_ring: bool,
     mean_angle: f32,
+    chirality_slot: usize,
     row: &mut [f32],
 ) {
     let atomic_number = molecule.get_atomic_number(atom);
@@ -502,12 +520,6 @@ fn write_atom_row<M: MoleculeCore + ?Sized>(
     cursor += 1;
     row[cursor] = f32::from(in_ring);
     cursor += 1;
-    let chirality_slot = match molecule.get_chiral_class(atom) {
-        ChiralClass::None => 0,
-        ChiralClass::Clockwise => 1,
-        ChiralClass::Counterclockwise => 2,
-        _ => 3,
-    };
     one_hot(row, &mut cursor, 4, chirality_slot);
     // Scaled so that every column is of the same order, which a network that
     // has not been told otherwise will assume.
@@ -558,6 +570,7 @@ fn write_bond_row<M: MoleculeCore + ?Sized>(
 /// itself is labelled; the single bonds beside it carry no geometry.
 fn double_bond_geometry<M: MoleculeCore + ?Sized>(
     molecule: &M,
+    ranks: Option<&[(u64, u64)]>,
 ) -> rustc_hash::FxHashMap<(usize, usize), usize> {
     let mut geometry = rustc_hash::FxHashMap::default();
     let is_cis_trans = |atom: usize| {
@@ -566,10 +579,12 @@ fn double_bond_geometry<M: MoleculeCore + ?Sized>(
             ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
         )
     };
+    let Some(ranks) = ranks else {
+        return geometry;
+    };
     if !(0..molecule.len()).any(is_cis_trans) {
         return geometry;
     }
-    let ranks = refined_ranks(molecule);
     // The substituents of a double-bond end, in bond-list order: everything
     // but the double bond itself.
     let carriers = |end: usize| -> Vec<usize> {
@@ -629,6 +644,63 @@ fn double_bond_geometry<M: MoleculeCore + ?Sized>(
         geometry.insert((atom, other), slot);
     }
     geometry
+}
+
+/// The chirality column of every atom: 0 when it states no stereo, 1 or 2
+/// when it is a tetrahedral centre whose neighbours, taken highest
+/// [`refined_ranks`] first, run clockwise or anticlockwise, and 3 for any
+/// other stated stereo -- a centre two of whose neighbours nothing tells
+/// apart, the end of a stereogenic double bond, or a non-tetrahedral class.
+///
+/// The stored `TH` tag is relative to the neighbours in index order, which is
+/// an accident of how the molecule was written; schema 7 and before matched
+/// on classes the parser never stores, and put every centre in column 3, so a
+/// model could not tell an enantiomer from its mirror image. Re-reading the
+/// tag against the ranks makes it a property of the molecule, the way
+/// [`double_bond_geometry`] does for a double bond. A three-coordinate centre's
+/// missing neighbour -- its lone pair or implicit hydrogen -- stays last in
+/// both orders, as it does in the stored tag.
+fn tetrahedral_hands<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    ranks: Option<&[(u64, u64)]>,
+) -> Vec<usize> {
+    let mut hands = vec![0; molecule.len()];
+    let Some(ranks) = ranks else {
+        return hands;
+    };
+    for (atom, hand) in hands.iter_mut().enumerate() {
+        *hand = match molecule.get_chiral_class(atom) {
+            ChiralClass::None => 0,
+            ChiralClass::TH(tag @ 1..=2) => {
+                let mut neighbours: Vec<usize> = molecule
+                    .get_atom_bonds(atom)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|bond| bond.target())
+                    .collect();
+                neighbours.sort_unstable();
+                let mut by_rank: Vec<usize> = (0..neighbours.len()).collect();
+                by_rank.sort_by(|&a, &b| ranks[neighbours[b]].cmp(&ranks[neighbours[a]]));
+                let tied = by_rank
+                    .windows(2)
+                    .any(|pair| ranks[neighbours[pair[0]]] == ranks[neighbours[pair[1]]]);
+                if !(3..=4).contains(&neighbours.len()) || tied {
+                    3
+                } else {
+                    // Each inversion of the index order is one swap, and each
+                    // swap turns the hand over.
+                    let inversions = (0..by_rank.len())
+                        .flat_map(|i| (i + 1..by_rank.len()).map(move |j| (i, j)))
+                        .filter(|&(i, j)| by_rank[i] > by_rank[j])
+                        .count();
+                    let clockwise = (tag == 2) ^ (inversions % 2 == 1);
+                    if clockwise { 1 } else { 2 }
+                }
+            }
+            _ => 3,
+        };
+    }
+    hands
 }
 
 /// A rank for every atom that depends on the molecule and not on its

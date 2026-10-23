@@ -1283,4 +1283,56 @@ fn bond_features_do_not_depend_on_the_spelling() {
     }
 }
 
+/// The chirality columns of the one stereocentre in `smiles`: its slot among
+/// none, clockwise, anticlockwise, other.
+fn centre_hand(smiles: &str) -> usize {
+    use crate::molecule::chirality::ChiralClass;
+    let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+    let features = graph_features(&molecule);
+    let start = ATOM_FEATURE_WIDTH - 2 - 4;
+    let centre = (0..molecule.len())
+        .find(|&atom| matches!(molecule.get_chiral_class(atom), ChiralClass::TH(_)))
+        .unwrap_or_else(|| panic!("{smiles} has no tetrahedral centre"));
+    let columns = &features.atom_row(centre)[start..start + 4];
+    columns.iter().position(|&value| value == 1.0).unwrap()
+}
+
+#[test]
+fn a_stereocentre_has_one_hand_however_it_is_written() {
+    // Every spelling of L-alanine, by canonical SMILES checked equal below,
+    // reads the same hand; D-alanine reads the other. Before schema 8 the
+    // features matched classes the parser never stores and every centre sat
+    // in the "other" column, so the two enantiomers were featurised alike.
+    let l_alanine = [
+        "N[C@@H](C)C(=O)O",
+        "C[C@H](N)C(=O)O",
+        "OC(=O)[C@@H](N)C",
+        "[C@H](N)(C)C(=O)O",
+    ];
+    let canonical = |smiles: &str| {
+        canonize_mol(&MolecularGraph::from_smiles_single(smiles).unwrap()).to_smiles()
+    };
+    for smiles in l_alanine {
+        assert_eq!(
+            canonical(smiles),
+            canonical(l_alanine[0]),
+            "{smiles} is not L-alanine"
+        );
+    }
+    let hand = centre_hand(l_alanine[0]);
+    assert!(hand == 1 || hand == 2);
+    for smiles in l_alanine {
+        assert_eq!(centre_hand(smiles), hand, "{smiles}");
+    }
+    assert_eq!(centre_hand("N[C@H](C)C(=O)O"), 3 - hand, "D-alanine");
+
+    // A three-coordinate centre, a sulfoxide, is read the same way.
+    let sulfoxide = centre_hand("C[S@](=O)CC");
+    assert!(sulfoxide == 1 || sulfoxide == 2);
+    assert_eq!(centre_hand("CC[S@@](=O)C"), sulfoxide);
+    assert_eq!(centre_hand("C[S@@](=O)CC"), 3 - sulfoxide);
+
+    // Two neighbours nothing tells apart give no hand to read.
+    assert_eq!(centre_hand("C[C@H](C)O"), 3);
+}
 

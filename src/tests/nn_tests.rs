@@ -1123,3 +1123,60 @@ fn a_bond_head_reads_the_bond_row_itself() {
         assert!((moved[0] - plain[0]).abs() > 1e-4, "{kind:?}: the bond row did not reach the head");
     }
 }
+
+#[test]
+fn a_sharded_step_is_the_step_one_thread_takes() {
+    // One batch, one step: spread over three threads, the loss and the
+    // weights must come out as they do on one, missing targets and all,
+    // since each shard's loss is weighted by its share of the batch's
+    // measurements. The loss is checked as well as the weights: AdamW's
+    // first step moves each weight by the sign of its gradient, so the
+    // weights alone would not notice shards weighted wrongly.
+    let smiles = ["CCO", "c1ccccc1", "CC(=O)O", "CCN", "C1CCCCC1", "OCC(O)CO", "c1ccncc1"];
+    let mut dataset = Dataset::new(2);
+    for (index, one) in smiles.iter().enumerate() {
+        let targets = [Some(index as f64), (index % 2 == 0).then(|| -(index as f64))];
+        dataset.push(&parse(one), &targets);
+    }
+    let split = Split { train: (0..dataset.len()).collect(), ..Default::default() };
+
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig { encoder: small_encoder(), graph_head: vec![16, 2], ..Default::default() },
+        vb,
+    )
+    .unwrap();
+    let variables = varmap.all_vars();
+    let start: Vec<Tensor> =
+        variables.iter().map(|variable| variable.as_detached_tensor().copy().unwrap()).collect();
+
+    let after = |shards: usize| -> (f32, Vec<Vec<f32>>) {
+        for (variable, value) in variables.iter().zip(&start) {
+            variable.set(value).unwrap();
+        }
+        let config = TrainConfig {
+            epochs: 1,
+            batch_size: smiles.len(),
+            patience: None,
+            shards,
+            ..Default::default()
+        };
+        let mut trainer = Trainer::new(&model, &varmap, config, &device).unwrap();
+        let history = trainer.fit(&dataset, &split).unwrap();
+        (history.train_loss[0], variables.iter().map(|variable| to_vec(variable.as_tensor())).collect())
+    };
+
+    let (single_loss, single) = after(1);
+    let (sharded_loss, sharded) = after(3);
+    assert!(
+        (single_loss - sharded_loss).abs() < 1e-5 * single_loss.abs().max(1.0),
+        "{single_loss} against {sharded_loss}"
+    );
+    for (one, three) in single.iter().zip(&sharded) {
+        for (a, b) in one.iter().zip(three) {
+            assert!((a - b).abs() < 1e-5, "{a} against {b}");
+        }
+    }
+}

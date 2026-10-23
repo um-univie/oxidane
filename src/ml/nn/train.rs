@@ -44,6 +44,23 @@ pub struct TrainConfig {
     pub objective: Objective,
     /// The seed the epoch shuffles start from.
     pub seed: u64,
+    /// How many threads one training step is spread over.
+    ///
+    /// candle's CPU backend runs a matrix product on every core but every
+    /// other operation on one, so a step over one batch leaves most of a
+    /// machine idle: sixteen cores train D-MPNN only about 1.4 times faster
+    /// than one. With more than one shard, [`Trainer::fit`] splits each
+    /// batch into that many groups of molecules, runs their forward and
+    /// backward passes on separate threads, and adds the gradients up before
+    /// the one optimizer step. Each shard's loss is weighted by its share of
+    /// the batch's measurements, so the sum is the batch's own loss and the
+    /// step is the one a single thread would take, up to the order the
+    /// floating-point sums are taken in -- which is fixed, so a run is still
+    /// a function of its seed.
+    ///
+    /// One by default. Leave it there when several runs already share the
+    /// machine, as `train_mpnn`'s splits and ensemble members do.
+    pub shards: usize,
 }
 
 impl Default for TrainConfig {
@@ -57,6 +74,7 @@ impl Default for TrainConfig {
             grad_clip: Some(5.0),
             objective: Objective::default(),
             seed: 0,
+            shards: 1,
         }
     }
 }
@@ -169,7 +187,11 @@ impl<'a> Trainer<'a> {
             for batch in
                 dataset.epoch_side(split, Side::Train, self.config.batch_size, seed)
             {
-                total += self.step(&batch)?;
+                total += if self.config.shards > 1 && batch.indices.len() > 1 {
+                    self.step_sharded(dataset, &batch)?
+                } else {
+                    self.step(&batch)?
+                };
                 batches += 1;
             }
             history
@@ -223,6 +245,91 @@ impl<'a> Trainer<'a> {
             self.optimizer.step(&gradients)?;
         }
         loss.to_dtype(DType::F32)?.to_scalar::<f32>()
+    }
+
+    /// [`Trainer::step`] with the batch spread over
+    /// [`TrainConfig::shards`] threads. See there for why the step is the
+    /// same one.
+    fn step_sharded(&mut self, dataset: &Dataset, batch: &Batch) -> Result<f32> {
+        let totals = measured_counts(batch);
+        let size = batch
+            .indices
+            .len()
+            .div_ceil(self.config.shards.min(batch.indices.len()));
+        let shards: Vec<Batch> = batch
+            .indices
+            .chunks(size)
+            .map(|chunk| dataset.batch(chunk))
+            .collect();
+
+        // Threads of their own rather than rayon's: a caller running this
+        // inside a pool of one -- `train_mpnn` sizes its pool to the runs it
+        // has -- would otherwise get its shards one after another.
+        let this = &*self;
+        let run = |shard: &Batch| -> Result<(GradStore, f32)> {
+            let mut loss = Tensor::new(0.0f32, &this.device)?;
+            for (head, part) in this.head_losses(shard, true)?.into_iter().enumerate() {
+                if let Some((mean, count)) = part
+                    && count > 0
+                {
+                    let share = count as f64 / totals[head] as f64;
+                    loss = loss.add(&mean.affine(share, 0.0)?.to_dtype(DType::F32)?)?;
+                }
+            }
+            let value = loss.to_scalar::<f32>()?;
+            Ok((loss.backward()?, value))
+        };
+        let run = &run;
+        let results: Vec<Result<(GradStore, f32)>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = shards
+                .iter()
+                .map(|shard| scope.spawn(move || run(shard)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        Err(candle_core::Error::Msg(
+                            "a training shard panicked".to_string(),
+                        ))
+                    })
+                })
+                .collect()
+        });
+
+        let mut total = 0.0;
+        let mut gradients: Option<GradStore> = None;
+        for result in results {
+            let (shard_gradients, value) = result?;
+            total += value;
+            match &mut gradients {
+                None => gradients = Some(shard_gradients),
+                Some(sum) => {
+                    for variable in &self.variables {
+                        if let Some(gradient) = shard_gradients.get(variable) {
+                            let added = match sum.get(variable) {
+                                Some(previous) => previous.add(gradient)?,
+                                None => gradient.clone(),
+                            };
+                            sum.insert(variable, added);
+                        }
+                    }
+                }
+            }
+        }
+        let Some(mut gradients) = gradients else {
+            return Ok(total);
+        };
+        let norm = global_norm(&gradients, &self.variables)?;
+        if !norm.is_finite() {
+            self.skipped_steps += 1;
+        } else {
+            if let Some(limit) = self.config.grad_clip {
+                scale_gradients(&mut gradients, &self.variables, norm, limit)?;
+            }
+            self.optimizer.step(&gradients)?;
+        }
+        Ok(total)
     }
 
     /// Sum of the per-head mean losses over the observed targets in a split.
@@ -307,6 +414,14 @@ impl<'a> Trainer<'a> {
         };
         GraphTensors::with_features(&batch.graph, &atoms, &globals, &self.device)
     }
+}
+
+/// How many targets each head -- molecule, atom, bond -- has measured in a
+/// batch: what a shard's share of the loss is reckoned against. Only the
+/// molecule head has targets a dataset can hold so far.
+fn measured_counts(batch: &Batch) -> [usize; 3] {
+    let measured = batch.target_mask.iter().filter(|&&measured| measured).count();
+    [measured, 0, 0]
 }
 
 /// Rescales every gradient by the same factor when their combined norm is too

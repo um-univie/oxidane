@@ -55,8 +55,19 @@ use candle_nn::VarMap;
 ///
 /// The distribution is the one PyTorch and candle use for a linear layer:
 /// uniform over plus and minus the reciprocal square root of the fan-in, which
-/// is the last dimension of the tensor. A one-dimensional tensor -- a bias, a
-/// learned scalar -- is scaled by its own length.
+/// is the last dimension of the weight. A bias takes the fan-in of the weight
+/// beside it -- `layer0.bias` that of `layer0.weight`, a GRU's `bias_ih_l0`
+/// that of its `weight_ih_l0` -- as PyTorch's does, rather than its own
+/// length, which for a one-output head made the bias uniform over plus and
+/// minus one.
+///
+/// Not every variable is drawn. A one-dimensional `weight` is a layer norm's
+/// gain, and is set to one with its bias at zero; a learned `eps` is set to
+/// zero. Those are the values every library starts them at, and drawing them
+/// like a linear layer's weights instead started each GINE layer norm with
+/// gains of a few hundredths, half of them negative, which shrank every
+/// round's output to noise -- seeded GINE runs scored about a third worse for
+/// it.
 ///
 /// # Why the names are sorted
 ///
@@ -76,12 +87,47 @@ pub fn seed_variables(varmap: &VarMap, seed: u64) -> Result<()> {
             .collect()
     };
     named.sort_by(|a, b| a.0.cmp(&b.0));
+    let shapes: std::collections::HashMap<String, Vec<usize>> = named
+        .iter()
+        .map(|(name, variable)| (name.clone(), variable.dims().to_vec()))
+        .collect();
 
     let mut stream = SplitMix64::new(seed);
-    for (_name, variable) in named {
+    for (name, variable) in named {
         let shape = variable.dims().to_vec();
+        let (path, leaf) = name.rsplit_once('.').unwrap_or(("", name.as_str()));
+        let sibling = |leaf: &str| {
+            let key = if path.is_empty() {
+                leaf.to_string()
+            } else {
+                format!("{path}.{leaf}")
+            };
+            shapes.get(&key)
+        };
+        let constant = if leaf == "eps" {
+            Some(0.0)
+        } else if leaf == "weight" && shape.len() == 1 {
+            Some(1.0)
+        } else if leaf == "bias" && sibling("weight").is_some_and(|weight| weight.len() == 1) {
+            Some(0.0)
+        } else {
+            None
+        };
+        if let Some(value) = constant {
+            let filled = Tensor::full(value as f32, shape.as_slice(), variable.device())?
+                .to_dtype(variable.dtype())?;
+            variable.set(&filled)?;
+            continue;
+        }
+
+        let fan_in = if leaf.starts_with("bias") {
+            sibling(&leaf.replacen("bias", "weight", 1))
+                .and_then(|weight| weight.last().copied())
+                .unwrap_or(*shape.last().unwrap_or(&1))
+        } else {
+            *shape.last().unwrap_or(&1)
+        };
         let count: usize = shape.iter().product();
-        let fan_in = *shape.last().unwrap_or(&1);
         let bound = 1.0 / (fan_in as f64).sqrt();
 
         let values: Vec<f32> = (0..count)

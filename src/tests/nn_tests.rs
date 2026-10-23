@@ -2402,6 +2402,54 @@ fn a_non_finite_gradient_is_skipped_rather_than_stepped() {
 }
 
 #[test]
+fn seeding_starts_a_layer_norm_where_every_library_does() {
+    // A layer norm's gain starts at one and its bias and GINE's eps at zero.
+    // Drawing them like a linear layer's weights started each gain at a few
+    // hundredths, half of them negative, and seeded GINE runs lost about a
+    // third of their accuracy to it.
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let _model = MolecularNet::new(
+        ModelConfig {
+            kind: EncoderKind::Gine,
+            encoder: small_encoder(),
+            graph_head: vec![16, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    seed_variables(&varmap, 3).unwrap();
+
+    let data = varmap.data().lock().unwrap();
+    let values = |name: &str| to_vec(&data[name].as_detached_tensor());
+    let mut norms = 0;
+    for name in data.keys() {
+        if name.ends_with(".eps") {
+            assert!(values(name).iter().all(|&value| value == 0.0), "{name}");
+        } else if name.contains(".norm") && name.ends_with(".weight") {
+            assert!(values(name).iter().all(|&value| value == 1.0), "{name}");
+            norms += 1;
+        } else if name.contains(".norm") && name.ends_with(".bias") {
+            assert!(values(name).iter().all(|&value| value == 0.0), "{name}");
+        }
+    }
+    assert!(norms > 0, "the model had no layer norm to check");
+
+    // A bias takes its layer's fan-in: the one-output head's bias is drawn
+    // from the hidden width's bound, not from plus and minus one.
+    let head_bias = data
+        .keys()
+        .filter(|name| name.starts_with("graph_head") && name.ends_with(".bias"))
+        .find(|name| data[name.as_str()].dims() == [1])
+        .expect("a one-output head bias")
+        .clone();
+    let bound = 1.0 / (16.0f32).sqrt();
+    assert!(values(&head_bias)[0].abs() <= bound, "{head_bias}");
+}
+
+#[test]
 fn a_sharded_step_is_the_step_one_thread_takes() {
     // One batch, one step: spread over three threads, the weights must move
     // exactly as they do on one, missing targets and all, since the shards'

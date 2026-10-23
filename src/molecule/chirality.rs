@@ -1398,7 +1398,12 @@ impl ChiralClassifier for Molecule3D {
     }
 
     fn is_potential_cis_trans(&self, neighbors: &[BondTarget]) -> bool {
-        neighbors.len() == 3
+        // One double bond and one or two single ones: a carbon, or a nitrogen
+        // whose lone pair takes the second position. Asking for two single
+        // bonds turned away both ends of an azo `N=N`, so its geometry was
+        // never read; an imine kept its own only because the carbon end
+        // passed. `determine_cis_trans_chirality` already takes either.
+        (2..=3).contains(&neighbors.len())
             && neighbors
                 .iter()
                 .filter(|neighbor| neighbor.bond_order() == BondOrder::Double)
@@ -1408,7 +1413,7 @@ impl ChiralClassifier for Molecule3D {
                 .iter()
                 .filter(|neighbor| neighbor.bond_order() == BondOrder::Single)
                 .count()
-                == 2
+                == neighbors.len() - 1
     }
 
     /// Determines if an atom is a potential octahedral center.

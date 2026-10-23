@@ -502,3 +502,35 @@ mod perception {
         assert_eq!(molecule.molecular_formula().to_string(), "K1");
     }
 }
+
+/// An azo `N=N` drawn flat states its geometry like any other double bond,
+/// but each nitrogen has only one substituent, and the reader asked for two at
+/// every end it looked from -- so neither end qualified and the geometry was
+/// dropped. Both drawings are RDKit's own depictions of the SMILES.
+#[test]
+fn a_flat_azo_bond_keeps_its_geometry() {
+    use crate::graph_algorithms::mol_canonization::canonize_mol;
+    use crate::prelude::MolecularGraph;
+    let block = |coordinates: [(f64, f64); 4]| {
+        let symbols = ["C", "N", "N", "C"];
+        let atoms: String = coordinates
+            .iter()
+            .zip(symbols)
+            .map(|(&(x, y), symbol)| {
+                format!("{x:10.4}{y:10.4}{:10.4} {symbol:<3} 0  0  0  0  0  0  0  0  0  0  0  0\n", 0.0)
+            })
+            .collect();
+        format!(
+            "\n     RDKit          2D\n\n  4  3  0  0  0  0  0  0  0  0999 V2000\n{atoms}  1  2  1  0\n  2  3  2  0\n  3  4  1  0\nM  END\n$$$$\n"
+        )
+    };
+    for (smiles, coordinates) in [
+        ("C/N=N/C", [(-1.9796, -0.1365), (-0.5994, 0.4508), (0.5994, -0.4508), (1.9796, 0.1365)]),
+        ("C/N=N\\C", [(-1.5, -0.6495), (-0.75, 0.6495), (0.75, 0.6495), (1.5, -0.6495)]),
+    ] {
+        let entries = parse_sdf_file(Cursor::new(block(coordinates))).unwrap();
+        let read = Molecule3D::from_sdf_entries(entries).unwrap().remove(0);
+        let expected = canonize_mol(&MolecularGraph::from_smiles_single(smiles).unwrap()).to_smiles();
+        assert_eq!(canonize_mol(&read).to_smiles(), expected, "{smiles}");
+    }
+}

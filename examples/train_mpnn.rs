@@ -27,6 +27,8 @@
 //!   --raw-targets    train on the targets as given, without standardising them
 //!   --residual       subtract a per-atom/bond-class mean before training, add it back for predictions (atom/bond level only)
 //!   --geometry       embed a 3D conformer per molecule and add bond length / local bond angle features
+//!   --shards N       spread each training step over N threads (default 1; worth raising for a single run,
+//!                    not when --jobs already fills the machine)
 //!   --heavy          give rows to heavy atoms only, hydrogens counted on their neighbour (about twice as fast;
 //!                    atom/bond labels on hydrogens are dropped)
 //! ```
@@ -133,6 +135,7 @@ struct Options {
     residual: bool,
     geometry: bool,
     heavy: bool,
+    shards: usize,
 }
 
 impl Default for Options {
@@ -162,6 +165,7 @@ impl Default for Options {
             residual: false,
             geometry: false,
             heavy: false,
+            shards: 1,
         }
     }
 }
@@ -238,6 +242,9 @@ fn parse_options() -> Options {
             "--heavy" => {
                 options.heavy = true;
                 consumed = 1;
+            }
+            "--shards" => {
+                options.shards = value().parse().unwrap_or(options.shards);
             }
             other => {
                 eprintln!("ignoring unknown argument {other}");
@@ -746,6 +753,7 @@ fn run(
                     Schedule::Constant
                 },
                 seed: seed * 100 + member as u64 + 1,
+                shards: options.shards,
                 ..Default::default()
             },
             device,
@@ -789,6 +797,7 @@ fn run(
                         Objective::Regression
                     },
                     seed: seed * 100 + member as u64 + 1,
+                    shards: options.shards,
                     ..Default::default()
                 },
                 device,

@@ -637,6 +637,8 @@ fn a_bond_head_learns_something_it_can_represent_exactly() {
         vb,
     )
     .unwrap();
+    // Seeded: from candle's own unseeded draw this failed now and then.
+    seed_variables(&varmap, 4).unwrap();
 
     let dataset = bond_atomic_sum_dataset(TRAINING_SET);
     let split = Split {
@@ -2447,6 +2449,87 @@ fn seeding_starts_a_layer_norm_where_every_library_does() {
         .clone();
     let bound = 1.0 / (16.0f32).sqrt();
     assert!(values(&head_bias)[0].abs() <= bound, "{head_bias}");
+}
+
+#[test]
+fn a_bond_head_reads_the_bond_it_predicts() {
+    // Whether a bond closes a ring, asked only of bonds whose two atoms are
+    // both ring atoms: the link of a biphenyl and a ring bond beside it join
+    // atoms that look alike, so the answer is in the bond's own row and the
+    // encoder's messages rather than in the two atom vectors.
+    let smiles = [
+        "c1ccccc1-c1ccccc1",
+        "C1CCCCC1C1CCCCC1",
+        "c1ccc2ccccc2c1",
+        "C1CC1C1CC1",
+        "c1ccc(cc1)-c1ccncc1",
+        "C1CCC2(CC1)CCCC2",
+        "c1ccc2c(c1)-c1ccccc1-2",
+        "C1CCC(CC1)C1=CC=CC=C1",
+    ];
+    for kind in [EncoderKind::Directed, EncoderKind::Gine] {
+        let mut dataset = Dataset::new(0).with_bond_tasks(1);
+        for one in smiles {
+            let molecule = parse(one);
+            let features = graph_features(&molecule);
+            let (_, ring_bonds) = molecule.find_cyclic_bonds_and_atoms();
+            let ring_atoms = molecule.cyclic_atoms();
+            let targets: Vec<Option<f64>> = (0..features.edge_count)
+                .map(|edge| {
+                    let (a, b) = features.edge(edge);
+                    (ring_atoms.contains(a) && ring_atoms.contains(b))
+                        .then(|| f64::from(ring_bonds.contains(&(a.min(b), a.max(b)))))
+                })
+                .collect();
+            dataset.push_features(features, &[], &[], &targets);
+        }
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let model = MolecularNet::new(
+            ModelConfig {
+                kind,
+                encoder: small_encoder(),
+                bond_head: vec![16, 1],
+                ..Default::default()
+            },
+            vb,
+        )
+        .unwrap();
+        seed_variables(&varmap, 2).unwrap();
+        let split = Split {
+            train: (0..dataset.len()).collect(),
+            ..Default::default()
+        };
+        let mut trainer = Trainer::new(
+            &model,
+            &varmap,
+            TrainConfig {
+                learning_rate: 0.01,
+                epochs: 150,
+                batch_size: 8,
+                patience: None,
+                objective: Objective::Classification,
+                ..Default::default()
+            },
+            &device,
+        )
+        .unwrap();
+        trainer.fit(&dataset, &split).unwrap();
+
+        let predictions = trainer.predict_bonds(&dataset, &split.train).unwrap();
+        let mut row = 0;
+        for index in 0..dataset.len() {
+            let (truth, mask) = dataset.bond_targets(index);
+            for (&want, &measured) in truth.iter().zip(mask) {
+                if measured {
+                    let said = predictions[row][0] > 0.0;
+                    assert_eq!(said, want > 0.5, "{kind:?}: {} edge {row}", smiles[index]);
+                }
+                row += 1;
+            }
+        }
+    }
 }
 
 #[test]

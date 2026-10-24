@@ -5,9 +5,9 @@
 //! is zero or one, it means something on its own, and standardising it would
 //! turn "this atom is not a nitrogen" from an exact zero into a small negative
 //! number that a bias term then has to undo. What actually needs scaling is
-//! the handful of columns holding a quantity -- at schema version 2, the
-//! atomic mass, which arrives two orders of magnitude larger than everything
-//! next to it and dominates the first layer until it is scaled.
+//! the handful of columns holding a quantity: the element's atomic number
+//! scaled by a hundred, and from a 3D embedding a mean bond angle and a bond
+//! length, none of which sits on the zero-or-one scale beside it.
 //!
 //! So [`FeatureStats`] standardises those columns and leaves the rest exactly
 //! as they were. Which columns those are comes from the schema, not from

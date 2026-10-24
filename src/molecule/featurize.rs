@@ -191,7 +191,8 @@ fn has_conjugated_bond<M: MoleculeCore + ?Sized>(molecule: &M, atom: usize) -> b
 /// tensor library without being walked again.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphFeatures {
-    /// How many atoms have rows -- the heavy atoms.
+    /// How many atoms have rows: every atom, or only the heavy ones from
+    /// [`graph_features_heavy`].
     pub atom_count: usize,
     /// `atom_count` rows of [`ATOM_FEATURE_WIDTH`] numbers.
     pub atom_features: Vec<f32>,
@@ -283,7 +284,26 @@ impl GraphFeatures {
 
 /// Builds the feature matrices of a molecule.
 pub fn graph_features<M: MoleculeCore + ?Sized>(molecule: &M) -> GraphFeatures {
-    build_graph_features(molecule, None)
+    build_graph_features(molecule, None, true)
+}
+
+/// [`graph_features`] with rows for the heavy atoms only, the way Chemprop
+/// lays a molecule out.
+///
+/// Nothing is lost to a molecule-level model: a heavy atom's row already
+/// counts the hydrogens on it, and a hydrogen's row says nothing its
+/// neighbour's does not. What is saved is most of the graph -- hydrogens are
+/// about half the atoms of a drug-like molecule and their bonds about half
+/// the directed edges, so message passing does about half the work. Keep the
+/// full graph for a target that lives on a hydrogen or an X-H bond, which has
+/// no row or edge here. A hydrogen with no heavy neighbour, of H2 or a bare
+/// proton, keeps its row, since nothing else would describe it.
+///
+/// [`GraphFeatures::atoms`] says which atom each row is, and
+/// [`GraphFeatures::atom_targets_from`] and
+/// [`GraphFeatures::bond_targets_from`] map labels through it as usual.
+pub fn graph_features_heavy<M: MoleculeCore + ?Sized>(molecule: &M) -> GraphFeatures {
+    build_graph_features(molecule, None, false)
 }
 
 /// [`graph_features`], with two extra columns filled in from a 3D embedding:
@@ -302,20 +322,44 @@ pub fn graph_features_with_geometry<M: MoleculeCore + ?Sized>(
     molecule: &M,
     positions: &[Vector3D],
 ) -> GraphFeatures {
-    build_graph_features(molecule, Some(positions))
+    build_graph_features(molecule, Some(positions), true)
+}
+
+/// [`graph_features_with_geometry`] over the heavy atoms only -- see
+/// [`graph_features_heavy`]. The angles and lengths are still measured
+/// with the hydrogens in place.
+pub fn graph_features_heavy_with_geometry<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    positions: &[Vector3D],
+) -> GraphFeatures {
+    build_graph_features(molecule, Some(positions), false)
 }
 
 fn build_graph_features<M: MoleculeCore + ?Sized>(
     molecule: &M,
     positions: Option<&[Vector3D]>,
+    hydrogens: bool,
 ) -> GraphFeatures {
     let atom_count = molecule.len();
     let cyclic_atoms = molecule.cyclic_atoms();
     let (_, cyclic_bonds) = molecule.find_cyclic_bonds_and_atoms();
 
-    // Every atom gets a row now, so the row a given atom occupies is just its
-    // own index -- there is no longer a heavy/light distinction to track.
-    let atoms: Vec<usize> = (0..atom_count).collect();
+    // Which atoms get a row, and the row each one gets. With hydrogens every
+    // atom does, at its own index.
+    let kept = |atom: usize| {
+        hydrogens
+            || molecule.get_atomic_number(atom) > 1
+            || !molecule
+                .get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .any(|bond| molecule.get_atomic_number(bond.target()) > 1)
+    };
+    let atoms: Vec<usize> = (0..atom_count).filter(|&atom| kept(atom)).collect();
+    let mut row_of = vec![u32::MAX; atom_count];
+    for (row, &atom) in atoms.iter().enumerate() {
+        row_of[atom] = row as u32;
+    }
 
     // Both stereo features read the stated configuration against these, and
     // a molecule stating none needs neither.
@@ -324,10 +368,10 @@ fn build_graph_features<M: MoleculeCore + ?Sized>(
         .then(|| refined_ranks(molecule));
     let hands = tetrahedral_hands(molecule, ranks.as_deref());
 
-    let mut atom_features = vec![0.0f32; atom_count * ATOM_FEATURE_WIDTH];
-    for atom in 0..atom_count {
+    let mut atom_features = vec![0.0f32; atoms.len() * ATOM_FEATURE_WIDTH];
+    for (row, &atom) in atoms.iter().enumerate() {
         let angle = positions.map_or(0.0, |p| mean_local_angle(molecule, atom, p));
-        let target = &mut atom_features[atom * ATOM_FEATURE_WIDTH..(atom + 1) * ATOM_FEATURE_WIDTH];
+        let target = &mut atom_features[row * ATOM_FEATURE_WIDTH..(row + 1) * ATOM_FEATURE_WIDTH];
         write_atom_row(
             molecule,
             atom,
@@ -341,14 +385,14 @@ fn build_graph_features<M: MoleculeCore + ?Sized>(
     let geometry = double_bond_geometry(molecule, ranks.as_deref());
     let mut bond_features: Vec<f32> = Vec::new();
     let mut edge_index: Vec<u32> = Vec::new();
-    for atom in 0..atom_count {
+    for &atom in &atoms {
         for bond in molecule.get_atom_bonds(atom).unwrap_or_default() {
             let target = bond.target();
-            if target >= atom_count {
+            if target >= atom_count || row_of[target] == u32::MAX {
                 continue;
             }
-            edge_index.push(atom as u32);
-            edge_index.push(target as u32);
+            edge_index.push(row_of[atom]);
+            edge_index.push(row_of[target]);
             let start = bond_features.len();
             bond_features.resize(start + BOND_FEATURE_WIDTH, 0.0);
             let in_ring = cyclic_bonds.contains(&(atom.min(target), atom.max(target)));

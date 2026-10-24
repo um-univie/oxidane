@@ -24,7 +24,7 @@ use crate::molecule::descriptors::MolecularDescriptors;
 use crate::molecule::featurize::{
     ATOM_CONTINUOUS_COLUMNS, ATOM_FEATURE_WIDTH, BOND_CONTINUOUS_COLUMNS, BOND_FEATURE_WIDTH,
     FEATURE_SCHEMA_VERSION, GraphFeatures, MOLECULE_FEATURE_WIDTH, atom_class, bond_class,
-    graph_features, graph_features_with_geometry, molecule_features,
+    graph_features, graph_features_heavy, graph_features_with_geometry, molecule_features,
 };
 use crate::molecule::scaffold::{
     framework_key, murcko_scaffold, murcko_scaffold_atoms, scaffold_key,
@@ -1336,3 +1336,60 @@ fn a_stereocentre_has_one_hand_however_it_is_written() {
     assert_eq!(centre_hand("C[C@H](C)O"), 3);
 }
 
+#[test]
+fn a_heavy_atom_graph_is_the_full_graph_without_its_hydrogens() {
+    for smiles in [
+        "CN1C=NC2=C1C(=O)N(C)C(=O)N2C",
+        "N[C@@H](C)C(=O)O",
+        "C/C=C/C",
+        "[NH4+].[Cl-]",
+        "O",
+    ] {
+        let molecule = MolecularGraph::from_smiles_single(smiles)
+            .or_else(|_| MolecularGraph::from_smiles(smiles).map(|mut all| all.swap_remove(0)))
+            .unwrap();
+        let full = graph_features(&molecule);
+        let heavy = graph_features_heavy(&molecule);
+
+        let heavy_atoms: Vec<usize> = (0..molecule.len())
+            .filter(|&atom| molecule.get_atomic_number(atom) > 1)
+            .collect();
+        assert_eq!(heavy.atoms, heavy_atoms, "{smiles}");
+        // Every row is the full graph's row for the same atom: its hydrogen
+        // count, its stereo, everything.
+        for (row, &atom) in heavy.atoms.iter().enumerate() {
+            assert_eq!(
+                heavy.atom_row(row),
+                full.atom_row(atom),
+                "{smiles} atom {atom}"
+            );
+        }
+        // And every edge is a full-graph edge between two heavy atoms, with
+        // the same row.
+        let full_edges: std::collections::HashMap<(usize, usize), usize> = (0..full.edge_count)
+            .map(|edge| (full.edge(edge), edge))
+            .collect();
+        let heavy_bonds = (0..full.edge_count)
+            .filter(|&edge| {
+                let (a, b) = full.edge(edge);
+                molecule.get_atomic_number(a) > 1 && molecule.get_atomic_number(b) > 1
+            })
+            .count();
+        assert_eq!(heavy.edge_count, heavy_bonds, "{smiles}");
+        for edge in 0..heavy.edge_count {
+            let (a, b) = heavy.edge(edge);
+            let ends = (heavy.atoms[a], heavy.atoms[b]);
+            assert_eq!(
+                heavy.bond_row(edge),
+                full.bond_row(full_edges[&ends]),
+                "{smiles}"
+            );
+        }
+    }
+
+    // A hydrogen with no heavy neighbour keeps its row.
+    let hydrogen = MolecularGraph::from_smiles_single("[H][H]").unwrap();
+    let heavy = graph_features_heavy(&hydrogen);
+    assert_eq!(heavy.atom_count, 2);
+    assert_eq!(heavy.edge_count, 2);
+}

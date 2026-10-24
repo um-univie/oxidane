@@ -27,6 +27,8 @@
 //!   --raw-targets    train on the targets as given, without standardising them
 //!   --residual       subtract a per-atom/bond-class mean before training, add it back for predictions (atom/bond level only)
 //!   --geometry       embed a 3D conformer per molecule and add bond length / local bond angle features
+//!   --heavy          give rows to heavy atoms only, hydrogens counted on their neighbour (about twice as fast;
+//!                    atom/bond labels on hydrogens are dropped)
 //! ```
 //!
 //! `--residual` is the training trick behind ALFABET's near-chemical-accuracy
@@ -79,7 +81,8 @@ use oxidane::ml::normalize::{
 use oxidane::ml::split::{Fractions, Split, random_split, scaffold_split_balanced};
 use oxidane::molecule::embed::Embed3D;
 use oxidane::molecule::featurize::{
-    GraphFeatures, graph_features, graph_features_with_geometry, molecule_features,
+    GraphFeatures, graph_features, graph_features_heavy, graph_features_heavy_with_geometry,
+    graph_features_with_geometry, molecule_features,
 };
 use oxidane::molecule::scaffold::scaffold_key;
 use oxidane::prelude::*;
@@ -129,6 +132,7 @@ struct Options {
     freeze_epochs: usize,
     residual: bool,
     geometry: bool,
+    heavy: bool,
 }
 
 impl Default for Options {
@@ -157,6 +161,7 @@ impl Default for Options {
             freeze_epochs: 0,
             residual: false,
             geometry: false,
+            heavy: false,
         }
     }
 }
@@ -228,6 +233,10 @@ fn parse_options() -> Options {
             }
             "--geometry" => {
                 options.geometry = true;
+                consumed = 1;
+            }
+            "--heavy" => {
+                options.heavy = true;
                 consumed = 1;
             }
             other => {
@@ -332,12 +341,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let featurized: Vec<(GraphFeatures, bool)> = if options.geometry {
         parsed
             .par_iter()
-            .map(|entry| featurize(&entry.molecule, true))
+            .map(|entry| featurize(&entry.molecule, true, options.heavy))
             .collect()
     } else {
         parsed
             .iter()
-            .map(|entry| featurize(&entry.molecule, false))
+            .map(|entry| featurize(&entry.molecule, false, options.heavy))
             .collect()
     };
 
@@ -534,16 +543,27 @@ enum Extra {
 /// says the embedding failed and the plain 2D features were used instead; the
 /// caller counts it rather than sharing a mutable counter, since this runs
 /// across a `rayon` map over every molecule at once when `geometry` is set.
-fn featurize(molecule: &MolecularGraph, geometry: bool) -> (GraphFeatures, bool) {
+fn featurize(molecule: &MolecularGraph, geometry: bool, heavy: bool) -> (GraphFeatures, bool) {
+    let plain = || {
+        if heavy {
+            graph_features_heavy(molecule)
+        } else {
+            graph_features(molecule)
+        }
+    };
     if !geometry {
-        return (graph_features(molecule), false);
+        return (plain(), false);
     }
     match molecule.embed_3d() {
+        Ok(embedded) if heavy => (
+            graph_features_heavy_with_geometry(molecule, &embedded.positions),
+            false,
+        ),
         Ok(embedded) => (
             graph_features_with_geometry(molecule, &embedded.positions),
             false,
         ),
-        Err(_) => (graph_features(molecule), true),
+        Err(_) => (plain(), true),
     }
 }
 

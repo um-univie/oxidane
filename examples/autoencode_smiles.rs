@@ -41,6 +41,7 @@ use oxidane::io::ToSMILES;
 use oxidane::ml::batch::GraphBatch;
 use oxidane::ml::nn::decoder::DecoderConfig;
 use oxidane::ml::nn::molecule_autoencoder::{MoleculeAutoencoder, MoleculeAutoencoderConfig};
+use oxidane::ml::nn::train::{clip_global_norm, global_norm};
 use oxidane::ml::nn::{EncoderConfig, EncoderKind, GraphTensors, save_prefixed, seed_variables};
 use oxidane::ml::tokenize::{SmilesVocabulary, TokenBatch, tokenize};
 use oxidane::molecule::featurize::graph_features;
@@ -194,8 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = MoleculeAutoencoder::new(config, vocabulary.len(), vb)?;
     seed_variables(&varmap, seed)?;
 
+    let variables = varmap.all_vars();
     let mut optimizer = candle_nn::AdamW::new(
-        varmap.all_vars(),
+        variables.clone(),
         candle_nn::ParamsAdamW {
             lr: learning_rate,
             ..Default::default()
@@ -225,7 +227,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let loss = model.loss(&graph, &tokens, true)?;
             let step = loss.total(kl_weight)?;
-            optimizer.backward_step(&step)?;
+            // A recurrent decoder's gradient can spike on one long string;
+            // clip it, and step over one that is not finite rather than
+            // write a NaN into every weight.
+            let mut gradients = step.backward()?;
+            let norm = global_norm(&gradients, &variables)?;
+            if norm.is_finite() {
+                clip_global_norm(&mut gradients, &variables, 5.0)?;
+                optimizer.step(&gradients)?;
+            }
 
             total += loss.reconstruction.to_scalar::<f32>()?;
             divergence += loss.kl.to_scalar::<f32>()?;

@@ -242,9 +242,11 @@ impl MoleculeAutoencoder {
     ) -> Result<MoleculeLoss> {
         let latent = self.encode(graph, train)?;
         let sampled = self.sample(&latent, train)?;
+        let predicted: f32 = tokens.mask.iter().sum();
         Ok(MoleculeLoss {
             reconstruction: self.decoder.loss(&sampled, tokens, train)?,
             kl: crate::ml::nn::autoencoder::kl_divergence(&latent)?,
+            tokens_per_molecule: (predicted as f64 / tokens.rows.max(1) as f64).max(1.0),
             latent,
         })
     }
@@ -313,9 +315,13 @@ fn parse(text: &str) -> Option<MolecularGraph> {
 pub struct MoleculeLoss {
     /// Cross entropy over the SMILES tokens: how well the molecule was spelled.
     pub reconstruction: Tensor,
-    /// How far the encoded distribution strayed from a standard normal. Zero
-    /// on a model that is not variational.
+    /// How far the encoded distribution strayed from a standard normal, per
+    /// molecule. Zero on a model that is not variational.
     pub kl: Tensor,
+    /// How many tokens a molecule of this batch was scored on, on average --
+    /// what puts `reconstruction`, a mean per token, and `kl`, a sum per
+    /// molecule, on the same footing in [`MoleculeLoss::total`].
+    pub tokens_per_molecule: f64,
     /// What the encoder produced, so that a caller wanting the embedding as
     /// well does not have to run the encoder twice -- which under dropout
     /// would not give the same answer anyway.
@@ -325,6 +331,13 @@ pub struct MoleculeLoss {
 impl MoleculeLoss {
     /// The number to take a gradient of.
     ///
+    /// The KL is divided by [`MoleculeLoss::tokens_per_molecule`] before it is
+    /// weighted, so that a weight of one is the evidence lower bound itself,
+    /// per token. Adding the per-molecule KL to the per-token reconstruction
+    /// as it stood charged the latent forty to a hundred times what the bound
+    /// does, and paying that much for a latent is a strong reason for the
+    /// decoder to stop reading it.
+    ///
     /// `kl_weight` is the annealing knob: zero for the first epochs, so the
     /// decoder learns to use the latent before it is charged for it, then
     /// raised to one. Held at one from the start, a variational model of this
@@ -332,6 +345,7 @@ impl MoleculeLoss {
     /// reconstruction has not yet earned anything, and the cheapest way out is
     /// a latent the decoder ignores.
     pub fn total(&self, kl_weight: f64) -> Result<Tensor> {
-        self.reconstruction.add(&self.kl.affine(kl_weight, 0.0)?)
+        self.reconstruction
+            .add(&self.kl.affine(kl_weight / self.tokens_per_molecule, 0.0)?)
     }
 }

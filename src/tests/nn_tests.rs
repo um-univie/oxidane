@@ -2450,6 +2450,72 @@ fn seeding_starts_a_layer_norm_where_every_library_does() {
 }
 
 #[test]
+fn the_decoder_steps_exactly_as_candles_gru_does() {
+    // The decoder takes the GRU's input product out of the step; on the same
+    // weights it must spell the same logits as candle's own cell, or a saved
+    // decoder would load and then say something else.
+    use crate::ml::nn::decoder::SmilesDecoder;
+    use candle_core::IndexOp;
+    use candle_nn::rnn::{GRU, GRUConfig, GRUState, RNN};
+    use candle_nn::{Module, embedding, linear};
+
+    let device = Device::Cpu;
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let (latent_width, vocabulary) = (6, 12);
+    let config = DecoderConfig {
+        embedding: 5,
+        hidden: 7,
+        ..Default::default()
+    };
+    let decoder = SmilesDecoder::new(latent_width, vocabulary, config, vb.clone()).unwrap();
+    seed_variables(&varmap, 8).unwrap();
+    let variables = varmap.all_vars().len();
+
+    let table = embedding(vocabulary, config.embedding, vb.pp("embedding")).unwrap();
+    let initial = linear(latent_width, config.hidden, vb.pp("initial")).unwrap();
+    let cell = GRU::new(
+        config.embedding + latent_width,
+        config.hidden,
+        GRUConfig::default(),
+        vb.pp("recurrent"),
+    )
+    .unwrap();
+    let output = linear(config.hidden, vocabulary, vb.pp("output")).unwrap();
+    assert_eq!(
+        varmap.all_vars().len(),
+        variables,
+        "the reference made weights of its own"
+    );
+
+    let batch = TokenBatch::collate(&[vec![4, 5, 6, 7], vec![8, 9], vec![10, 11, 4]]);
+    let latent = Tensor::randn(0f32, 1.0, (3, latent_width), &device).unwrap();
+    let inputs = Tensor::from_slice(&batch.inputs, (batch.rows, batch.width), &device).unwrap();
+    let mut state = GRUState {
+        h: initial.forward(&latent).unwrap().tanh().unwrap(),
+    };
+    let mut states = Vec::new();
+    for step in 0..batch.width {
+        let token = table
+            .forward(&inputs.i((.., step)).unwrap().contiguous().unwrap())
+            .unwrap();
+        let input = Tensor::cat(&[&token, &latent], 1).unwrap();
+        state = cell.step(&input, &state).unwrap();
+        states.push(state.h.clone());
+    }
+    let stacked = Tensor::stack(&states, 1)
+        .unwrap()
+        .reshape((batch.rows * batch.width, config.hidden))
+        .unwrap();
+    let want = to_vec(&output.forward(&stacked).unwrap());
+    let got = to_vec(&decoder.logits(&latent, &batch, false).unwrap());
+    assert_eq!(got.len(), want.len());
+    for (got, want) in got.iter().zip(&want) {
+        assert!((got - want).abs() < 1e-5, "{got} against {want}");
+    }
+}
+
+#[test]
 fn a_sharded_step_is_the_step_one_thread_takes() {
     // One batch, one step: spread over three threads, the weights must move
     // exactly as they do on one, missing targets and all, since the shards'

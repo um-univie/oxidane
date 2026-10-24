@@ -26,7 +26,7 @@
 //! leaves the decoder no such option.
 
 use candle_core::{DType, IndexOp, Result, Tensor};
-use candle_nn::rnn::{GRU, GRUConfig, GRUState, RNN};
+use candle_nn::rnn::GRUConfig;
 use candle_nn::{Dropout, Embedding, Linear, Module, VarBuilder, embedding, linear};
 
 use crate::ml::nn::loss::masked_mean;
@@ -92,7 +92,7 @@ pub struct SmilesDecoder {
     embedding: Embedding,
     /// The latent vector, made into the recurrent network's first state.
     initial: Linear,
-    recurrent: GRU,
+    recurrent: Gru,
     output: Linear,
     dropout: Dropout,
     latent: usize,
@@ -110,12 +110,7 @@ impl SmilesDecoder {
         Ok(Self {
             embedding: embedding(vocabulary, config.embedding, vb.pp("embedding"))?,
             initial: linear(latent, config.hidden, vb.pp("initial"))?,
-            recurrent: GRU::new(
-                config.embedding + latent,
-                config.hidden,
-                GRUConfig::default(),
-                vb.pp("recurrent"),
-            )?,
+            recurrent: Gru::new(config.embedding + latent, config.hidden, vb.pp("recurrent"))?,
             output: linear(config.hidden, vocabulary, vb.pp("output"))?,
             dropout: Dropout::new(config.dropout),
             latent,
@@ -140,17 +135,34 @@ impl SmilesDecoder {
 
     /// The first recurrent state, `tanh`-squashed so that an unbounded latent
     /// cannot start the recurrence saturated.
-    fn first_state(&self, latent: &Tensor) -> Result<GRUState> {
-        Ok(GRUState {
-            h: self.initial.forward(latent)?.tanh()?.contiguous()?,
-        })
+    fn first_state(&self, latent: &Tensor) -> Result<Tensor> {
+        self.initial.forward(latent)?.tanh()?.contiguous()
+    }
+
+    /// What the recurrence's input side contributes, split by where it comes
+    /// from: a table of every token's share, and each row's latent share.
+    ///
+    /// A step's input is a token's embedding beside the latent, and the input
+    /// weights are linear in it, so the product splits in two. Neither half
+    /// depends on the step -- the token half is one row per vocabulary entry
+    /// and the latent half is one per molecule -- so both are computed once
+    /// per batch, and a step is a table lookup and an add rather than a
+    /// matrix product over the whole input.
+    fn input_parts(&self, latent: &Tensor) -> Result<(Tensor, Tensor)> {
+        let width = self.config.embedding;
+        let tokens = self
+            .embedding
+            .embeddings()
+            .matmul(&self.recurrent.w_ih.narrow(1, 0, width)?.t()?)?
+            .broadcast_add(&self.recurrent.b_ih)?;
+        let latent = latent.matmul(&self.recurrent.w_ih.narrow(1, width, self.latent)?.t()?)?;
+        Ok((tokens, latent))
     }
 
     /// One step of the recurrence: a token in, the next state out.
-    fn step(&self, tokens: &Tensor, latent: &Tensor, state: &GRUState) -> Result<GRUState> {
-        let embedded = self.embedding.forward(tokens)?;
-        self.recurrent
-            .step(&Tensor::cat(&[&embedded, latent], 1)?.contiguous()?, state)
+    fn step(&self, tokens: &Tensor, parts: &(Tensor, Tensor), state: &Tensor) -> Result<Tensor> {
+        let input = parts.0.index_select(tokens, 0)?.add(&parts.1)?;
+        self.recurrent.step(&input, state)
     }
 
     /// A prediction for every step of every row: `[rows * width, vocabulary]`.
@@ -169,11 +181,12 @@ impl SmilesDecoder {
     ) -> Result<Tensor> {
         let device = latent.device();
         let inputs = Tensor::from_slice(&batch.inputs, (batch.rows, batch.width), device)?;
+        let parts = self.input_parts(latent)?;
         let mut state = self.first_state(latent)?;
         let mut states = Vec::with_capacity(batch.width);
         for step in 0..batch.width {
-            state = self.step(&inputs.i((.., step))?.contiguous()?, latent, &state)?;
-            states.push(state.h.clone());
+            state = self.step(&inputs.i((.., step))?.contiguous()?, &parts, &state)?;
+            states.push(state.clone());
         }
         let stacked =
             Tensor::stack(&states, 1)?.reshape((batch.rows * batch.width, self.config.hidden))?;
@@ -214,6 +227,7 @@ impl SmilesDecoder {
     pub fn generate(&self, latent: &Tensor, temperature: f64, seed: u64) -> Result<Vec<Vec<u32>>> {
         let device = latent.device();
         let rows = latent.dim(0)?;
+        let parts = self.input_parts(latent)?;
         let mut state = self.first_state(latent)?;
         let mut current = vec![START; rows];
         let mut finished = vec![false; rows];
@@ -222,8 +236,8 @@ impl SmilesDecoder {
 
         for _ in 0..self.config.max_length {
             let tokens = Tensor::from_slice(&current, rows, device)?;
-            state = self.step(&tokens, latent, &state)?;
-            let logits = self.output.forward(&state.h)?.to_dtype(DType::F32)?;
+            state = self.step(&tokens, &parts, &state)?;
+            let logits = self.output.forward(&state)?.to_dtype(DType::F32)?;
             let rows_of_logits = logits.to_vec2::<f32>()?;
 
             for (row, values) in rows_of_logits.iter().enumerate() {
@@ -248,6 +262,45 @@ impl SmilesDecoder {
             }
         }
         Ok(out)
+    }
+}
+
+/// candle's GRU cell, with its input product taken outside it -- see
+/// [`SmilesDecoder::input_parts`].
+///
+/// The weights are the ones `candle_nn::rnn::GRU` would create, under the same
+/// names and with the same initialisation, so a decoder saved before this
+/// replaced it loads unchanged.
+#[derive(Debug)]
+struct Gru {
+    w_ih: Tensor,
+    w_hh: Tensor,
+    b_ih: Tensor,
+    b_hh: Tensor,
+}
+
+impl Gru {
+    fn new(input: usize, hidden: usize, vb: VarBuilder) -> Result<Self> {
+        let config = GRUConfig::default();
+        let bias = candle_nn::Init::Const(0.0);
+        Ok(Self {
+            w_ih: vb.get_with_hints((3 * hidden, input), "weight_ih_l0", config.w_ih_init)?,
+            w_hh: vb.get_with_hints((3 * hidden, hidden), "weight_hh_l0", config.w_hh_init)?,
+            b_ih: vb.get_with_hints(3 * hidden, "bias_ih_l0", config.b_ih_init.unwrap_or(bias))?,
+            b_hh: vb.get_with_hints(3 * hidden, "bias_hh_l0", config.b_hh_init.unwrap_or(bias))?,
+        })
+    }
+
+    /// The next state from the current one and the input side's product,
+    /// biased, `[rows, 3 * hidden]`.
+    fn step(&self, input: &Tensor, state: &Tensor) -> Result<Tensor> {
+        let hidden = state.matmul(&self.w_hh.t()?)?.broadcast_add(&self.b_hh)?;
+        let input = input.chunk(3, 1)?;
+        let hidden = hidden.chunk(3, 1)?;
+        let reset = candle_nn::ops::sigmoid(&(&input[0] + &hidden[0])?)?;
+        let update = candle_nn::ops::sigmoid(&(&input[1] + &hidden[1])?)?;
+        let candidate = (&input[2] + (reset * &hidden[2])?)?.tanh()?;
+        (&update * state)? - ((&update - 1.0)? * candidate)?
     }
 }
 

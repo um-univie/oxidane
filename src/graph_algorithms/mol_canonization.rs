@@ -1,5 +1,5 @@
 use crate::io::SMILESParseError;
-use crate::molecule::aromaticity::{AromaticityModel, Aromatizer};
+use crate::molecule::aromaticity::{Aromatizer, default_aromaticity_model};
 use crate::molecule::chirality::*;
 use crate::molecule::graph::AtomInvariant;
 use crate::prelude::*;
@@ -36,7 +36,6 @@ fn collect_automorphism_generator(
 use rustc_hash::FxHashMap;
 
 use canonaut::structs::CanonautManager;
-
 
 pub type BitMatrix = Vec<usize>;
 
@@ -116,6 +115,8 @@ impl std::fmt::Debug for CanonizationScratch {
 pub struct Canonizer {
     aromatizer: Aromatizer,
     scratch: CanonizationScratch,
+    automorphisms: Vec<Vec<usize>>,
+    graph_automorphisms: Vec<Vec<usize>>,
 }
 
 impl Canonizer {
@@ -126,13 +127,27 @@ impl Canonizer {
     /// [`canonize_mol`], reusing this canonizer's buffers.
     pub fn canonize<T: Molecule + Clone + ToSMILES>(&mut self, mol: &T) -> T {
         let mut molecule = mol.clone();
-        let _ = self.aromatizer.aromatize(
-            &mut molecule,
-            AromaticityModel::OpenSMILES,
-            None,
-            false,
-        );
+        let _ = self
+            .aromatizer
+            .aromatize(&mut molecule, default_aromaticity_model(), None, false);
         self.canonize_perceived(molecule)
+    }
+
+    /// Perceive a candidate for aromatic scoring. Only ambiguous perception
+    /// needs canonical ordering before scoring; ordinary rejected candidates
+    /// need never pay for graph labeling or stereo canonicalization.
+    pub(crate) fn perceive_for_scoring<T: Molecule + Clone + ToSMILES>(
+        &mut self,
+        mut molecule: T,
+    ) -> (T, bool) {
+        let _ = self
+            .aromatizer
+            .aromatize(&mut molecule, default_aromaticity_model(), None, false);
+        if perception_had_a_choice_to_make(&molecule) {
+            (self.canonize_perceived(molecule), true)
+        } else {
+            (molecule, false)
+        }
     }
 
     /// [`Canonizer::canonize`] for a molecule whose aromaticity has already
@@ -147,10 +162,193 @@ impl Canonizer {
     /// has not, the Kekule and the aromatic way of writing the same structure
     /// canonicalize to different strings -- which is a silent wrong answer, not
     /// an error. When in doubt use [`Canonizer::canonize`].
-    pub fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, mut molecule: T) -> T {
-        let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule);
-        let _ = run_canonization(&mut molecule, &indices, &labels, &mut self.scratch);
+    pub fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, molecule: T) -> T {
+        // Perception reads the atoms in the order they arrive in, and the
+        // canonical order is not that order: a graphene flake's carbonyl ring
+        // comes out Kekule from the molecule as written and aromatic from the
+        // same molecule renumbered, so the canonical form of the canonical form
+        // was not the canonical form. Perceiving again on the order this pass
+        // settled on, and canonizing again where that changed anything, is a
+        // fixed point of both -- and it costs one perception on a molecule
+        // whose perception was already stable, which is nearly all of them.
+        let answer = self.canonize_in_the_order_given(molecule);
+        if !perception_had_a_choice_to_make(&answer) {
+            return answer;
+        }
+        let mut again = answer.clone();
+        let _ = self
+            .aromatizer
+            .aromatize(&mut again, default_aromaticity_model(), None, false);
+        // Atom sets miss a changed ring bond between already-aromatic atoms.
+        // Compare aromatic membership per edge in this unchanged numbering.
+        if again
+            .atom_bonds()
+            .iter()
+            .zip(answer.atom_bonds())
+            .all(|(left, right)| {
+                left.iter().zip(right).all(|(a, b)| {
+                    (a.bond_order() == BondOrder::Aromatic)
+                        == (b.bond_order() == BondOrder::Aromatic)
+                })
+            })
+        {
+            return answer;
+        }
+        // Perception disagrees with itself about this molecule, so the answer
+        // would depend on the order the atoms arrived in. Settle it on an order
+        // that perception cannot have influenced: the canonical order of the
+        // molecule with its bond orders taken away, which every way of writing
+        // it shares.
+        let order = self.order_of_the_sigma_skeleton(&again);
+        let mut settled = again;
+        reorder_molecule(&mut settled, &order);
+        let _ = self
+            .aromatizer
+            .aromatize(&mut settled, default_aromaticity_model(), None, false);
+        self.canonize_in_the_order_given(settled)
+    }
+
+    /// The canonical order of the molecule with every bond order the same.
+    ///
+    /// Aromatic perception reads the atoms in the order they are stored in, and
+    /// a molecule written aromatic and the same molecule written Kekule are
+    /// stored differently -- so a fused polycyclic where perception has a
+    /// choice to make can make it two ways, and the canonical form of the
+    /// canonical form is not the canonical form. Ordering by the sigma skeleton
+    /// breaks the circle: bond orders are what the two writings disagree about,
+    /// so an order that ignores them is one they agree on.
+    fn order_of_the_sigma_skeleton<T: Molecule + Clone + ToSMILES>(
+        &mut self,
+        molecule: &T,
+    ) -> Vec<usize> {
+        let count = molecule.atomic_numbers().len();
+        let mut skeleton = molecule.clone();
+        for bonds in skeleton.atom_bonds_mut() {
+            for bond in bonds.iter_mut() {
+                bond.bond_order = BondOrder::Single;
+            }
+        }
+        *skeleton.atom_classes_mut() = Some((0..count).collect());
+        let ordered = self.canonize_in_the_order_given(skeleton);
+        ordered
+            .atom_classes()
+            .clone()
+            .filter(|origins| origins.len() == count)
+            .unwrap_or_else(|| (0..count).collect())
+    }
+
+    /// One canonization pass: the labelling, then the stereo colouring that
+    /// refines it. [`Canonizer::canonize_perceived`] is this and the
+    /// perception it settles with.
+    fn canonize_in_the_order_given<T: Molecule + Clone + ToSMILES>(
+        &mut self,
+        mut molecule: T,
+    ) -> T {
+        let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule, &[]);
+        self.automorphisms.clear();
+        let _ = run_canonization(
+            &mut molecule,
+            &indices,
+            &labels,
+            &mut self.scratch,
+            Some(&mut self.automorphisms),
+            true,
+        );
+        // Kept before the stereo colouring refines them away, and carried into
+        // each later pass's order. See `last_graph_automorphisms`.
+        self.graph_automorphisms.clone_from(&self.automorphisms);
+        self.split_orbits_by_stereo(&mut molecule);
         molecule
+    }
+
+    /// Recolours the graph by each stereocentre's orbit-relative tag and
+    /// canonizes again, for as long as that tells two orbit-mates apart.
+    ///
+    /// A canonical labelling is unique as a labelling only up to the graph's
+    /// automorphisms, and a chirality tag is not part of the graph nauty sees.
+    /// So a molecule carrying several copies of one arm -- a tryptophan
+    /// dendrimer is the case the corpus found -- has nothing to say which copy
+    /// belongs at which canonical position, and the tags land in whatever order
+    /// the input held them. [`canonicalize_chirality_under_automorphisms`]
+    /// settles that by taking the smallest tag vector the group can produce,
+    /// but it has to walk the group to do it, and a dendrimer's group is far
+    /// past the bound it walks; a truncated walk is not a canonical choice.
+    ///
+    /// Colouring by the tag removes the choice instead of deciding it: an arm
+    /// written `R` and an arm written `S` stop being interchangeable, so the
+    /// automorphism relating them is gone and the labelling that remains is
+    /// unique. The colour is Aut-invariant by construction -- it reads the tag
+    /// against the orbits, which every way of writing the molecule agrees on --
+    /// so each pass is as canonical as the one before it. Passes strictly
+    /// refine, hence terminate; the bound is there only to keep the cost of a
+    /// pathological case finite.
+    fn split_orbits_by_stereo<T: Molecule + Clone + ToSMILES>(&mut self, molecule: &mut T) {
+        const MAX_PASSES: usize = 4;
+        for _ in 0..MAX_PASSES {
+            if self.automorphisms.is_empty() || !molecule.is_chiral() {
+                return;
+            }
+            let (parities, orbit_of) = orbit_relative_tags(molecule, &self.automorphisms);
+            if !splits_an_orbit(&parities, &orbit_of) {
+                return;
+            }
+            let (indices, labels) = prepare_and_sort_indices_and_labels(molecule, &parities);
+            // The pass is about to renumber the atoms twice -- once by
+            // `indices`, once by the labelling nauty returns -- and the graph's
+            // own symmetries are written in the numbering it starts from, so
+            // they are carried through both.
+            self.graph_automorphisms =
+                carry_permutations_through(&self.graph_automorphisms, &indices);
+            self.automorphisms.clear();
+            let _ = run_canonization(
+                molecule,
+                &indices,
+                &labels,
+                &mut self.scratch,
+                Some(&mut self.automorphisms),
+                true,
+            );
+            let labeling = self.scratch.heavy_labeling.clone();
+            self.graph_automorphisms =
+                carry_permutations_through(&self.graph_automorphisms, &labeling);
+        }
+    }
+
+    /// The automorphisms of the molecule this canonizer last canonized, as
+    /// permutations of its *canonical* heavy-atom positions.
+    ///
+    /// A canonical labelling is unique as a labelling, but a symmetric graph
+    /// has several equally canonical ways to attach data that the labelling
+    /// cannot see. Hydrogen tartrate is the case that made this necessary: its
+    /// erased skeleton is symmetric, so nothing in the graph says which of the
+    /// two carboxyls carries the mobile hydrogen and which the charge, and the
+    /// answer fell to the order the atoms happened to arrive in. A caller
+    /// holding such data can use these to choose among the possibilities
+    /// deterministically -- the same use
+    /// `canonicalize_chirality_under_automorphisms` already makes of them for
+    /// stereocentre tags.
+    ///
+    /// Empty when the molecule is asymmetric, which is the usual case.
+    pub fn last_automorphisms(&self) -> &[Vec<usize>] {
+        &self.automorphisms
+    }
+
+    /// The symmetries of the *graph* the canonizer last saw, in the canonical
+    /// order it settled on.
+    ///
+    /// [`Canonizer::last_automorphisms`] reports what survives the stereo
+    /// colouring, which is what a labelling is unique up to. That is the wrong
+    /// group for data the graph does not carry -- which of two carboxyls holds
+    /// a mobile hydrogen, say. Erasure took the hydrogen out of the graph, so
+    /// the freedom in putting it back is the freedom the *graph* has, and
+    /// colouring by a stereocentre's tag narrows the labelling without
+    /// narrowing that. Reading the smaller group is how a hexaric acid's
+    /// hydrogen came to move from one end of the chain to the other on every
+    /// pass: the symmetry that made the two ends interchangeable had been
+    /// coloured away, so nothing was left to choose between them but the order
+    /// the atoms arrived in.
+    pub fn last_graph_automorphisms(&self) -> &[Vec<usize>] {
+        &self.graph_automorphisms
     }
 
     /// [`canonicalize_and_sort_smiles`], reusing this canonizer's buffers.
@@ -182,15 +380,14 @@ thread_local! {
 /// Runs `f` against the thread's canonizer, taken out and put back so that
 /// anything reachable from `f` which itself canonizes gets its own rather than
 /// a double-borrow panic.
-fn with_canonizer<R>(f: impl FnOnce(&mut Canonizer) -> R) -> R {
+pub(crate) fn with_canonizer<R>(f: impl FnOnce(&mut Canonizer) -> R) -> R {
     let mut canonizer = CANONIZER.take();
     let result = f(&mut canonizer);
     CANONIZER.set(canonizer);
     result
 }
 
-/// This function canonizes a given molecule.
-/// It returns a new molecule with the atoms reordered according to the canonical ordering.
+/// Canonizes a molecule, returning a new instance with canonical atom ordering.
 ///
 /// # Examples
 ///
@@ -246,8 +443,7 @@ pub fn canonize_mol_perceived<T: Molecule + Clone + ToSMILES>(mol: &T) -> T {
     canonize_perceived(mol.clone())
 }
 
-/// This function canonizes a given molecule.
-/// It returns a new molecule with the atoms reordered according to the canonical ordering.
+/// Canonizes a molecule in place, reordering its atoms according to canonical ranking.
 ///
 /// # Examples
 ///
@@ -337,7 +533,8 @@ pub fn canonical_chiral_classes<T: Molecule + Clone + ToSMILES>(mol: &T) -> Vec<
     *tagged.atom_classes_mut() = Some((0..atom_count).collect());
     let canonical = canonize_mol(&tagged);
 
-    let (Some(tags), Some(classes)) = (canonical.atom_classes().clone(), canonical.chiral_classes())
+    let (Some(tags), Some(classes)) =
+        (canonical.atom_classes().clone(), canonical.chiral_classes())
     else {
         return result;
     };
@@ -361,6 +558,8 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     indices: &[usize],
     labels: &[AtomInvariant],
     scratch: &mut CanonizationScratch,
+    report_automorphisms: Option<&mut Vec<Vec<usize>>>,
+    choose_stereo: bool,
 ) -> Result<(), CanonizationError> {
     reorder_molecule(molecule, &indices);
 
@@ -429,20 +628,289 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
     // assignment among symmetry-equivalent ones.
     let generators = AUTOMORPHISM_GENERATORS.with(|g| std::mem::take(&mut *g.borrow_mut()));
 
-    reorder_molecule(molecule, &labeling);
+    reorder_molecule(molecule, labeling);
 
     // A graph automorphism can flip stereocentre tags (e.g. the bridge swap of a
     // symmetric ring), yielding several equally valid tag assignments for the
     // same molecule. Pick the canonical one deterministically.
-    if molecule.is_chiral() && !generators.is_empty() {
+    if choose_stereo && molecule.is_chiral() && !generators.is_empty() {
         canonicalize_chirality_under_automorphisms(
             molecule,
             &generators,
-            &labeling,
+            labeling,
             number_of_heavy_atoms,
         );
     }
+    if let Some(report) = report_automorphisms {
+        report.extend(conjugate_into_canonical_order(
+            &generators,
+            labeling,
+            number_of_heavy_atoms,
+        ));
+    }
     Ok(())
+}
+
+/// Each atom's orbit under the automorphisms, and each stereocentre's tag read
+/// against those orbits.
+///
+/// The tag a tetrahedral centre stores is a winding, and a winding only means
+/// something against an ordering of the centre's neighbours. The one it is
+/// stored against -- the neighbours by atom index -- says nothing outside the
+/// numbering that produced it. Sorting them by orbit instead gives an ordering
+/// every way of writing the molecule agrees on, so the tag re-read against it
+/// is a property of the molecule: `1` and `2` are the two windings, and `0`
+/// means the question does not arise, either because the atom is no
+/// stereocentre or because two of its neighbours share an orbit and so cannot
+/// be put in an order.
+///
+/// Hydrogens are not vertices of the graph nauty saw, so they are in no orbit
+/// of their own; each takes the orbit of the atom it hangs off, which is what
+/// the automorphism would do with it. Two hydrogens on one centre then collide,
+/// which is the right answer -- a centre with two of them is not stereogenic.
+fn orbit_relative_tags<T: Molecule>(
+    molecule: &T,
+    automorphisms: &[Vec<usize>],
+) -> (Vec<u8>, Vec<u32>) {
+    let atom_count = molecule.len();
+    let mut parent: Vec<u32> = (0..atom_count as u32).collect();
+    fn root(parent: &mut [u32], mut atom: u32) -> u32 {
+        while parent[atom as usize] != atom {
+            parent[atom as usize] = parent[parent[atom as usize] as usize];
+            atom = parent[atom as usize];
+        }
+        atom
+    }
+    for generator in automorphisms {
+        for (atom, &image) in generator.iter().enumerate() {
+            if atom >= atom_count || image >= atom_count {
+                continue;
+            }
+            let (a, b) = (
+                root(&mut parent, atom as u32),
+                root(&mut parent, image as u32),
+            );
+            if a != b {
+                parent[b.max(a) as usize] = a.min(b);
+            }
+        }
+    }
+    let orbit_of: Vec<u32> = (0..atom_count as u32)
+        .map(|atom| root(&mut parent, atom))
+        .collect();
+
+    // A neighbour's sort key: which orbit it is in, whether it is a hydrogen,
+    // and -- so that a deuterium and a protium are not interchangeable -- its
+    // isotope. A hydrogen borrows the orbit of the centre it is attached to.
+    let key_of = |neighbour: usize, centre: usize| -> (u32, u8, u16) {
+        let hydrogen = molecule.atomic_numbers()[neighbour] == 1;
+        let orbit = if hydrogen {
+            orbit_of[centre]
+        } else {
+            orbit_of[neighbour]
+        };
+        let isotope = molecule
+            .isotopes()
+            .and_then(|isotopes| isotopes.get(neighbour).copied())
+            .unwrap_or(0);
+        (orbit, u8::from(hydrogen), isotope)
+    };
+
+    let mut parities = vec![0u8; atom_count];
+    for atom in 0..atom_count {
+        let ChiralClass::TH(stored) = molecule.get_chiral_class(atom) else {
+            continue;
+        };
+        let by_index = index_sorted_neighbors(molecule, atom);
+        if by_index.len() < 3 || by_index.len() > 4 {
+            continue;
+        }
+        let mut distinct: Vec<(u32, u8, u16)> = by_index.iter().map(|&n| key_of(n, atom)).collect();
+        let neighbour_count = distinct.len();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if distinct.len() != neighbour_count {
+            continue;
+        }
+        let mut by_orbit = by_index.clone();
+        by_orbit.sort_by_key(|&n| key_of(n, atom));
+        parities[atom] = tetrahedral_tag_for_order(stored, &by_index, &by_orbit);
+    }
+    (parities, orbit_of)
+}
+
+/// Whether any orbit holds two atoms whose orbit-relative tags disagree, which
+/// is what makes recolouring by them worth another pass.
+fn splits_an_orbit(parities: &[u8], orbit_of: &[u32]) -> bool {
+    let mut seen: FxHashMap<u32, u8> = FxHashMap::default();
+    for (atom, &parity) in parities.iter().enumerate() {
+        match seen.entry(orbit_of[atom]) {
+            std::collections::hash_map::Entry::Occupied(slot) => {
+                if *slot.get() != parity {
+                    return true;
+                }
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(parity);
+            }
+        }
+    }
+    false
+}
+
+/// Rewrites nauty's generators, which permute the pre-canonical vertices, as
+/// permutations of the canonical heavy-atom positions.
+///
+/// A generator that moves a heavy atom onto one of the virtual bond-order
+/// vertices is dropped: it says nothing about where an atom's data may go.
+/// Whether perception left an atom out of an aromatic system it borders.
+///
+/// Asking whether perception is stable means perceiving a second time, and that
+/// is a third of what canonizing costs -- worth paying only where the answer
+/// can be no. It can be no where perception had a choice to make: an atom with
+/// no aromatic bond of its own, bonded to two that have them, is a ring atom
+/// left out of a system it borders, and whether it belongs is the kind of
+/// question a fused polycyclic answers differently depending on where the walk
+/// started. A graphene flake's carbonyl ring is such an atom; a peptide's
+/// tryptophans, whose aromatic systems border `sp3` carbon and nothing else,
+/// are not.
+fn perception_had_a_choice_to_make<T: Molecule>(molecule: &T) -> bool {
+    let aromatic: Vec<bool> = molecule
+        .atom_bonds()
+        .iter()
+        .map(|bonds| {
+            bonds
+                .iter()
+                .any(|bond| bond.bond_order() == BondOrder::Aromatic)
+        })
+        .collect();
+    let an_atom_left_between_two_rings =
+        molecule
+            .atom_bonds()
+            .iter()
+            .enumerate()
+            .any(|(atom, bonds)| {
+                !aromatic[atom]
+                    && bonds
+                        .iter()
+                        .filter(|bond| aromatic.get(bond.target()).copied().unwrap_or(false))
+                        .count()
+                        >= 2
+            });
+    // ... or a bond perception left out of a system it lies *inside*. A
+    // fullerene has no atom outside to be noticed by the test above -- every
+    // carbon of the cage is aromatic -- and yet the same cage comes back with
+    // twenty-four of its bonds written `=` from the deposited Kekule form and
+    // none of them from its own canonical SMILES. The atoms agreed; the bonds
+    // did not.
+    //
+    // The bond has to be one of a *ring*. A plain bond between two aromatic
+    // atoms is biphenyl, where nothing was left out and the two rings are
+    // simply not one system; firing on that would put every biaryl in the
+    // corpus through a re-settle it does not need. Inside a ring the same bond
+    // means the opposite -- perception took the ring's atoms and left this bond
+    // behind -- and a fullerene shows it as twenty-four bonds written `=` from
+    // the deposited Kekule form and none from its own canonical SMILES, while a
+    // porphyrazine shows it as a handful written `-`.
+    //
+    // Ring membership is only asked for once a candidate bond exists, which is
+    // what keeps it off the hot path: a molecule whose aromatic atoms are
+    // joined to each other by aromatic bonds alone never pays for it.
+    let a_candidate = molecule
+        .atom_bonds()
+        .iter()
+        .enumerate()
+        .any(|(atom, bonds)| {
+            aromatic[atom]
+                && bonds.iter().any(|bond| {
+                    bond.bond_order() != BondOrder::Aromatic
+                        && aromatic.get(bond.target()).copied().unwrap_or(false)
+                })
+        });
+    if !a_candidate {
+        return an_atom_left_between_two_rings;
+    }
+    let (_, cyclic) = molecule.find_cyclic_bonds_and_atoms();
+    let a_ring_bond_left_out = molecule
+        .atom_bonds()
+        .iter()
+        .enumerate()
+        .any(|(atom, bonds)| {
+            aromatic[atom]
+                && bonds.iter().any(|bond| {
+                    bond.bond_order() != BondOrder::Aromatic
+                        && aromatic.get(bond.target()).copied().unwrap_or(false)
+                        && cyclic
+                            .contains(&crate::molecule::utils::order_tuple(atom, bond.target()))
+                })
+        });
+    an_atom_left_between_two_rings || a_ring_bond_left_out
+}
+
+/// Rewrites permutations of the heavy atoms into the order `labeling` puts
+/// them in, where `labeling[i]` is the atom that ends up at position `i`.
+///
+/// [`conjugate_into_canonical_order`] does the same for what nauty reports,
+/// which is indexed over the vertices of the graph it saw; this one is for
+/// permutations already indexed over heavy atoms, so that a symmetry found in
+/// one pass can be read in the next pass's numbering.
+fn carry_permutations_through(permutations: &[Vec<usize>], labeling: &[usize]) -> Vec<Vec<usize>> {
+    let width = permutations.first().map_or(0, Vec::len);
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut inverse = vec![usize::MAX; width];
+    for (position, &atom) in labeling.iter().take(width).enumerate() {
+        if atom < width {
+            inverse[atom] = position;
+        }
+    }
+    permutations
+        .iter()
+        .filter_map(|permutation| {
+            (0..width)
+                .map(|position| {
+                    let atom = *labeling.get(position)?;
+                    let image = *permutation.get(atom)?;
+                    inverse
+                        .get(image)
+                        .copied()
+                        .filter(|&slot| slot != usize::MAX)
+                })
+                .collect::<Option<Vec<usize>>>()
+        })
+        .collect()
+}
+
+fn conjugate_into_canonical_order(
+    generators: &[Vec<u32>],
+    labeling: &[usize],
+    number_of_heavy_atoms: usize,
+) -> Vec<Vec<usize>> {
+    let mut inverse = vec![0usize; number_of_heavy_atoms];
+    for (canonical_position, &precanonical) in labeling.iter().enumerate() {
+        if precanonical < number_of_heavy_atoms {
+            inverse[precanonical] = canonical_position;
+        }
+    }
+    let mut conjugated = Vec::new();
+    for generator in generators {
+        let mut permutation = vec![0usize; number_of_heavy_atoms];
+        let mut usable = true;
+        for canonical_position in 0..number_of_heavy_atoms {
+            let pre = labeling[canonical_position];
+            let image = generator.get(pre).copied().unwrap_or(u32::MAX) as usize;
+            if image >= number_of_heavy_atoms {
+                usable = false;
+                break;
+            }
+            permutation[canonical_position] = inverse[image];
+        }
+        if usable {
+            conjugated.push(permutation);
+        }
+    }
+    conjugated
 }
 
 /// Chooses a canonical chirality tag assignment among those related by graph
@@ -489,13 +957,18 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
             full_generators.push(full);
         }
     }
-    if full_generators.is_empty() {
+    let watched = atoms_a_tag_depends_on(molecule);
+    let moves_a_tag = |generator: &Vec<usize>| {
+        watched
+            .iter()
+            .any(|&atom| generator.get(atom) != Some(&atom))
+    };
+    if full_generators.is_empty() || !full_generators.iter().any(moves_a_tag) {
         return;
     }
 
     let current = molecule.chiral_classes().unwrap().to_vec();
     let mut best = current.clone();
-
 
     // Enumerate the group generated by the automorphisms (bounded) and keep the
     // smallest tag vector any of them produces.
@@ -503,6 +976,15 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
     let identity: Vec<usize> = (0..molecule.len()).collect();
     let mut seen: HashSet<Vec<usize>> = HashSet::new();
     seen.insert(identity.clone());
+    // Two elements that agree on the atoms a tag depends on rewrite the tags
+    // the same way, and most of a large group's elements agree with the
+    // identity there -- a peptide's group is mostly methyls turning. Composing
+    // is cheap; reordering a copy of the molecule is not, so the group is
+    // walked in full and only a new *restriction* is paid for.
+    let restriction =
+        |element: &[usize]| -> Vec<usize> { watched.iter().map(|&atom| element[atom]).collect() };
+    let mut evaluated: HashSet<Vec<usize>> = HashSet::new();
+    evaluated.insert(restriction(&identity));
     let mut frontier = vec![identity];
     while let Some(element) = frontier.pop() {
         if seen.len() > MAX_GROUP {
@@ -511,11 +993,13 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
         for generator in &full_generators {
             let composed: Vec<usize> = element.iter().map(|&i| generator[i]).collect();
             if seen.insert(composed.clone()) {
-                let mut candidate = molecule.clone();
-                reorder_molecule(&mut candidate, &composed);
-                if let Some(tags) = candidate.chiral_classes() {
-                    if tags < best.as_slice() {
-                        best = tags.to_vec();
+                if evaluated.insert(restriction(&composed)) {
+                    let mut candidate = molecule.clone();
+                    reorder_molecule(&mut candidate, &composed);
+                    if let Some(tags) = candidate.chiral_classes() {
+                        if tags < best.as_slice() {
+                            best = tags.to_vec();
+                        }
                     }
                 }
                 frontier.push(composed);
@@ -528,6 +1012,38 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
             classes.copy_from_slice(&best);
         }
     }
+}
+
+/// The atoms a chirality tag reads: every atom carrying one, and every
+/// neighbour of such an atom.
+///
+/// A tag is a winding against an ordering of its centre's neighbours, so it
+/// changes under a permutation only if the centre moves or its neighbours are
+/// permuted among themselves. Everything else in the molecule can be permuted
+/// freely without a tag noticing -- and a molecule carries a large automorphism
+/// group mostly for such reasons: a peptide's methyls, its amide `NH2`s, the
+/// flip of a tyrosine ring. Walking the group is the dominant cost of
+/// canonizing a large molecule, so knowing which atoms matter is what makes the
+/// walk affordable.
+fn atoms_a_tag_depends_on<T: Molecule>(molecule: &T) -> Vec<usize> {
+    let Some(classes) = molecule.chiral_classes() else {
+        return Vec::new();
+    };
+    let mut watched = vec![false; molecule.len()];
+    for (atom, class) in classes.iter().enumerate() {
+        if *class == ChiralClass::None {
+            continue;
+        }
+        watched[atom] = true;
+        for bond in &molecule.atom_bonds()[atom] {
+            watched[bond.target()] = true;
+        }
+    }
+    watched
+        .iter()
+        .enumerate()
+        .filter_map(|(atom, &watched)| watched.then_some(atom))
+        .collect()
 }
 
 /// Extends a heavy-atom permutation to a full-atom permutation by mapping each
@@ -571,10 +1087,21 @@ fn extend_permutation_over_hydrogens<T: Molecule>(
     Some(full)
 }
 
-fn prepare_and_sort_indices_and_labels<T: Molecule>(mol: &T) -> (Vec<usize>, Vec<AtomInvariant>) {
-    let labels = (0..mol.len())
+/// The atom invariants, and the order they put the atoms in.
+///
+/// `stereo_parities` is empty on the first pass, and on a later one holds the
+/// orbit-relative tag of every atom, which joins the invariant as a colour.
+fn prepare_and_sort_indices_and_labels<T: Molecule>(
+    mol: &T,
+    stereo_parities: &[u8],
+) -> (Vec<usize>, Vec<AtomInvariant>) {
+    let mut labels = (0..mol.len())
         .map(|atom_index| mol.get_atom_invariant(atom_index))
         .collect::<Vec<_>>();
+    for (label, &parity) in labels.iter_mut().zip(stereo_parities) {
+        label.set_stereo_parity(parity);
+    }
+    let labels = labels;
     let indices = (0..mol.len()).collect::<Vec<usize>>();
 
     // Hydrogens last, and everything else -- the `*` wildcard, atomic number
@@ -583,7 +1110,9 @@ fn prepare_and_sort_indices_and_labels<T: Molecule>(mol: &T) -> (Vec<usize>, Vec
     let mut label_indices = indices.iter().zip(labels.iter()).collect::<Vec<_>>();
     label_indices.sort_by(|(index1, label1), (index2, label2)| {
         let heavy = |index: usize| mol.get_atomic_number(index) != 1;
-        heavy(**index2).cmp(&heavy(**index1)).then_with(|| label2.cmp(label1))
+        heavy(**index2)
+            .cmp(&heavy(**index1))
+            .then_with(|| label2.cmp(label1))
     });
 
     let indices = label_indices
@@ -752,16 +1281,14 @@ pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, labeling: &[usize])
                 // the tag flips iff sorting the relabeled neighbors is an odd
                 // permutation of the old index-sorted order carried through the
                 // relabeling.
-                let mut old_sorted = if old_idx < emission_old.len() {
-                    emission_old[old_idx].clone()
-                } else {
-                    Vec::new()
-                };
-                old_sorted.sort_unstable();
-                let old_sorted_mapped: Vec<usize> =
-                    old_sorted.iter().map(|&t| inverse_mapping[t]).collect();
-                let mut new_sorted = old_sorted_mapped.clone();
-                new_sorted.sort_unstable();
+                // Read actual bonds, not the SMILES traversal: a folded
+                // hydrogen is still one neighbor, regardless of the root used
+                // to write the molecule. The new bond table already carries
+                // the relabeling; sorting by each neighbor's old index recovers
+                // the old reference order translated into the new indices.
+                let new_sorted = index_sorted_neighbors(mol, new_idx);
+                let mut old_sorted_mapped = new_sorted.clone();
+                old_sorted_mapped.sort_unstable_by_key(|&neighbor| labeling[neighbor]);
                 let tag = tetrahedral_tag_for_order(reference, &old_sorted_mapped, &new_sorted);
                 ChiralClass::TH(tag)
             } else if let ChiralClass::AL(reference) = old_class {
@@ -815,8 +1342,20 @@ pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, labeling: &[usize])
             let (Some(side_a), Some(side_b)) = (side_of_first(a, b), side_of_first(b, a)) else {
                 continue;
             };
-            new_chiral_classes[a] = ChiralClass::CisTransCounterclockwise;
-            new_chiral_classes[b] = if side_a != side_b {
+            // The reference end is the *lower new index*, not whichever end
+            // happened to be lower before the relabeling. Only the pair
+            // `class(a) != class(b)` carries the geometry, so a trans bond can
+            // be written either way round, and writing it by where its atoms
+            // came from left the tag vector a record of history rather than of
+            // the molecule. `canonicalize_chirality_under_automorphisms` picks
+            // the lexicographically smallest vector the automorphism group can
+            // produce, and two spellings of one geometry compare as different
+            // vectors, so it picked whichever the input happened to hand it:
+            // `CCC/C=C/CC/C=C\CCC` and `CCC/C=C\CC/C=C/CCC` -- the same
+            // compound, symmetric about its middle -- canonicalized apart.
+            let (low, high) = (a.min(b), a.max(b));
+            new_chiral_classes[low] = ChiralClass::CisTransCounterclockwise;
+            new_chiral_classes[high] = if side_a != side_b {
                 ChiralClass::CisTransClockwise
             } else {
                 ChiralClass::CisTransCounterclockwise
@@ -856,14 +1395,22 @@ fn compute_cistrans_sides<T: Molecule>(
         let Some(bonds_a) = mol.get_atom_bonds(a) else {
             continue;
         };
+        // The double bond the class is *about*, which is not always the first
+        // one the atom lists. An atom with two double bonds has only one class
+        // to describe them with, and taking the first left a phosphaalkene's
+        // phosphorus paired with its unclassed partner: the bond was dropped
+        // from `bonds`, its sides were never captured, and the rebuild after
+        // relabelling had nothing to restore, so the geometry the reader *had*
+        // read was thrown away by canonization alone.
         let Some(b) = bonds_a
             .iter()
-            .find(|bo| bo.bond_order() == BondOrder::Double)
+            .filter(|bo| bo.bond_order() == BondOrder::Double)
             .map(|bo| bo.target())
+            .find(|&target| is_cis_trans(classes[target]))
         else {
             continue;
         };
-        if b <= a || !is_cis_trans(classes[b]) {
+        if b <= a {
             continue;
         }
 
@@ -1102,10 +1649,10 @@ fn update_oh_chirality(
 mod tests {
     use super::*;
     use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
-    
+
     use rayon::prelude::*;
     use std::fs::File;
-    
+
     use std::io::Write;
     use std::io::{BufRead, BufReader};
     use std::sync::Mutex;
@@ -1120,88 +1667,19 @@ mod tests {
 
     #[test]
     fn test_canonical_smiles() {
-        // let smiles = "C1COc2cccc(c2)CNCCN2CCNCc3cccc(c3)OCCN(CCOc3cccc(c3)CNCCN3CCNCc4cccc(c4)OCCN1CCOc1cc(ccc1)CNCC3)CCOc1cc(ccc1)CNCC2";
-        // let canonical_smiles1 = canonicalize_and_sort_smiles(smiles, false).unwrap();
-        // let mols = MolecularGraph::from_smiles(smiles).unwrap();
-        // let mut mol1 = mols[0].clone();
-        // mol1.aromatize_opensmiles();
-        // let canonical_mol1 = mol_canonization(&mol1);
-        // //    let smiles = "C1c2cccc(c2)OCCN3CCOc4cccc(CNCCN(CCNCc5cccc(c5)OCCN6CCOc7cccc(CNCCN(CCNCc8cccc(c8)OCC6)CCNCc9cccc(c9)OCC3)c7)CCN1)c4";
-        // //let canonical_smiles2 =  canonicalize_and_sort_smiles(smiles);
-        // let smiles = "C1=CC2=CC(=C1)OCCN1CCOC3=CC=CC(=C3)CNCCN(CCNC2)CCNCC2=CC(=CC=C2)OCCN2CCOC3=CC=CC(=C3)CNCCN(CCNCC3=CC(=CC=C3)OCC2)CCNCC2=CC=CC(=C2)OCC1";
-        // let canonical_smiles3 = canonicalize_and_sort_smiles(smiles, false).unwrap();
-        // let mols = MolecularGraph::from_smiles(smiles).unwrap();
-        // let mut mol3 = mols[0].clone();
-        // mol3.aromatize_opensmiles();
-        // let canonical_mol3 = mol_canonization(&mol3);
-
-        // //let smiles = "C1c2cccc(c2)OCCN3CCOc4cccc(CNCCN(CCNCc5cccc(c5)OCC3)CCNCc6cccc(c6)OCCN7CCOc8cccc(CNCCN(CCNCc9cccc(c9)OCC7)CCN1)c8)c4";
-        // //let canonical_smiles4 =  canonicalize_and_sort_smiles(smiles);
-        // //
-
-        // let smiles = "Clc1cc(ccc1OC(=O)C2CN(CC3CC3)C(=O)C2)-c4ccccc4";
-        // let canonical_smiles = canonicalize_and_sort_smiles(smiles, false).unwrap();
-        // // assert_eq!(canonical_smiles, smiles);
-
-        // let mol2 = MolecularGraph::from_smiles("c12c3c(ccc2)c(ccc4)c5c4cccc5c3ccc1").unwrap();
-        // let mol2 = &mol2[0];
-        // let canonical_smiles2 = to_canonical_smiles(mol2, false);
-        // // assert_eq!(canonical_smiles2, "c1cc2c3cccc4cccc(c5cccc(c1)c25)c34");
-        // let mol = MolecularGraph::from_smiles_single("c1c(C)cccc1").unwrap();
-        // let canonical_smiles = to_canonical_smiles(&mol, false);
-
-        // println!("{}", canonical_smiles);
-
-        // let mol = MolecularGraph::from_smiles_single("c1ccc(C)cc1").unwrap();
-        // let canonical_smiles = to_canonical_smiles(&mol, false);
-
-        // println!("{}", canonical_smiles);
-
-        // panic!();
-
-        //let mol = MolecularGraph::from_smiles_single("[c]1c(S(=O)(=O)[O])c(-c2[c][c]c([N]C(=O)[N]c3[c][c]c(-c4[c][c]c([N]C(=O)[N]c5[c][c]c(-c6[c][c]c([N]C(=O)[N]c7[c]c(S(=O)(=O)[O])c(-c8[c][c]c([N]C([N]c9[c][c]c(-c%10[c][c]c([N]C([N]c%11[c]c(S([O])(=O)=O)c(-c%12c(S([O])(=O)=O)[c]c([N]C(=O)[N]c%13[c]c(S(=O)(=O)[O])c(-c%14c(S(=O)(=O)[O])[c]c([N]C([N]c%15[c][c]c([CH2])[c][c]%15)=O)[c][c]%14)[c][c]%13)[c][c]%12)[c][c]%11)=O)[c]c%10S([O])(=O)=O)c(S(=O)(=O)[O])[c]9)=O)[c]c8S([O])(=O)=O)[c][c]7)[c]c6S([O])(=O)=O)c(S(=O)([O])=O)[c]5)[c]c4S(=O)(=O)[O])c(S(=O)(=O)[O])[c]3)[c]c2S(=O)(=O)[O])[c][c]c1[N]C(=O)[N]c1[c][c]c([CH2])[c][c]1").unwrap();
-        //
-        // let smiles = "C1COc2cccc(c2)CNCCN2CCNCc3cccc(c3)OCCN(CCOc3cccc(c3)CNCCN3CCNCc4cccc(c4)OCCN1CCOc1cc(ccc1)CNCC3)CCOc1cc(ccc1)CNCC2";
-        // let canonical_smiles = canonicalize_and_sort_smiles(smiles, false).unwrap();
-        // assert_eq!( canonical_smiles,
-        //     "O1c2cccc(c2)CNCCN3CCNCc4cccc(OCCN5CCOc6cccc(c6)CNCCN(CCNCc7cccc(OCC5)c7)CCNCc8cccc(OCCN(CC1)CCOc9cccc(c9)CNCC3)c8)c4"
-        // );
-
-        // let time = Instant::now();
-        // let caonical_smiles = to_canonical_smiles(&mol, false);
-        // println!("Time: {:?}", time.elapsed());
-        // let mol = MolecularGraph::from_smiles_single("PP(P)P(P)I").unwrap();
-        // let canonical_smiles = to_canonical_smiles(&mol, true);
-        // println!("{}", canonical_smiles);
-
-        // let mol = MolecularGraph::from_smiles_single("P(P(P)I)(P)P").unwrap();
-        // let canonical_smiles = to_canonical_smiles(&mol, true);
-        // println!("{}", canonical_smiles);
-
-        // use crate::io::to_dot_file;
-
-        // let mol2 = MolecularGraph::from_smiles_single("O=P1(OP2(=O)O[In](OP3(=O)O[In]4OP(=O)(O3)O4)O2)O[In](OP2(=O)OP3(=O)O[In](O3)O2)O1").unwrap();
-        // to_dot_file(&mol2, Some("tests/test_canonization.dot"));
-
-        // let canonical_smiles2 = to_canonical_smiles(&mol2, false);
-        // let (canonical_mol2, automorphisms) = mol_canonization_nauty(&mol2);
-        // println!("Automorphisms: {:?}", automorphisms);
-        // println!("Number of automorphisms: {:?}", automorphisms.len());
-        // panic!();
-        // let mol3 = MolecularGraph::from_smiles_single("[In]12OP(=O)(OP(=O)(O1)O2)O[In]3OP(=O)(OP4(=O)O[In](O4)OP5(=O)OP6(=O)O[In](O5)O6)O3").unwrap();
-        // let canonical_smiles3 = to_canonical_smiles(&mol3, false);
-        // let mol4 = MolecularGraph::from_smiles_single("O1P2(=O)O[In]1OP(=O)(O[In]1OP(=O)(OP3(=O)O[In](OP4(=O)O[In]5OP(=O)(O4)O5)O3)O1)O2").unwrap();
-        // let canonical_smiles4 = to_canonical_smiles(&mol4, false);
-        // let mol5 = MolecularGraph::from_smiles_single("[In]12OP(=O)(OP(=O)(O1)O2)O[In]3OP(=O)(OP4(=O)O[In](OP5(=O)OP6(=O)O[In](O6)O5)O4)O3").unwrap();
-        // let canonical_smiles5 = to_canonical_smiles(&mol5, false);
-        // println!("{}", canonical_smiles2);
-        // println!("{}", canonical_smiles3);
-        // println!("{}", canonical_smiles4);
-        // println!("{}", canonical_smiles5);
-
-        // assert_eq!(canonical_smiles2, canonical_smiles3);
-        // assert_eq!(canonical_smiles3, canonical_smiles4);
-        // assert_eq!(canonical_smiles4, canonical_smiles5);
+        for (a, b) in [
+            ("c1c(C)cccc1", "c1ccc(C)cc1"),
+            ("CC(=O)O", "OC(=O)C"),
+            ("C1=CC=CC=C1", "c1ccccc1"),
+            ("CCO", "OCC"),
+        ] {
+            let canon_a = canonicalize_and_sort_smiles(a, false).unwrap();
+            let canon_b = canonicalize_and_sort_smiles(b, false).unwrap();
+            assert_eq!(
+                canon_a, canon_b,
+                "Writings {a} and {b} must produce identical canonical SMILES"
+            );
+        }
     }
 
     #[test]

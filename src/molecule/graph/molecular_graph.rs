@@ -16,9 +16,51 @@ pub struct AtomInvariant {
     chirality: ChiralType,
     implicit_hydrogen_count: u8,
     heavy_atom_bond_count: u8,
+    /// The isotopes of the atom's hydrogens, descending, `0` where there are
+    /// fewer than four of them.
+    ///
+    /// Hydrogens are not vertices of the canonization graph, so a deuterium is
+    /// invisible to it and `[2H]CCCCC` and `CCCCC[2H]` -- the same molecule --
+    /// canonicalized to different strings, the label staying wherever the input
+    /// happened to put it. Counting the hydrogens is not enough to tell the two
+    /// ends apart; their isotopes are what differs. Sorted, so the answer does
+    /// not depend on the order the bonds are stored in.
+    hydrogen_isotopes: [u16; 4],
+    /// A stereocentre's tag, read against an ordering the graph itself fixes:
+    /// its neighbours sorted by the orbit they fall in under the molecule's own
+    /// automorphisms. `0` on an atom that is not a stereocentre, and on one
+    /// whose neighbours the orbits cannot tell apart.
+    ///
+    /// A canonical labelling is unique only up to those automorphisms, and a
+    /// tag is not part of the graph nauty sees -- so when a molecule carries
+    /// several copies of the same arm, which copy lands at which canonical
+    /// position is undetermined, and the tags come out in whatever order the
+    /// input happened to hold. Reading each tag against an orbit ordering gives
+    /// a number that is the same for every way of writing the molecule, so
+    /// colouring by it tells the arms apart and removes the choice. Filled in
+    /// by a second canonization pass; zero on the first, where no orbits are
+    /// known yet.
+    stereo_parity: u8,
+    /// The atom's unpaired electrons.
+    ///
+    /// A radical is a property of the atom that the writer emits and the graph
+    /// otherwise cannot see: a carbene `[CH]` in a ring and an ordinary ring
+    /// `CH` have the same element, degree, charge and hydrogen count, so
+    /// nothing else here tells them apart. Leaving it out let a molecule
+    /// carrying one claim symmetries it does not have -- an imidazolylidene
+    /// cage answered to its own imidazolium ring -- and which position the
+    /// electron came out on was then decided by the input's atom order rather
+    /// than by the molecule.
+    radical_state: u8,
 }
 
 impl AtomInvariant {
+    /// Records the orbit-relative tag of a stereocentre for a further pass.
+    pub(crate) fn set_stereo_parity(&mut self, parity: u8) {
+        self.stereo_parity = parity;
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn new(
         atomic_number: u8,
         charge: i8,
@@ -27,8 +69,11 @@ impl AtomInvariant {
         chirality: ChiralType,
         implicit_hydrogen_count: u8,
         heavy_atom_bond_count: u8,
+        hydrogen_isotopes: [u16; 4],
+        radical_state: u8,
     ) -> Self {
         AtomInvariant {
+            stereo_parity: 0,
             atomic_number,
             charge,
             aromaticity,
@@ -36,6 +81,8 @@ impl AtomInvariant {
             chirality,
             implicit_hydrogen_count,
             heavy_atom_bond_count,
+            hydrogen_isotopes,
+            radical_state,
         }
     }
 }
@@ -326,12 +373,9 @@ impl std::cmp::Ord for AtomLabel {
     }
 }
 pub trait MoleculeGraph: MoleculeCore {
-    /// This function returns a vector of mappings between the atoms of two molecules, if the molecules are isomorphic
+    /// Finds isomorphic mappings between this molecule and a query submolecule.
     ///
-    /// # Arguments
-    /// * 'other' - The other molecule to match against
-    /// # Returns
-    /// A vector of mappings between the atoms of the two molecules, if the molecules are isomorphic otherwise `None`
+    /// Returns a list of maps from target atom index to pattern atom index, or `None` if no match exists.
     fn match_submolecule(&self, other: &Self) -> Option<Vec<IntMap<usize, usize>>> {
         let mut pattern_edges: Vec<(usize, usize)> = Vec::new();
         let mut pattern_bond_orders: Vec<BondOrder> = Vec::new();
@@ -379,14 +423,16 @@ pub trait MoleculeGraph: MoleculeCore {
             })
             .collect();
 
-        if matches.is_empty() { None } else { Some(matches) }
+        if matches.is_empty() {
+            None
+        } else {
+            Some(matches)
+        }
     }
 
-    /// This function returns the adjacency matrix of the molecule.
-    /// The adjacency matrix is a square matrix where the element at position (i, j) is 1 if there is a bond between atoms i and j, and 0 otherwise.
+    /// Returns the adjacency matrix of the molecule graph.
     ///
-    ///
-    /// # Example
+    /// # Examples
     /// ```
     /// use oxidane::prelude::*;
     /// use oxidane::molecule::graph::MoleculeGraph;
@@ -430,11 +476,24 @@ pub trait MoleculeGraph: MoleculeCore {
         if number_of_heavy_atoms == 0 {
             return None;
         }
+        // A directional bond is a single bond that has been told which way to
+        // lean, and the lean is a property of how the SMILES was written rather
+        // than of the molecule: the same double bond's substituent reads `/` in
+        // one traversal and `\` in the reverse one. Colouring the graph by it
+        // put that choice into the canonical labelling, so the same compound
+        // written two ways canonicalised two ways -- 341 of PubChem's first
+        // key-drift failures. The geometry itself is carried by the cis/trans
+        // chiral classes, which are canonicalised under the automorphism group
+        // further down, so nothing is lost by reading these as what they are.
+        let ignore_direction = |order: BondOrder| match order {
+            BondOrder::Up | BondOrder::Down => BondOrder::Single,
+            other => other,
+        };
         let mut bonds = self.get_all_heavy_atom_bonds();
-        bonds.sort_by(|a, b| b.bond_order.cmp(&a.bond_order));
+        bonds.sort_by(|a, b| ignore_direction(b.bond_order).cmp(&ignore_direction(a.bond_order)));
         let mut number_of_non_single_bonds = 0;
         for bond in &bonds {
-            if bond.bond_order != BondOrder::Single {
+            if ignore_direction(bond.bond_order) != BondOrder::Single {
                 number_of_non_single_bonds += 1;
             }
         }
@@ -468,7 +527,8 @@ pub trait MoleculeGraph: MoleculeCore {
             let source_index = bond.atom1;
             let target_index = bond.atom2;
 
-            if bond.bond_order == BondOrder::Single {
+            let bond_order = ignore_direction(bond.bond_order);
+            if bond_order == BondOrder::Single {
                 matrix.set(source_index, target_index);
                 matrix.set(target_index, source_index);
             } else {
@@ -477,11 +537,11 @@ pub trait MoleculeGraph: MoleculeCore {
                 matrix.set(target_index, bond_vertex);
                 matrix.set(bond_vertex, target_index);
                 if let Some(order) = last_order {
-                    if order != bond.bond_order {
+                    if order != bond_order {
                         partition[bond_vertex - 1] = 0;
                     }
                 }
-                last_order = Some(bond.bond_order);
+                last_order = Some(bond_order);
                 bond_vertex += 1;
             }
         }
@@ -491,11 +551,9 @@ pub trait MoleculeGraph: MoleculeCore {
         Some((matrix, partition, number_of_heavy_atoms))
     }
 
-    /// This function returns a vector of components of the molecule, each component is a vector of atom indices that are connected
-    /// In terms of chemistry this means that you have multiple disconnected molecules in the 'Molecule'
+    /// Returns the connected components of the molecule as lists of connected atom indices.
     ///
-    /// # Returns
-    /// A vector of components of the molecule
+    /// Separate components represent disconnected molecular fragments (e.g. salts or solvent adducts).
     fn get_components(&self) -> Vec<Vec<usize>> {
         let mut connected_components = vec![];
         let mut visited_atoms = vec![false; self.atomic_numbers().len()];
@@ -628,9 +686,14 @@ pub trait MoleculeGraph: MoleculeCore {
         let charge = self.get_atom_charge(atom_index);
         let is_aromatic = self.is_atom_aromatic(atom_index);
         let chiral_type = self.get_chiral_type(atom_index);
-        let Some(isotope) = self.get_atom_isotope(atom_index) else {
-            return AtomInvariant::new(atomic_number, charge, is_aromatic, 0, chiral_type, 0, 0);
-        };
+        // The isotope as *written*, not the element's most abundant one. They
+        // differ only where the input said `[12C]`, which the writer keeps and
+        // the canonizer could not see: `C1[12CH2]C=CC=C1` and
+        // `[12CH2]1CC=CC=C1` are the same molecule, and defaulting the label to
+        // 12 for every carbon left nothing to tell the two ring positions
+        // apart, so the bracket stayed wherever the input put it.
+        let isotope = self.get_isotope(atom_index).unwrap_or(0);
+        let radical_state = self.radical_states().get(atom_index).copied().unwrap_or(0);
         let Some(bonds) = self.get_atom_bonds(atom_index) else {
             return AtomInvariant::new(
                 atomic_number,
@@ -640,6 +703,8 @@ pub trait MoleculeGraph: MoleculeCore {
                 chiral_type,
                 0,
                 0,
+                [0; 4],
+                radical_state,
             );
         };
         let heavy_atom_bond_count = bonds
@@ -647,6 +712,16 @@ pub trait MoleculeGraph: MoleculeCore {
             .filter(|bond| self.atomic_numbers()[bond.target] != 1)
             .count();
         let implicit_hydrogen_count = bonds.len() - heavy_atom_bond_count;
+        let mut hydrogen_isotopes = [0u16; 4];
+        let mut written = 0;
+        for bond in bonds.iter() {
+            if self.atomic_numbers()[bond.target] != 1 || written == hydrogen_isotopes.len() {
+                continue;
+            }
+            hydrogen_isotopes[written] = self.get_isotope(bond.target).unwrap_or(0);
+            written += 1;
+        }
+        hydrogen_isotopes.sort_unstable_by(|first, second| second.cmp(first));
 
         AtomInvariant::new(
             atomic_number,
@@ -656,6 +731,8 @@ pub trait MoleculeGraph: MoleculeCore {
             chiral_type,
             implicit_hydrogen_count as u8,
             heavy_atom_bond_count as u8,
+            hydrogen_isotopes,
+            radical_state,
         )
     }
     fn to_ungraph_with_edge_nodes(&self) -> UnGraph<AtomLabel, ()> {
@@ -809,7 +886,7 @@ pub trait MoleculeGraph: MoleculeCore {
     /// Converts the molecule to an undirected graph with the most compact representation possible
     /// based on the number of unique atom and bond types in the molecule.
     ///
-    /// This function analyzes the molecule to determine the minimum number of bits needed to
+    /// Analyzes the molecule to determine the minimum number of bits needed to
     /// represent all unique atom and bond labels, then creates a graph using the smallest
     /// possible integer type for node labels.
     ///
@@ -930,7 +1007,7 @@ pub trait MoleculeGraph: MoleculeCore {
     /// Converts the molecule to an undirected graph with the most compact representation possible
     /// based on the number of unique atom and bond types in the molecule.
     ///
-    /// This function analyzes the molecule to determine the minimum number of bits needed to
+    /// Analyzes the molecule to determine the minimum number of bits needed to
     /// represent all unique atom and bond labels, then creates a graph using the smallest
     /// possible integer type for node labels (u8, u16, or u32).
     ///
@@ -1216,8 +1293,8 @@ pub trait MoleculeGraph: MoleculeCore {
     /// Converts a molecular graph to a fully indexed representation with hydrogens,
     /// where both atom and bond types are represented by u64 identifiers.
     ///
-    /// This function is similar to `to_fully_indexed_graph` but uses the more detailed atom labels
-    /// that include implicit hydrogen counts, and skips explicit hydrogen atoms.
+    /// Similar to `to_fully_indexed_graph` but uses detailed atom labels
+    /// that include implicit hydrogen counts, skipping explicit hydrogen atoms.
     ///
     /// # Returns
     /// A tuple containing:
@@ -1262,7 +1339,7 @@ pub trait MoleculeGraph: MoleculeCore {
     /// Converts a molecular graph to a fully indexed representation with generic label types
     /// for both atoms and bonds.
     ///
-    /// This function creates a more efficient representation by:
+    /// Creates an efficient representation by:
     /// 1. Assigning unique IDs to each unique atom label type
     /// 2. Assigning unique IDs to each unique bond label type
     /// 3. Creating a graph where both nodes and edges use these numeric identifiers
@@ -1403,7 +1480,7 @@ pub trait MoleculeGraph: MoleculeCore {
 
     /// Generic function to convert a molecular graph to a fully indexed directed graph.
     ///
-    /// This function provides maximum flexibility for directed graph conversion by allowing you to:
+    /// Provides flexible directed graph conversion by allowing the caller to:
     /// - Use custom atom and bond label types and extraction functions
     /// - Skip certain atoms (like hydrogens) if desired
     /// - Create a directed graph where each chemical bond is represented by two directed edges

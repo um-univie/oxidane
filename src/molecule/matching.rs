@@ -23,28 +23,74 @@
 /// Deterministic: vertices are scanned in index order, so the caller decides
 /// the outcome among equally large matchings by choosing that order.
 pub fn maximum_matching(vertex_count: usize, edges: &[(usize, usize)]) -> Vec<Option<usize>> {
-    let mut adjacency = vec![Vec::new(); vertex_count];
-    for &(a, b) in edges {
+    maximum_matching_from(vertex_count, edges, &[])
+}
+
+/// [`maximum_matching`], starting from a matching the caller already holds.
+///
+/// A search that begins from nothing has to augment once per matched pair, and
+/// each augmentation sweeps the graph; beginning from a matching that is
+/// already nearly perfect leaves only the few pairs that differ. That is the
+/// difference between solving a problem and re-solving one: the lexicographic
+/// pass in [`lexicographic_degree_constrained_subgraph`] runs the solver once
+/// per edge it decides, and every run but the first differs from the one before
+/// it in a single edge. PubChem's catenated sulfur -- `S=S=S=` on for
+/// seventy-six atoms -- is what made the difference visible: one such record
+/// cost minutes.
+///
+/// `seed[v]` is the vertex `v` is matched to, `None` where it is free. Entries
+/// that do not agree with each other, name a vertex out of range, or name an
+/// edge the graph does not have are dropped, so a stale or partial seed is
+/// safe: the result is a maximum matching either way, and only the time it
+/// takes depends on the seed.
+pub fn maximum_matching_from(
+    vertex_count: usize,
+    edges: &[(usize, usize)],
+    seed: &[Option<usize>],
+) -> Vec<Option<usize>> {
+    let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); vertex_count];
+    for (edge, &(a, b)) in edges.iter().enumerate() {
         if a < vertex_count && b < vertex_count && a != b {
-            adjacency[a].push(b);
-            adjacency[b].push(a);
+            adjacency[a].push((b, edge));
+            adjacency[b].push((a, edge));
         }
     }
     for neighbours in adjacency.iter_mut() {
         neighbours.sort_unstable();
-        neighbours.dedup();
+        neighbours.dedup_by_key(|(neighbour, _)| *neighbour);
     }
+    let alive = vec![true; edges.len()];
 
     let mut matched: Vec<Option<usize>> = vec![None; vertex_count];
+
+    // The seed first, where there is one: only pairs that agree from both ends
+    // and really are edges of this graph are taken, so nothing here can produce
+    // a matching the graph does not have.
+    for (vertex, &partner) in seed.iter().enumerate().take(vertex_count) {
+        let Some(partner) = partner else { continue };
+        if partner >= vertex_count
+            || partner == vertex
+            || matched[vertex].is_some()
+            || matched[partner].is_some()
+            || seed.get(partner).copied().flatten() != Some(vertex)
+            || !adjacency[vertex]
+                .iter()
+                .any(|&(neighbour, _)| neighbour == partner)
+        {
+            continue;
+        }
+        matched[vertex] = Some(partner);
+        matched[partner] = Some(vertex);
+    }
 
     // A greedy start costs nothing and saves augmenting for the easy pairs.
     for vertex in 0..vertex_count {
         if matched[vertex].is_some() {
             continue;
         }
-        if let Some(&free) = adjacency[vertex]
+        if let Some(&(free, _)) = adjacency[vertex]
             .iter()
-            .find(|&&neighbour| matched[neighbour].is_none())
+            .find(|&&(neighbour, _)| matched[neighbour].is_none())
         {
             matched[vertex] = Some(free);
             matched[free] = Some(vertex);
@@ -64,15 +110,8 @@ pub fn maximum_matching(vertex_count: usize, edges: &[(usize, usize)]) -> Vec<Op
         return matched;
     }
 
-    let mut state = Search {
-        vertex_count,
-        adjacency: &adjacency,
-        parent: vec![usize::MAX; vertex_count],
-        base: (0..vertex_count).collect(),
-        in_queue: vec![false; vertex_count],
-        blossom: vec![false; vertex_count],
-        queue: Vec::with_capacity(vertex_count),
-    };
+    let mut workspace = SearchWorkspace::new(vertex_count);
+    let mut state = Search::new(&adjacency, &alive, &mut workspace);
 
     for root in roots {
         if matched[root].is_some() {
@@ -85,28 +124,93 @@ pub fn maximum_matching(vertex_count: usize, edges: &[(usize, usize)]) -> Vec<Op
     matched
 }
 
-struct Search<'a> {
-    vertex_count: usize,
-    adjacency: &'a [Vec<usize>],
+/// Owned by the matching problem, not by an individual augmentation. Repairs
+/// edit the same graph repeatedly and can reuse all of these allocations.
+struct SearchWorkspace {
     parent: Vec<usize>,
     base: Vec<usize>,
     in_queue: Vec<bool>,
     blossom: Vec<bool>,
     queue: Vec<usize>,
+    seen: Vec<bool>,
+    touched: Vec<usize>,
+}
+
+impl SearchWorkspace {
+    fn new(vertex_count: usize) -> Self {
+        Self {
+            parent: vec![usize::MAX; vertex_count],
+            base: vec![0; vertex_count],
+            in_queue: vec![false; vertex_count],
+            blossom: vec![false; vertex_count],
+            queue: Vec::with_capacity(vertex_count),
+            seen: vec![false; vertex_count],
+            touched: Vec::new(),
+        }
+    }
+}
+
+struct Search<'a> {
+    vertex_count: usize,
+    adjacency: &'a [Vec<(usize, usize)>],
+    /// The factor graph stays fixed while decisions disable individual edges.
+    alive: &'a [bool],
+    parent: &'a mut Vec<usize>,
+    base: &'a mut Vec<usize>,
+    in_queue: &'a mut Vec<bool>,
+    blossom: &'a mut Vec<bool>,
+    queue: &'a mut Vec<usize>,
+    /// LCA scratch is cleared through `touched`, even across failed repairs.
+    seen: &'a mut Vec<bool>,
+    touched: &'a mut Vec<usize>,
+}
+
+impl<'a> Search<'a> {
+    fn new(
+        adjacency: &'a [Vec<(usize, usize)>],
+        alive: &'a [bool],
+        workspace: &'a mut SearchWorkspace,
+    ) -> Self {
+        let SearchWorkspace {
+            parent,
+            base,
+            in_queue,
+            blossom,
+            queue,
+            seen,
+            touched,
+        } = workspace;
+        Self {
+            vertex_count: adjacency.len(),
+            adjacency,
+            alive,
+            parent,
+            base,
+            in_queue,
+            blossom,
+            queue,
+            seen,
+            touched,
+        }
+    }
 }
 
 impl Search<'_> {
     /// The lowest common ancestor of two vertices in the alternating forest.
     fn lowest_common_ancestor(
-        &self,
+        &mut self,
         matched: &[Option<usize>],
         mut a: usize,
         mut b: usize,
     ) -> usize {
-        let mut seen = vec![false; self.vertex_count];
+        for &vertex in self.touched.iter() {
+            self.seen[vertex] = false;
+        }
+        self.touched.clear();
         loop {
             a = self.base[a];
-            seen[a] = true;
+            self.seen[a] = true;
+            self.touched.push(a);
             match matched[a] {
                 Some(partner) => a = self.parent[partner],
                 None => break,
@@ -114,7 +218,7 @@ impl Search<'_> {
         }
         loop {
             b = self.base[b];
-            if seen[b] {
+            if self.seen[b] {
                 return b;
             }
             b = self.parent[matched[b].expect("only matched vertices continue the path")];
@@ -157,14 +261,18 @@ impl Search<'_> {
             head += 1;
 
             for index in 0..self.adjacency[v].len() {
-                let to = self.adjacency[v][index];
+                let (to, edge) = self.adjacency[v][index];
+                if !self.alive[edge] {
+                    continue;
+                }
 
                 // Same blossom, or the edge we came in on: nothing to learn.
                 if self.base[v] == self.base[to] || matched[v] == Some(to) {
                     continue;
                 }
 
-                if to == root || (matched[to].is_some() && self.parent[matched[to].unwrap()] != usize::MAX)
+                if to == root
+                    || (matched[to].is_some() && self.parent[matched[to].unwrap()] != usize::MAX)
                 {
                     // An odd cycle: contract it and carry on.
                     let base = self.lowest_common_ancestor(matched, v, to);
@@ -210,5 +318,655 @@ fn augment(matched: &mut [Option<usize>], parent: &[usize], last: usize) {
             Some(vertex) => vertex,
             None => break,
         };
+    }
+}
+
+/// Selects a subset of `edges` giving every vertex exactly the degree
+/// `required_degree` asks of it, or `None` when no such subset exists.
+///
+/// This is the *degree-constrained subgraph* problem, also called an f-factor,
+/// and it is what a valence assignment is once the skeleton is fixed: each atom
+/// wants a definite number of π bonds, each bond either carries one or does
+/// not, and the question is whether the wants can all be met at once. A maximum
+/// matching is the special case where every vertex wants one.
+///
+/// Solved exactly, by Tutte's reduction to a perfect matching on a general
+/// graph. A vertex `u` of free degree `d` wanting `b` becomes `d` *external*
+/// vertices -- one per incident edge -- and `d - b` *internal* ones, with every
+/// external joined to every internal; each original edge becomes an edge
+/// between the two externals that stand for it. In a perfect matching every
+/// external is matched either across its own edge or to an internal, and the
+/// internals absorb exactly `d - b` of them, so exactly `b` edges are taken at
+/// `u`. Since [`maximum_matching`] is an exact blossom implementation, so is
+/// this.
+///
+/// Returns one selection per edge, in the order the edges were given.
+///
+/// ```
+/// use oxidane::molecule::matching::degree_constrained_subgraph;
+///
+/// // A four-cycle where every vertex wants one edge: the two opposite pairs.
+/// let edges = [(0, 1), (1, 2), (2, 3), (3, 0)];
+/// let taken = degree_constrained_subgraph(4, &edges, &[1, 1, 1, 1]).unwrap();
+/// assert_eq!(taken.iter().filter(|&&t| t).count(), 2);
+///
+/// // A triangle cannot: three vertices wanting one edge each is an odd sum.
+/// let triangle = [(0, 1), (1, 2), (2, 0)];
+/// assert!(degree_constrained_subgraph(3, &triangle, &[1, 1, 1]).is_none());
+/// ```
+pub fn degree_constrained_subgraph(
+    vertex_count: usize,
+    edges: &[(usize, usize)],
+    required_degree: &[usize],
+) -> Option<Vec<bool>> {
+    let forced = vec![None; edges.len()];
+    degree_constrained_subgraph_with(vertex_count, edges, required_degree, &forced, None)
+}
+
+/// [`degree_constrained_subgraph`] with some edges decided in advance.
+///
+/// `forced[e]` of `Some(true)` insists edge `e` is taken, `Some(false)` that it
+/// is not, and `None` leaves it to the solver. `None` is returned when no
+/// selection honours every forcing, which is what makes this usable as a
+/// feasibility oracle: fixing one variable at a time and asking whether the
+/// rest can still be satisfied is how a *particular* solution gets picked out
+/// of the many an f-factor problem usually has.
+pub fn degree_constrained_subgraph_with(
+    vertex_count: usize,
+    edges: &[(usize, usize)],
+    required_degree: &[usize],
+    forced: &[Option<bool>],
+    hint: Option<&[bool]>,
+) -> Option<Vec<bool>> {
+    if required_degree.len() != vertex_count || forced.len() != edges.len() {
+        return None;
+    }
+
+    // A forced edge is not part of the gadget: it just spends one unit of the
+    // degree each of its ends was asking for.
+    let mut remaining: Vec<usize> = required_degree.to_vec();
+    let mut selection = vec![false; edges.len()];
+    let mut free: Vec<usize> = Vec::with_capacity(edges.len());
+    for (index, &(first, second)) in edges.iter().enumerate() {
+        if first >= vertex_count || second >= vertex_count || first == second {
+            return None;
+        }
+        match forced[index] {
+            Some(true) => {
+                if remaining[first] == 0 || remaining[second] == 0 {
+                    return None;
+                }
+                remaining[first] -= 1;
+                remaining[second] -= 1;
+                selection[index] = true;
+            }
+            Some(false) => (),
+            None => free.push(index),
+        }
+    }
+
+    // Externals, one per end of each free edge; then internals, `d - b` per
+    // vertex. A vertex wanting more than its free degree can supply is the
+    // cheap infeasibility, and catching it here keeps the gadget well formed.
+    let mut free_degree = vec![0usize; vertex_count];
+    for &index in &free {
+        let (first, second) = edges[index];
+        free_degree[first] += 1;
+        free_degree[second] += 1;
+    }
+    for vertex in 0..vertex_count {
+        if remaining[vertex] > free_degree[vertex] {
+            return None;
+        }
+    }
+
+    let mut external_of: Vec<(usize, usize)> = vec![(usize::MAX, usize::MAX); edges.len()];
+    let mut externals_of_vertex: Vec<Vec<usize>> = vec![Vec::new(); vertex_count];
+    let mut gadget_vertices = 0usize;
+    for &index in &free {
+        let (first, second) = edges[index];
+        let external_first = gadget_vertices;
+        let external_second = gadget_vertices + 1;
+        gadget_vertices += 2;
+        externals_of_vertex[first].push(external_first);
+        externals_of_vertex[second].push(external_second);
+        external_of[index] = (external_first, external_second);
+    }
+
+    let mut gadget_edges: Vec<(usize, usize)> =
+        free.iter().map(|&index| external_of[index]).collect();
+    for vertex in 0..vertex_count {
+        let internal_count = free_degree[vertex] - remaining[vertex];
+        for _ in 0..internal_count {
+            let internal = gadget_vertices;
+            gadget_vertices += 1;
+            for &external in &externals_of_vertex[vertex] {
+                gadget_edges.push((external, internal));
+            }
+        }
+    }
+
+    if gadget_vertices == 0 {
+        return Some(selection);
+    }
+    if !gadget_vertices.is_multiple_of(2) {
+        return None;
+    }
+
+    // A selection the caller already has says which of the gadget's edges were
+    // taken last time, and a nearly-right matching is most of the answer. It is
+    // only a starting point: a hint that does not fit the forcings in hand is
+    // dropped pair by pair and the search fills in the rest.
+    let mut seed: Vec<Option<usize>> = Vec::new();
+    if let Some(hint) = hint {
+        seed.resize(gadget_vertices, None);
+        for &index in &free {
+            if hint.get(index).copied() != Some(true) {
+                continue;
+            }
+            let (external_first, external_second) = external_of[index];
+            seed[external_first] = Some(external_second);
+            seed[external_second] = Some(external_first);
+        }
+    }
+
+    let matched = maximum_matching_from(gadget_vertices, &gadget_edges, &seed);
+    if matched.iter().any(Option::is_none) {
+        return None;
+    }
+
+    for &index in &free {
+        let (external_first, external_second) = external_of[index];
+        if matched[external_first] == Some(external_second) {
+            selection[index] = true;
+        }
+    }
+    Some(selection)
+}
+
+/// The selection an f-factor problem has that is lexicographically first under
+/// `priority`, or `None` when it has none at all.
+///
+/// `priority` lists `(edge, wanted)` most-preferred first; each in turn is
+/// forced to `wanted` if the remainder of the problem can still be solved that
+/// way, and to the opposite otherwise. Every edge not named is left to the
+/// solver.
+///
+/// Preferring an edge *out* is as useful as preferring one in, and is what lets
+/// a constraint be imposed rather than merely an objective approximated:
+/// forbidding the π bonds that would leave a ring obliges the ring to satisfy
+/// itself, which is exactly a perfect matching over its own bonds -- an
+/// aromatic Kekulé structure. "Maximise aromatic rings" is a count no
+/// lexicographic pass can express, but "this ring keeps its π" is a set of
+/// forcings, and this takes them.
+///
+/// This is what makes an f-factor answer *canonical* rather than merely valid.
+/// A symmetric molecule has many equally good valence assignments and a bare
+/// solver returns whichever one its vertex numbering led it to; deciding the
+/// edges in an order that is itself a property of the molecule removes the
+/// choice. Cost is one solve per named edge, so the whole thing stays
+/// polynomial.
+pub fn lexicographic_degree_constrained_subgraph(
+    vertex_count: usize,
+    edges: &[(usize, usize)],
+    required_degree: &[usize],
+    priority: &[(usize, bool)],
+) -> Option<Vec<bool>> {
+    let mut instance = DegreeConstrainedInstance::build(vertex_count, edges, required_degree)?;
+    Some(instance.select(priority))
+}
+
+/// One f-factor problem, solved once and then asked for several selections.
+///
+/// The graph an instance is built from does not depend on the order the edges
+/// are decided in, and neither does the first perfect matching found over it --
+/// only the lexicographic pass does. A caller with several orders to try
+/// therefore pays for the gadget and for that matching once rather than once
+/// per order, which is what `normalize` does: it solves one component under up
+/// to four bond orderings and asks the same component two further questions
+/// about every double bond whose geometry might survive erasure. Rebuilding for
+/// each was the same graph constructed and matched a dozen times over.
+///
+/// A pass edits the gadget as it goes -- a decision switches edges off and
+/// repairs the matching along one alternating path -- so the state it starts
+/// from is kept aside and copied back before each. That copy is two vectors of
+/// plain data, against a rebuild that allocates an adjacency list per gadget
+/// vertex and runs a matching from nothing.
+pub struct DegreeConstrainedInstance {
+    factor: Factor,
+    /// The gadget and the matching as the first solve left them.
+    settled_alive: Vec<bool>,
+    settled_matching: Vec<Option<usize>>,
+    edge_count: usize,
+    decided: Vec<bool>,
+}
+
+impl DegreeConstrainedInstance {
+    /// Builds the gadget and solves it once, or `None` where the problem has no
+    /// solution at all -- which no ordering of its edges can change.
+    pub fn build(
+        vertex_count: usize,
+        edges: &[(usize, usize)],
+        required_degree: &[usize],
+    ) -> Option<Self> {
+        let mut factor = Factor::build(vertex_count, edges, required_degree)?;
+        factor.solve()?;
+        Some(Self {
+            settled_alive: factor.alive.clone(),
+            settled_matching: factor.matched.clone(),
+            edge_count: edges.len(),
+            decided: vec![false; edges.len()],
+            factor,
+        })
+    }
+
+    /// The selection that is lexicographically first under `priority`.
+    ///
+    /// `priority` lists `(edge, wanted)` most-preferred first; each in turn is
+    /// forced to `wanted` if the remainder of the problem can still be solved
+    /// that way, and to the opposite otherwise. Every edge not named is left to
+    /// the solver.
+    pub fn select(&mut self, priority: &[(usize, bool)]) -> Vec<bool> {
+        self.factor.alive.copy_from_slice(&self.settled_alive);
+        self.factor.matched.copy_from_slice(&self.settled_matching);
+        self.decided.iter_mut().for_each(|seen| *seen = false);
+        for &(index, wanted) in priority {
+            if index >= self.edge_count || self.decided[index] {
+                continue;
+            }
+            self.decided[index] = true;
+            // The matching in hand already honours every decision made so far,
+            // so when it agrees with this one it is itself the witness that the
+            // decision is feasible and nothing has to be searched for. Most do
+            // agree -- the order exists to express a preference, and a
+            // preference is usually already met.
+            if self.factor.selects(index) == wanted {
+                self.factor.commit(index, wanted);
+                continue;
+            }
+            if !self.factor.force(index, wanted) {
+                self.factor.commit(index, !wanted);
+            }
+        }
+        (0..self.edge_count)
+            .map(|index| self.factor.selects(index))
+            .collect()
+    }
+}
+
+/// The gadget an f-factor problem reduces to, built once and then edited.
+///
+/// The reduction is the usual one: each edge of the problem becomes a pair of
+/// *external* vertices joined to each other, and each vertex of the problem
+/// contributes as many *internal* vertices as it has degree to spare, joined to
+/// every external of its own. A perfect matching of the gadget is exactly a
+/// selection meeting every degree: an edge is taken when its two externals are
+/// matched to each other, and left when each goes to an internal instead.
+///
+/// The point of holding it rather than rebuilding it is the lexicographic pass,
+/// which decides one edge at a time and asks after each whether the rest can
+/// still be solved. Rebuilding meant a matching from nothing per question --
+/// one sweep of the graph per matched pair -- where the answer differs from the
+/// one before it by a single edge. Here a decision switches two or three gadget
+/// edges off and repairs the matching along one alternating path, which is one
+/// sweep in total. PubChem's catenated sulfur is what made the difference
+/// visible: `S=S=` repeated seventy-six times is a single conjugated group, its
+/// gadget has some six thousand vertices, and the pass asks a thousand
+/// questions of it. That record cost minutes; it now costs half a second.
+struct Factor {
+    /// `(neighbour, gadget edge)` per gadget vertex.
+    adjacency: Vec<Vec<(usize, usize)>>,
+    /// Which gadget edges are still in the graph.
+    alive: Vec<bool>,
+    /// Gadget vertices, externals first, two per edge of the problem.
+    vertex_count: usize,
+    /// The gadget edge joining the two externals of each problem edge.
+    pair_edge: Vec<usize>,
+    matched: Vec<Option<usize>>,
+    workspace: SearchWorkspace,
+    switched: Vec<usize>,
+}
+
+impl Factor {
+    fn build(
+        vertex_count: usize,
+        edges: &[(usize, usize)],
+        required_degree: &[usize],
+    ) -> Option<Self> {
+        if required_degree.len() != vertex_count {
+            return None;
+        }
+        let mut degree = vec![0usize; vertex_count];
+        for &(first, second) in edges {
+            if first >= vertex_count || second >= vertex_count || first == second {
+                return None;
+            }
+            degree[first] += 1;
+            degree[second] += 1;
+        }
+        // A vertex asking for more than its edges can give is the cheap
+        // infeasibility, and catching it here keeps the gadget well formed.
+        for vertex in 0..vertex_count {
+            if required_degree[vertex] > degree[vertex] {
+                return None;
+            }
+        }
+
+        // Externals: two per edge, numbered so that edge `i` owns `2i` and
+        // `2i + 1`. Internals follow, and each is joined to every external of
+        // the vertex it belongs to.
+        let mut externals_of_vertex: Vec<Vec<usize>> = vec![Vec::new(); vertex_count];
+        for (index, &(first, second)) in edges.iter().enumerate() {
+            externals_of_vertex[first].push(2 * index);
+            externals_of_vertex[second].push(2 * index + 1);
+        }
+        let mut gadget_vertices = 2 * edges.len();
+        let mut gadget_edges: Vec<(usize, usize)> = (0..edges.len())
+            .map(|index| (2 * index, 2 * index + 1))
+            .collect();
+        let pair_edge: Vec<usize> = (0..edges.len()).collect();
+        for vertex in 0..vertex_count {
+            for _ in 0..(degree[vertex] - required_degree[vertex]) {
+                let internal = gadget_vertices;
+                gadget_vertices += 1;
+                for &external in &externals_of_vertex[vertex] {
+                    gadget_edges.push((external, internal));
+                }
+            }
+        }
+        if gadget_vertices == 0 {
+            return Some(Factor {
+                adjacency: Vec::new(),
+                alive: Vec::new(),
+                vertex_count: 0,
+                pair_edge,
+                matched: Vec::new(),
+                workspace: SearchWorkspace::new(0),
+                switched: Vec::new(),
+            });
+        }
+        if !gadget_vertices.is_multiple_of(2) {
+            return None;
+        }
+
+        let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); gadget_vertices];
+        for (edge, &(a, b)) in gadget_edges.iter().enumerate() {
+            adjacency[a].push((b, edge));
+            adjacency[b].push((a, edge));
+        }
+        Some(Factor {
+            alive: vec![true; gadget_edges.len()],
+            adjacency,
+            vertex_count: gadget_vertices,
+            pair_edge,
+            matched: vec![None; gadget_vertices],
+            workspace: SearchWorkspace::new(gadget_vertices),
+            switched: Vec::new(),
+        })
+    }
+
+    /// Whether the selection in hand takes the problem's `index`th edge.
+    fn selects(&self, index: usize) -> bool {
+        self.matched.get(2 * index).copied().flatten() == Some(2 * index + 1)
+    }
+
+    /// A perfect matching of the whole gadget, or `None` when it has none.
+    fn solve(&mut self) -> Option<()> {
+        if self.vertex_count == 0 {
+            return Some(());
+        }
+        let mut matched = std::mem::take(&mut self.matched);
+        // Every problem edge contributes an external pair, listed first in
+        // adjacency. Pairing free neighbours directly avoids resetting all
+        // search arrays for a path consisting of just one edge. The blossom
+        // search still repairs any pairs a perfect matching needs to change.
+        for vertex in 0..self.vertex_count {
+            if matched[vertex].is_some() {
+                continue;
+            }
+            if let Some(&(free, _)) = self.adjacency[vertex]
+                .iter()
+                .find(|&&(neighbour, edge)| self.alive[edge] && matched[neighbour].is_none())
+            {
+                matched[vertex] = Some(free);
+                matched[free] = Some(vertex);
+            }
+        }
+
+        {
+            let mut state = self.search();
+            for root in 0..state.vertex_count {
+                if matched[root].is_some() {
+                    continue;
+                }
+                if let Some(last) = state.find_augmenting_path(root, &matched) {
+                    augment(&mut matched, &state.parent, last);
+                }
+            }
+        }
+        self.matched = matched;
+        if self.matched.iter().any(Option::is_none) {
+            return None;
+        }
+        Some(())
+    }
+
+    fn search(&mut self) -> Search<'_> {
+        Search::new(&self.adjacency, &self.alive, &mut self.workspace)
+    }
+
+    /// Writes a decision into the gadget, so no later search can undo it.
+    ///
+    /// Taking the edge means its externals have only each other left; leaving
+    /// it means they no longer have each other. Either way the matching in hand
+    /// already agrees with the decision, so nothing about it changes.
+    fn commit(&mut self, index: usize, taken: bool) {
+        let pair = self.pair_edge[index];
+        if taken {
+            for external in [2 * index, 2 * index + 1] {
+                for position in 0..self.adjacency[external].len() {
+                    let (_, edge) = self.adjacency[external][position];
+                    if edge != pair {
+                        self.alive[edge] = false;
+                    }
+                }
+            }
+        } else {
+            self.alive[pair] = false;
+        }
+    }
+
+    /// Tries to make the decision the matching in hand disagrees with.
+    ///
+    /// The matching is perfect, so switching the decision's edges off frees
+    /// exactly two vertices, and one alternating path between them puts it back
+    /// together. `false` when no such path exists -- which is the answer that
+    /// the decision cannot be had -- and then the gadget and the matching are
+    /// left exactly as they were.
+    fn force(&mut self, index: usize, wanted: bool) -> bool {
+        let (a, b) = (2 * index, 2 * index + 1);
+        let pair = self.pair_edge[index];
+        self.switched.clear();
+        let restore: [(usize, Option<usize>); 4];
+
+        if wanted {
+            let (Some(partner_a), Some(partner_b)) = (self.matched[a], self.matched[b]) else {
+                return false;
+            };
+            restore = [
+                (a, Some(partner_a)),
+                (b, Some(partner_b)),
+                (partner_a, Some(a)),
+                (partner_b, Some(b)),
+            ];
+            for external in [a, b] {
+                for position in 0..self.adjacency[external].len() {
+                    let (_, edge) = self.adjacency[external][position];
+                    if edge != pair && self.alive[edge] {
+                        self.alive[edge] = false;
+                        self.switched.push(edge);
+                    }
+                }
+            }
+            self.matched[a] = Some(b);
+            self.matched[b] = Some(a);
+            self.matched[partner_a] = None;
+            self.matched[partner_b] = None;
+            if self.repair(partner_a) {
+                return true;
+            }
+        } else {
+            restore = [(a, Some(b)), (b, Some(a)), (a, Some(b)), (b, Some(a))];
+            if self.alive[pair] {
+                self.alive[pair] = false;
+                self.switched.push(pair);
+            }
+            self.matched[a] = None;
+            self.matched[b] = None;
+            if self.repair(a) {
+                return true;
+            }
+        }
+
+        for &edge in &self.switched {
+            self.alive[edge] = true;
+        }
+        for (vertex, partner) in restore {
+            self.matched[vertex] = partner;
+        }
+        false
+    }
+
+    /// Puts the two vertices an edit left free back into the matching.
+    fn repair(&mut self, root: usize) -> bool {
+        let mut matched = std::mem::take(&mut self.matched);
+        let repaired = {
+            let mut state = self.search();
+            match state.find_augmenting_path(root, &matched) {
+                Some(last) => {
+                    augment(&mut matched, &state.parent, last);
+                    true
+                }
+                None => false,
+            }
+        };
+        self.matched = matched;
+        repaired
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use rand::{Rng, SeedableRng, seq::SliceRandom};
+
+    /// Exhaustive subsets are an independent oracle for the solver. Random
+    /// multigraphs include odd cycles, impossible degrees, parallel edges and
+    /// priorities that require both successful and failed repair attempts.
+    #[test]
+    fn reused_search_matches_exhaustive_lexicographic_optima() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x5C_A7C4);
+        for case in 0..600 {
+            let vertices = rng.random_range(2..=7);
+            let edge_count = rng.random_range(1..=10);
+            let edges: Vec<_> = (0..edge_count)
+                .map(|_| {
+                    let first = rng.random_range(0..vertices);
+                    let mut second = rng.random_range(0..vertices - 1);
+                    if second >= first {
+                        second += 1;
+                    }
+                    (first, second)
+                })
+                .collect();
+            let degrees = |mask: usize| {
+                let mut degree = vec![0; vertices];
+                for (index, &(a, b)) in edges.iter().enumerate() {
+                    if mask & (1 << index) != 0 {
+                        degree[a] += 1;
+                        degree[b] += 1;
+                    }
+                }
+                degree
+            };
+            let mut required = degrees(rng.random_range(0..(1usize << edge_count)));
+            if case % 3 == 0 {
+                required[rng.random_range(0..vertices)] += 1;
+            }
+            let mut order: Vec<_> = (0..edge_count).collect();
+            order.shuffle(&mut rng);
+            let mut priority: Vec<_> = order
+                .iter()
+                .map(|&index| (index, rng.random_bool(0.5)))
+                .collect();
+            let preference = |mask: usize| -> Vec<bool> {
+                priority
+                    .iter()
+                    .map(|&(index, wanted)| (mask & (1 << index) != 0) != wanted)
+                    .collect()
+            };
+            let best = (0..(1usize << edge_count))
+                .filter(|&mask| degrees(mask) == required)
+                .min_by_key(|&mask| preference(mask));
+            let expected = best.map(|mask| {
+                (0..edge_count)
+                    .map(|index| mask & (1 << index) != 0)
+                    .collect::<Vec<_>>()
+            });
+            // Contradictory repeated decisions must remain ignored.
+            priority.push((priority[0].0, !priority[0].1));
+            let actual =
+                lexicographic_degree_constrained_subgraph(vertices, &edges, &required, &priority);
+            assert_eq!(
+                actual, expected,
+                "case {case}: {edges:?}, {required:?}, {priority:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reused_search_finds_maximum_matchings_on_all_five_vertex_graphs() {
+        let possible: Vec<_> = (0..5)
+            .flat_map(|a| (a + 1..5).map(move |b| (a, b)))
+            .collect();
+        for graph in 0..(1usize << possible.len()) {
+            let edges: Vec<_> = possible
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| graph & (1 << index) != 0)
+                .map(|(_, &edge)| edge)
+                .collect();
+            let optimum = (0..(1usize << edges.len()))
+                .filter_map(|mask| {
+                    let mut used = [false; 5];
+                    let mut size = 0;
+                    for (index, &(a, b)) in edges.iter().enumerate() {
+                        if mask & (1 << index) == 0 {
+                            continue;
+                        }
+                        if used[a] || used[b] {
+                            return None;
+                        }
+                        used[a] = true;
+                        used[b] = true;
+                        size += 1;
+                    }
+                    Some(size)
+                })
+                .max()
+                .unwrap();
+            // Invalid seed entries exercise the same reusable augmentation path.
+            let result = maximum_matching_from(5, &edges, &[Some(4), Some(4), None, None, Some(0)]);
+            assert_eq!(
+                result.iter().filter(|partner| partner.is_some()).count(),
+                optimum * 2
+            );
+            for (a, partner) in result.iter().enumerate() {
+                if let Some(b) = *partner {
+                    assert_eq!(result[b], Some(a));
+                    assert!(edges.contains(&(a.min(b), a.max(b))));
+                }
+            }
+        }
     }
 }

@@ -13,6 +13,7 @@ mod mcsplit_tests;
 mod reaction_tests;
 mod sdf_tests;
 mod smarts_tests;
+mod ring_aromaticity_tests;
 mod smiles_tests;
 mod split_tests;
 

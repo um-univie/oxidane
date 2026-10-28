@@ -19,6 +19,7 @@ pub mod pi_system;
 pub mod topology;
 pub mod molecular_system;
 pub mod reaction;
+pub mod ring_aromaticity;
 pub mod rule_algebra;
 pub mod scaffold;
 pub mod shape;

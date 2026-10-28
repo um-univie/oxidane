@@ -121,10 +121,27 @@ pub fn conjugated_ring_bonds<M: MoleculeCore + ?Sized>(
 ) -> FxHashSet<(usize, usize)> {
     let atom_count = molecule.atomic_numbers().len();
     let demands = pi_demands(molecule);
+    let capable: Vec<bool> = (0..atom_count)
+        .map(|atom| is_pi_capable(molecule, atom, demands[atom]))
+        .collect();
+    conjugated_ring_bonds_with(molecule, cyclic_bonds, &capable)
+}
+
+/// [`conjugated_ring_bonds`] against a π-capability already worked out.
+///
+/// Perception asks which atoms can put an orbital into a ring before it knows
+/// what the rings are -- it is what tells it whether to look for any -- so the
+/// answer is computed once and handed here rather than worked out twice.
+pub fn conjugated_ring_bonds_with<M: MoleculeCore + ?Sized>(
+    molecule: &M,
+    cyclic_bonds: &FxHashSet<(usize, usize)>,
+    capable: &[bool],
+) -> FxHashSet<(usize, usize)> {
+    let atom_count = molecule.atomic_numbers().len();
 
     // Degree within the cyclic-bond graph, counting only π-capable ends.
     let mut keep: Vec<bool> = (0..atom_count)
-        .map(|atom| is_pi_capable(molecule, atom, demands[atom]))
+        .map(|atom| capable.get(atom).copied().unwrap_or(false))
         .collect();
     let mut degree = vec![0u32; atom_count];
     for &(a, b) in cyclic_bonds {
@@ -193,15 +210,33 @@ pub fn aromatic_set_is_satisfied<M: MoleculeCore + ?Sized>(
                 continue;
             };
             let mut pi = 0i16;
+            let mut inside = 0i16;
             for bond in bonds {
-                match bond.bond_order() {
-                    BondOrder::Double => pi += 1,
-                    BondOrder::Triple => pi += 2,
+                let order = match bond.bond_order() {
+                    BondOrder::Double => 1,
+                    BondOrder::Triple => 2,
                     // An aromatic bond is not a π bond this can count, so a
                     // molecule still holding one is not a witness to anything.
                     BondOrder::Aromatic => return false,
-                    _ => (),
+                    _ => 0,
+                };
+                pi += order;
+                let target = bond.target();
+                if aromatic.contains(&(atom.min(target), atom.max(target))) {
+                    inside += order;
                 }
+            }
+            // A witness has to be a matching, because that is what writing the
+            // ring back out will look for: every atom of the set takes one
+            // double bond from inside it, or none and gives a lone pair
+            // instead. An atom holding two is a cumulated centre, and the
+            // matching has no such move. `N1=[P+]=NSN=[P+]=NS1` is the case the
+            // corpus found: each phosphorus spends its whole π demand on the
+            // two `N=P` bonds, so counting demand alone called the ring
+            // satisfied, and it was written `s1n[p+]nsn[p+]n1` -- which this
+            // crate's own reader then refused.
+            if inside > 1 {
+                return false;
             }
             if pi != pi_demand(molecule, atom).unwrap_or(0) as i16 {
                 return false;

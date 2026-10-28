@@ -1,10 +1,11 @@
 use crate::{
-    molecule::base::MoleculeCore, molecule::bond::BondOrder, molecule::graph::MoleculeGraph,
-    molecule::utils::order_tuple,
+    molecule::base::MoleculeCore, molecule::bond::BondOrder, molecule::chirality::ChiralClass,
+    molecule::graph::MoleculeGraph, molecule::utils::order_tuple,
 };
 use bit_set::BitSet;
 use bitvec::prelude::BitVec;
 use rustc_hash::FxHashSet;
+use std::cell::Cell;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AromaticityType {
@@ -27,6 +28,16 @@ pub enum AromaticityFlag {
 pub enum AromaticityModel {
     Daylight = 0,
     OpenSMILES = 1,
+    /// The OpenSMILES electron rules, decided over the molecule's ring family
+    /// rather than over paths out of each bond -- see
+    /// [`crate::molecule::ring_aromaticity`].
+    ///
+    /// The two differ only in *what is scored*: the per-atom electron counts,
+    /// the exocyclic rule and the Kekule check are the ones the path search
+    /// uses. What the ring model buys is that its search is polynomial and its
+    /// answer is a union rather than whichever witness was found first, so no
+    /// bound on the work can move the answer.
+    Rings = 2,
 }
 
 const AROMATICITY_MODEL_DAYLIGHT: [AromaticityFlag; 34] = [
@@ -103,6 +114,51 @@ const AROMATICITY_MODEL_OPENSMILES: [AromaticityFlag; 34] = [
     AromaticityFlag::PotentiallyAromaticOneElectron, // 33: Arsenic with +1 charge, valency=4, bond_count=3
 ];
 
+/// The model perception uses when a caller does not name one.
+///
+/// Parsing and canonization both perceive, and both have to perceive under the
+/// *same* model or a molecule read one way and canonized the other is compared
+/// against itself under two different chemistries. Rather than thread a model
+/// through every entry point, they ask here.
+///
+/// It answers [`AromaticityModel::OpenSMILES`] unless it has been told
+/// otherwise, by [`set_default_aromaticity_model`] or by the environment
+/// variable `OXIDANE_AROMATICITY` (`daylight`, `opensmiles` or `rings`), which
+/// is read once. The environment is what lets one binary sweep a corpus under
+/// both models without being rebuilt -- which is how the ring model is
+/// measured against the path search.
+pub fn default_aromaticity_model() -> AromaticityModel {
+    match DEFAULT_MODEL.load(std::sync::atomic::Ordering::Relaxed) {
+        UNSET => {
+            let model = match std::env::var("OXIDANE_AROMATICITY")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Ok("daylight") => AromaticityModel::Daylight,
+                Ok("rings") | Ok("ring") => AromaticityModel::Rings,
+                _ => AromaticityModel::OpenSMILES,
+            };
+            DEFAULT_MODEL.store(model as u8, std::sync::atomic::Ordering::Relaxed);
+            model
+        }
+        0 => AromaticityModel::Daylight,
+        2 => AromaticityModel::Rings,
+        _ => AromaticityModel::OpenSMILES,
+    }
+}
+
+/// Sets what [`default_aromaticity_model`] answers, for the whole process.
+///
+/// Perception decides what a canonical form *is*, so two molecules compared
+/// across a change of this setting are not comparable. Set it once, before
+/// anything is parsed.
+pub fn set_default_aromaticity_model(model: AromaticityModel) {
+    DEFAULT_MODEL.store(model as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+const UNSET: u8 = u8::MAX;
+static DEFAULT_MODEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(UNSET);
+
 /// The working buffers one aromaticity perception needs.
 ///
 /// Every field is sized by the molecule and cleared before use, never read
@@ -110,6 +166,12 @@ const AROMATICITY_MODEL_OPENSMILES: [AromaticityFlag; 34] = [
 /// that perceives many molecules pay for the allocations once.
 #[derive(Debug, Default, Clone)]
 pub struct AromaticityScratch {
+    /// The ring model's buffers, kept for the same reason as the rest: it
+    /// perceives a ring family per molecule and would otherwise allocate one.
+    pub(crate) ring_finder: crate::molecule::ring_aromaticity::RingFinder,
+    /// Which atoms could put an orbital into a ring, worked out before the
+    /// rings are and used again when the π-capable bonds are taken.
+    pub(crate) pi_capable: Vec<bool>,
     pub(crate) atoms_in_rings_placeholder: BitSet,
     pub(crate) bonds_in_rings_placeholder: FxHashSet<(usize, usize)>,
     pub(crate) aromaticity_flags: Vec<AromaticityFlag>,
@@ -166,7 +228,6 @@ impl Aromatizer {
             strict_flag,
         )
     }
-
 }
 
 thread_local! {
@@ -206,6 +267,81 @@ impl std::fmt::Display for KekulizationError {
 }
 
 impl std::error::Error for KekulizationError {}
+
+thread_local! {
+    /// How many more atoms the long-path search may look at before it gives up
+    /// on the molecule it is working on.
+    ///
+    /// The search asks whether a bond lies on *some* aromatic cycle, and it
+    /// asks by walking simple paths out of it -- so its cost is the number of
+    /// simple paths, which in a fused ring system grows exponentially with the
+    /// length it allows, and the length it allows is the atom count. A
+    /// drug-like molecule never notices; a 200-atom macrocycle of fused
+    /// thiophenes (PubChem has several, CID 122232324 among them) does not
+    /// finish in a day. Bounding the walk bounds perception, and the bound is
+    /// spent per molecule rather than per bond so that a molecule cannot pay it
+    /// many times over.
+    static LONG_PATH_STEPS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The atoms one molecule's long-path search may look at before it gives up.
+///
+/// The number has to be set against what the corpus really spends, because a
+/// search that stops early is a search whose answer depends on the order the
+/// atoms were written in -- and an aromaticity that depends on the writing is a
+/// canonical form that does too. PubChem's heaviest search that finishes is a
+/// fullerene-fused polycyclic at 1,077,445,319 steps; eight compounds sat
+/// between 3.1 and 10.8 hundred million, and every one of them changed its
+/// tautomer key when the budget was 20 million. So the bound is twice the
+/// worst, and what it is really there for is the case with no finish at all: a
+/// 270-atom macrocycle of fused thiophenes (CID 122232324) whose paths do not
+/// run out in a day, and which now takes 67 seconds and an answer.
+const LONG_PATH_BUDGET: u64 = 2_000_000_000;
+
+/// How far the aromatic path search may walk from the bond it is asking about.
+///
+/// The bound has to be a constant rather than a budget: a search that stops
+/// when it runs out of work stops in a place the atom numbering chose, and
+/// aromaticity that depends on the numbering is a canonical form that does
+/// too. A constant depth stops in the same place for every writing of the
+/// molecule.
+///
+/// The cost is then `roots * branching^depth` rather than exponential in the
+/// atom count, and what it buys is paid for in cycles longer than the depth,
+/// which are never perceived as cycles. Open Babel, which this search is a port
+/// of, uses 14 (`OBAromaticTyperMolState::CheckAromaticity`); RDKit's
+/// ring-combination search caps candidate rings at 24, "a bit bigger than the
+/// outer ring in a porphyrin".
+///
+/// Twenty-four is measured rather than chosen. Against the unbounded search
+/// over PubChem's first 200,000 records, and against the 70-heavy-atom
+/// fullerene ester that the unbounded search cannot canonize consistently:
+///
+/// | depth | records whose canonical SMILES moves | that fullerene |
+/// |---|---|---|
+/// | 14 | 382 / 200,000 | 0.001 s |
+/// | 18 | 24 | 0.01 s |
+/// | 20 | 16 | 0.02 s |
+/// | 24 | 2 | 0.06 s |
+/// | 30 | 1 | 2.8 s |
+///
+/// At 14 the porphyrins go: a depth shorter than the macrocycle loses the
+/// pyrroles with it. At 24 what still moves is two vat dyes whose conjugated
+/// circuit is longer than any ring anyone would draw. The 200,000 records
+/// spend at most 37,058 steps of the long-path budget, against its
+/// 2,000,000,000 -- so with a constant depth the budget can no longer be
+/// reached, which is the point: it was the budget, not the search, that made
+/// perception depend on the atom numbering.
+const AROMATIC_PATH_DEPTH: usize = 24;
+
+/// Spends one step of the long-path budget, and says whether there was one.
+fn spend_a_long_path_step() -> bool {
+    LONG_PATH_STEPS.with(|steps| {
+        let left = steps.get();
+        steps.set(left.saturating_sub(1));
+        left > 0
+    })
+}
 
 pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     // This could fail but the way we use it, it won't
@@ -997,7 +1133,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 {
                     return 28;
                 }
-                if valency == 2 && bond_count == 2  {
+                if valency == 2 && bond_count == 2 {
                     return 28;
                 }
                 // A selenoxide written in Kekule form: three neighbours, one
@@ -1008,12 +1144,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 // when its ring bonds already arrived aromatic, so
                 // selenophene oxide was the one Daylight entry this model
                 // did not reproduce.
-                if bond_count == 3 && valency == 4 && self.has_exocyclic_oxygen(
-                    atom_index,
-                    bonds_in_rings,
-                    BondOrder::Double,
-                    0,
-                ) {
+                if bond_count == 3
+                    && valency == 4
+                    && self.has_exocyclic_oxygen(atom_index, bonds_in_rings, BondOrder::Double, 0)
+                {
                     return 28;
                 }
             }
@@ -1042,12 +1176,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 }
                 // The same selenoxide charge-separated, `[Se+]([O-])`, which
                 // Daylight also counts as two electrons.
-                if bond_count == 3 && valency == 3 && self.has_exocyclic_oxygen(
-                    atom_index,
-                    bonds_in_rings,
-                    BondOrder::Single,
-                    -1,
-                ) {
+                if bond_count == 3
+                    && valency == 3
+                    && self.has_exocyclic_oxygen(atom_index, bonds_in_rings, BondOrder::Single, -1)
+                {
                     return 28;
                 }
             }
@@ -1099,12 +1231,15 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         order: BondOrder,
         charge: i8,
     ) -> bool {
-        self.get_atom_bonds(atom_index).unwrap_or_default().iter().any(|bond| {
-            bond.bond_order() == order
-                && self.get_atomic_number(bond.target()) == 8
-                && self.get_atom_charge(bond.target()) == charge
-                && !Self::bond_hashset_contains(bonds_in_rings, atom_index, bond.target())
-        })
+        self.get_atom_bonds(atom_index)
+            .unwrap_or_default()
+            .iter()
+            .any(|bond| {
+                bond.bond_order() == order
+                    && self.get_atomic_number(bond.target()) == 8
+                    && self.get_atom_charge(bond.target()) == charge
+                    && !Self::bond_hashset_contains(bonds_in_rings, atom_index, bond.target())
+            })
     }
 
     fn bond_hashset_contains(
@@ -1130,10 +1265,19 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         aromatic_atoms: &mut [bool],
         aromatic_bonds: &mut FxHashSet<(usize, usize)>,
         electron_count: usize,
+        saw_a_pi_bond: bool,
         remaining_path_len: usize,
     ) -> bool {
         if atom1_index == atom2_index {
-            return electron_count & 3 == 2;
+            // Hückel's count is necessary and not sufficient: a ring where
+            // every atom brings a lone pair and none brings half of a π bond
+            // has no π system to delocalize, and no Kekulé structure either.
+            // `O1S[Te+]1` is three such atoms and six electrons, which passes
+            // `4n + 2` and is not aromatic by any account -- RDKit reads it as
+            // three single bonds. Perceiving it aromatic made the writer emit
+            // `[te]1s[o+]1`, which this crate's own reader then refused for
+            // want of a Kekulé structure, so a molecule came out unreadable.
+            return electron_count & 3 == 2 && saw_a_pi_bond;
         }
 
         if remaining_path_len == 0
@@ -1173,6 +1317,9 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 aromatic_atoms,
                 aromatic_bonds,
                 current_atom_electrons + electron_count,
+                saw_a_pi_bond
+                    || aromatic_types[atom2_index]
+                        == AromaticityFlag::PotentiallyAromaticOneElectron,
                 remaining_path_len - 1,
             ) {
                 let atom_order = order_tuple(atom2_index, neighbor_index);
@@ -1249,6 +1396,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         let num_atoms = self.len();
 
         let AromaticityScratch {
+            ring_finder,
+            pi_capable,
             atoms_in_rings_placeholder,
             bonds_in_rings_placeholder,
             aromaticity_flags,
@@ -1256,6 +1405,60 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             aromatic_bonds,
             visited,
         } = scratch;
+        // Before any ring is looked for: an aromatic ring is three or more
+        // atoms that can each put an orbital into it, and each of them needs
+        // two neighbours to have a ring at all. Counting those is one pass over
+        // the atoms and no ring perception, so a molecule whose rings are all
+        // saturated -- a sugar, a piperidine, a steroid's aliphatic half --
+        // never pays for the walk that would find them.
+        //
+        // The test is the one `pi_system::is_pi_capable` applies, so it can
+        // only exclude atoms that perception would have excluded later: a
+        // neutral CH2 with four sigma bonds and no π demand, a quaternary
+        // ammonium, an sp3 oxygen. It is skipped when the input wrote aromatic
+        // bonds, because those still have to be localized below whatever the
+        // atoms turn out to be.
+        pi_capable.clear();
+        pi_capable.resize(num_atoms, false);
+        for atom in 0..num_atoms {
+            let demand = crate::molecule::pi_system::pi_demand(self, atom).unwrap_or(0);
+            pi_capable[atom] = crate::molecule::pi_system::is_pi_capable(self, atom, demand);
+        }
+
+        let wrote_aromatic_bonds = (0..num_atoms).any(|atom| {
+            self.get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .any(|bond| bond.bond_order() == BondOrder::Aromatic)
+        });
+        if !wrote_aromatic_bonds {
+            // An atom of an aromatic ring has two neighbours on that ring, and
+            // they are π-capable too, so what has to exist is three atoms that
+            // are π-capable and have two π-capable neighbours. Fewer than that
+            // and no ring can be aromatic, whatever the rings turn out to be.
+            let mut capable = 0;
+            for atom in 0..num_atoms {
+                if !pi_capable[atom] {
+                    continue;
+                }
+                let neighbours = self
+                    .get_atom_bonds(atom)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|bond| pi_capable.get(bond.target()).copied().unwrap_or(false))
+                    .count();
+                if neighbours >= 2 {
+                    capable += 1;
+                    if capable == 3 {
+                        break;
+                    }
+                }
+            }
+            if capable < 3 {
+                return Ok(());
+            }
+        }
+
         self.find_cyclic_bonds_and_atoms_into(
             atoms_in_rings_placeholder,
             bonds_in_rings_placeholder,
@@ -1290,9 +1493,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         aromaticity_flags.clear();
         aromaticity_flags.resize(num_atoms, AromaticityFlag::NotAromatic);
 
+        let model_kind = aromaticity_model;
         let aromaticity_model = match aromaticity_model {
             AromaticityModel::Daylight => &AROMATICITY_MODEL_DAYLIGHT,
-            AromaticityModel::OpenSMILES => &AROMATICITY_MODEL_OPENSMILES,
+            AromaticityModel::OpenSMILES | AromaticityModel::Rings => &AROMATICITY_MODEL_OPENSMILES,
         };
 
         aromatic_atoms.clear();
@@ -1303,8 +1507,11 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         // and for that "ring" has to mean a ring that could carry a π system
         // rather than any cycle at all -- see [`conjugated_ring_bonds`], whose
         // documentation carries the pair of molecules that separates the two.
-        let conjugated_bonds =
-            crate::molecule::pi_system::conjugated_ring_bonds(self, bonds_in_rings_placeholder);
+        let conjugated_bonds = crate::molecule::pi_system::conjugated_ring_bonds_with(
+            self,
+            bonds_in_rings_placeholder,
+            pi_capable,
+        );
 
         for index in atoms_in_cycles {
             if self.is_atom_aromatic(index) {
@@ -1335,7 +1542,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         }
 
         // Basically we want to be able to limit how far we can travel
-        let path_length = path_length_limit.unwrap_or(self.len());
+        let path_length = path_length_limit.unwrap_or(AROMATIC_PATH_DEPTH);
 
         // let mut reduced_path_length = path_length;
         // if 31 < reduced_path_length {
@@ -1346,9 +1553,12 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         //     // )
         // }
 
-        self.find_aromatic_cycles(
+        self.find_the_aromatic_system(
+            model_kind,
+            ring_finder,
             atoms_in_rings_placeholder,
             bonds_in_rings_placeholder,
+            &conjugated_bonds,
             path_length,
             aromaticity_flags,
             aromatic_atoms,
@@ -1377,13 +1587,13 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 }
 
                 if has_double_bond {
-                    self.remove_potential_aromatics(
-                        aromaticity_flags,
-                        bonds_in_rings_placeholder,
-                    );
-                    self.find_aromatic_cycles(
+                    self.remove_potential_aromatics(aromaticity_flags, bonds_in_rings_placeholder);
+                    self.find_the_aromatic_system(
+                        model_kind,
+                        ring_finder,
                         atoms_in_rings_placeholder,
                         bonds_in_rings_placeholder,
+                        &conjugated_bonds,
                         path_length,
                         aromaticity_flags,
                         aromatic_atoms,
@@ -1421,6 +1631,38 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 if aromatic_bonds.contains(&atom_order) {
                     bond.bond_order = BondOrder::Aromatic;
                 }
+            }
+        }
+
+        // A cis/trans tag left on an atom that no longer has a double bond
+        // asserts a geometry about a bond perception has just read as aromatic,
+        // and whether it is there at all depends on how the input was written.
+        // `C1=CC=C(C=C1)/C=C/C` marks the ring carbon, because in the Kekule
+        // form it carries a double bond next to a directional one; the same
+        // compound written `c1ccccc1/C=C/C` does not. The tag is part of the
+        // atom's canonization invariant, so the two writings were coloured
+        // differently and canonicalized to different strings.
+        let stale: Vec<usize> = (0..self.len())
+            .filter(|&atom_index| {
+                self.chiral_classes().is_some_and(|classes| {
+                    matches!(
+                        classes.get(atom_index),
+                        Some(
+                            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+                        )
+                    )
+                }) && !self
+                    .get_atom_bonds(atom_index)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|bond| bond.bond_order() == BondOrder::Double)
+            })
+            .collect();
+        if !stale.is_empty()
+            && let Some(classes) = self.chiral_classes_mut()
+        {
+            for atom_index in stale {
+                classes[atom_index] = ChiralClass::None;
             }
         }
 
@@ -1520,6 +1762,47 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         self.aromatize(AromaticityModel::OpenSMILES, None, false)
     }
 
+    /// Marks the aromatic atoms and bonds, by whichever search the model asks
+    /// for.
+    ///
+    /// The two searches are handed the same flags, the same π-capable bond set
+    /// and the same output buffers, and differ only in the question they ask of
+    /// them -- which is what makes them comparable over a corpus.
+    #[allow(clippy::too_many_arguments)]
+    fn find_the_aromatic_system(
+        &self,
+        model: AromaticityModel,
+        ring_finder: &mut crate::molecule::ring_aromaticity::RingFinder,
+        atoms_in_rings: &BitSet,
+        bonds_in_rings: &FxHashSet<(usize, usize)>,
+        conjugated_bonds: &FxHashSet<(usize, usize)>,
+        max_path_length: usize,
+        aromaticity_flags: &mut [AromaticityFlag],
+        aromatic_atoms: &mut [bool],
+        aromatic_bonds: &mut FxHashSet<(usize, usize)>,
+        visited: &mut Vec<u8>,
+    ) {
+        match model {
+            AromaticityModel::Rings => ring_finder.find_aromatic_rings(
+                self,
+                aromaticity_flags,
+                bonds_in_rings,
+                conjugated_bonds,
+                aromatic_atoms,
+                aromatic_bonds,
+            ),
+            AromaticityModel::Daylight | AromaticityModel::OpenSMILES => self.find_aromatic_cycles(
+                atoms_in_rings,
+                bonds_in_rings,
+                max_path_length,
+                aromaticity_flags,
+                aromatic_atoms,
+                aromatic_bonds,
+                visited,
+            ),
+        }
+    }
+
     fn find_aromatic_cycles(
         &self,
         _atoms_in_rings: &BitSet,
@@ -1532,6 +1815,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
     ) {
         visited.clear();
         visited.resize(self.len(), 0);
+        LONG_PATH_STEPS.with(|steps| steps.set(LONG_PATH_BUDGET));
 
         for atom_index in 0..self.len() {
             if visited[atom_index] == 0 {
@@ -1575,6 +1859,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     aromatic_atoms,
                     aromatic_bonds,
                     electron_count,
+                    aromaticity_flags[atom_index]
+                        == AromaticityFlag::PotentiallyAromaticOneElectron,
                     5,
                 ) {
                     aromatic_bonds.insert((atom_index, neighbor_index));
@@ -1583,10 +1869,13 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             }
         }
 
-        #[cfg(debug_assertions)]
-        #[cfg(debug_assertions)]
-        #[cfg(debug_assertions)]
-
+        // No `#[cfg(debug_assertions)]` above this line. Three of them used to
+        // sit here, left behind when the debug `println!`s they belonged to were
+        // commented out -- and an attribute does not care about the blank line
+        // between: it attaches to the next statement, which is this whole block.
+        // Release builds turn debug assertions off, so the long-path search,
+        // `identify_extra_aromatic_seed_atoms`, and the step budget above were
+        // compiled out of every release build the crate has ever shipped.
         if max_path_length > 10 {
             loop {
                 if !self.identify_extra_aromatic_seed_atoms(
@@ -1632,6 +1921,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                                     aromatic_bonds,
                                     bonds_in_rings,
                                     electron_count,
+                                    aromaticity_flags[atom_index]
+                                        == AromaticityFlag::PotentiallyAromaticOneElectron,
                                     9,
                                 );
 
@@ -1698,6 +1989,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                                     aromatic_bonds,
                                     bonds_in_rings,
                                     electron_count,
+                                    aromaticity_flags[atom_index]
+                                        == AromaticityFlag::PotentiallyAromaticOneElectron,
                                     max_path_length - 1,
                                 );
 
@@ -1720,6 +2013,15 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 }
             }
         }
+
+        if std::env::var_os("OXIDANE_BUDGET_TRACE").is_some() {
+            let left = LONG_PATH_STEPS.with(|steps| steps.get());
+            eprintln!(
+                "BUDGET used {} of {LONG_PATH_BUDGET}{}",
+                LONG_PATH_BUDGET - left,
+                if left == 0 { " (EXHAUSTED)" } else { "" }
+            );
+        }
     }
 
     fn check_long_aromatic_path(
@@ -1733,10 +2035,17 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         aromatic_bonds: &mut FxHashSet<(usize, usize)>,
         bonds_in_rings: &FxHashSet<(usize, usize)>,
         electron_count: usize,
+        saw_a_pi_bond: bool,
         remaining_path_len: usize,
     ) -> bool {
         if start_atom_index == current_atom_index {
-            return electron_count & 3 == 2;
+            // See `check_short_aromatic_path`: the count alone would call a
+            // ring of lone pairs aromatic.
+            return electron_count & 3 == 2 && saw_a_pi_bond;
+        }
+
+        if !spend_a_long_path_step() {
+            return false;
         }
 
         if remaining_path_len == 0
@@ -1750,6 +2059,9 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         visited[current_atom_index] = 4; // Temporary mark
 
         let new_electron_count = electron_count + aromaticity_flags[current_atom_index] as usize;
+        let saw_a_pi_bond = saw_a_pi_bond
+            || aromaticity_flags[current_atom_index]
+                == AromaticityFlag::PotentiallyAromaticOneElectron;
 
         let Some(bonds) = self.get_atom_bonds(current_atom_index) else {
             visited[current_atom_index] = previous_visit_state;
@@ -1777,6 +2089,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 aromatic_bonds,
                 bonds_in_rings,
                 new_electron_count,
+                saw_a_pi_bond,
                 remaining_path_len - 1,
             ) {
                 aromatic_bonds.insert(order);
@@ -1959,7 +2272,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             while counter < number_of_rings {
                 let ring_atoms = rings
                     .iter()
-                    .map(|&assignment| assignment == Some(counter) )
+                    .map(|&assignment| assignment == Some(counter))
                     .collect::<BitVec>();
 
                 let mut number_of_atoms_in_system = 0;
@@ -1996,13 +2309,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         false
     }
 
-    /// Removes atoms from the potential aromatic set that don't have at least two neighbors
-    /// that are also potentially aromatic and in a ring system.
-    ///
-    /// This function is part of the aromaticity detection algorithm and ensures that atoms
-    /// marked as potentially aromatic actually participate in a valid aromatic system.
-    /// An atom can only be part of an aromatic system if it has at least two neighbors
-    /// that are also potentially aromatic and connected via bonds that are part of a ring.
+    /// Filters candidate aromatic atoms, retaining only those with at least two
+    /// aromatic neighbors in the same ring system.
     ///
     /// # Arguments
     ///

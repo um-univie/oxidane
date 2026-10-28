@@ -1,10 +1,20 @@
 //! Applying reaction SMARTS, checked against RDKit's `RunReactants`.
 //!
-//! The full differential is `notes/reaction_oracle.py` +
-//! `examples/reaction_diff.rs`. One case is known to differ:
-//! `[c:1][#1:2]>>[c:1][N:3]` turns benzene into aniline here and produces
-//! nothing in RDKit, because our molecules carry hydrogens as real atoms and
-//! RDKit's are implicit, so `[#1:2]` has nothing to match there.
+//! The full differential is `examples/reaction_oracle.py` +
+//! `examples/reaction_diff.rs`: 6665 of its 6680 cases agree exactly. The
+//! rest are differences of RDKit's, not ours:
+//!
+//! - A stereocentre that swaps a hydrogen for a new neighbour, or the
+//!   reverse, keeps its configuration here, the newcomer standing where the
+//!   hydrogen stood. RDKit's implicit-hydrogen bookkeeping returns the mirror
+//!   image — and RDKit itself, given the hydrogens explicitly and turned into
+//!   the new atom in place, returns ours.
+//! - RDKit keeps a bracket atom's written hydrogen count, so charging the
+//!   carbon of `[C@H]`, or giving it a double bond, leaves it a bond too many
+//!   and its sanitization fails; here the hydrogen goes.
+//! - `[c:1][#1:2]>>[c:1][N:3]` turns benzene into aniline here and produces
+//!   nothing in RDKit, because our molecules carry hydrogens as real atoms and
+//!   RDKit's are implicit, so `[#1:2]` has nothing to match there.
 
 use crate::graph_algorithms::mol_canonization::canonize_mol;
 use crate::molecule::reaction::{ReactionError, ReactionSmarts};
@@ -929,4 +939,104 @@ fn rule_algebra_prunes_interchangeable_atoms() {
     assert_eq!(oxidation.compose(&oxidation).unwrap().len(), 2);
     assert_eq!(oxidation.critical_pairs(&oxidation).unwrap().len(), 3);
     assert!(reduction.critical_pairs(&oxidation).unwrap().is_empty());
+}
+
+/// A template atom matches a hydrogen only when it names hydrogen: RDKit's
+/// hydrogens are implicit, so `[!C]` and `*` never see them there.
+#[test]
+fn query_atoms_do_not_match_hydrogens() {
+    assert!(products("[!C:1]>>[!C:1]", &["C=C"]).is_empty());
+    assert_eq!(products("[!C:1]>>[!C:1]", &["CO"]), canonical(&["CO"]));
+    assert_eq!(
+        products("[c:1][#1:2]>>[c:1][N:3]", &["c1ccccc1"]),
+        canonical(&["Nc1ccccc1"])
+    );
+}
+
+/// A product with an atom past every valence of its element is no molecule
+/// and is not returned.
+#[test]
+fn over_valent_products_are_rejected() {
+    // Acetone's carbonyl carbon has no hydrogen to give up for a fifth bond.
+    assert_eq!(
+        products("[C:1]>>[C:1]-[O:2]", &["CC(=O)C"]),
+        canonical(&["OCC(=O)C"])
+    );
+    assert!(products("[O:1]>>[O-:1]", &["CC=O"]).is_empty());
+}
+
+/// RDKit pairs the parts of a template with the reactants in order.
+#[test]
+fn reactant_templates_pair_in_order() {
+    let esterification = "[C:1](=[O:2])[O:3].[O:4][C:5]>>[C:1](=[O:2])[O:4][C:5].[O:3]";
+    assert_eq!(
+        products(esterification, &["CC(=O)O", "CCO"]),
+        canonical(&["CC(=O)OCC.O"])
+    );
+    assert!(products(esterification, &["CCO", "CC(=O)O"]).is_empty());
+}
+
+/// A changed element is copied from the template, charge and all.
+#[test]
+fn a_changed_element_takes_the_template_charge() {
+    assert_eq!(products("[O:1]>>[S:1]", &["C[O-]"]), canonical(&["CS"]));
+    assert_eq!(
+        products("[C:1][O:2]>>[C:1][N:2]", &["C[O-]"]),
+        canonical(&["CN"])
+    );
+    // The same element keeps its charge.
+    assert_eq!(
+        products("[N+:1]>>[N:1]", &["C[NH3+]"]),
+        canonical(&["C[NH3+]"])
+    );
+}
+
+/// What a consumed atom cuts loose is not part of RDKit's product.
+#[test]
+fn loose_fragments_are_dropped() {
+    assert_eq!(
+        products("[C:1][O:2]>>[C:1]", &["CC(=O)OC"]),
+        canonical(&["C", "O=CC"])
+    );
+}
+
+/// A double bond's geometry survives a rewrite that keeps the double bond:
+/// a group put on a vinyl carbon stands where its hydrogen stood, and an
+/// element changed beside it changes nothing about it.
+#[test]
+fn cis_trans_follows_the_rewrite() {
+    assert!(
+        products("[C:1].[N:2]>>[C:1]-[N:2]", &["C/C=C/C", "N"])
+            .contains(&canonical(&["N\\C(C)=C/C"])[0])
+    );
+    assert_eq!(
+        products("[C:1]>>[N:1]", &["C/C=C/C"]),
+        canonical(&["N(/C)=C\\C", "N/C=C/C"])
+    );
+    assert_eq!(
+        products("[C:1]=[C:2]>>[C:1]-[C:2]", &["C/C=C/C"]),
+        canonical(&["CCCC"])
+    );
+}
+
+/// A tag on an atom that is no longer a stereocentre is cleared.
+#[test]
+fn false_stereocentres_lose_their_tags() {
+    // Two hydrogens.
+    assert_eq!(
+        products("[C:1]-[Cl:2]>>[C:1]", &["C[C@H](Cl)F"]),
+        canonical(&["CCF"])
+    );
+    // Two equal substituents. (Turning the centre itself into an oxygen
+    // overloads it, so that match gives nothing.)
+    assert_eq!(
+        products("[C,N:1]>>[O:1]", &["C[C@H](O)F"]),
+        canonical(&["FC(O)O"])
+    );
+    // A three-coordinate nitrogen inverts.
+    assert!(
+        products("[C:1]>>[N:1]", &["C[C@H](Cl)F"])
+            .iter()
+            .any(|p| p == &canonical(&["ClN(F)C"])[0])
+    );
 }

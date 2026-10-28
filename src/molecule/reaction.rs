@@ -492,6 +492,31 @@ fn kekule_tolerant(pattern: &CxSMARTSPattern) -> CxSMARTSPattern {
     tolerant
 }
 
+/// A pattern whose atoms match hydrogens only where they name hydrogen.
+///
+/// Hydrogens are atoms here and implicit in RDKit, so under RDKit's reading
+/// `[!C]`, `*` or `[!#6]` would find hydrogens RDKit never sees. A template
+/// atom that names hydrogen outright — `[#1]` — still matches one, which is
+/// how a template acts on a C-H bond.
+fn heavy_only(pattern: &CxSMARTSPattern) -> CxSMARTSPattern {
+    let mut heavy = pattern.clone();
+    for expression in &mut heavy.atoms {
+        if element_of(expression) != Some(1) {
+            *expression = AtomExpression::Logical {
+                operator: LogicalOperator::HighAnd,
+                operands: vec![
+                    expression.clone(),
+                    AtomExpression::Logical {
+                        operator: LogicalOperator::Not,
+                        operands: vec![AtomExpression::AtomicNumber(1)],
+                    },
+                ],
+            };
+        }
+    }
+    heavy
+}
+
 /// A pattern that matches what `pattern` does with its stereo ignored:
 /// every chirality test true, every directional bond a plain single bond.
 fn without_stereo(pattern: &CxSMARTSPattern) -> CxSMARTSPattern {
@@ -540,6 +565,236 @@ pub(crate) fn states_stereo(expression: &AtomExpression) -> bool {
         matches!(primitive, AtomExpression::Chirality(_)).then_some(())
     })
     .is_some()
+}
+
+/// Which connected part of a template each atom belongs to, the parts
+/// numbered in the order they are written.
+fn template_components(pattern: &CxSMARTSPattern) -> Vec<usize> {
+    let count = pattern.atoms.len();
+    let mut component: Vec<Option<usize>> = vec![None; count];
+    let mut next = 0;
+    for start in 0..count {
+        if component[start].is_some() {
+            continue;
+        }
+        let mut stack = vec![start];
+        component[start] = Some(next);
+        while let Some(atom) = stack.pop() {
+            for &(a, b, _) in &pattern.bonds {
+                let other = if a == atom {
+                    b
+                } else if b == atom {
+                    a
+                } else {
+                    continue;
+                };
+                if component[other].is_none() {
+                    component[other] = Some(next);
+                    stack.push(other);
+                }
+            }
+        }
+        next += 1;
+    }
+    component.into_iter().map(|c| c.unwrap_or(0)).collect()
+}
+
+/// Whether an atom can still be a tetrahedral centre: three neighbours or
+/// more, at most one of them hydrogen, and — for carbon — no multiple bond.
+/// (A sulfoxide's sulfur keeps its tag across its double bond.)
+fn can_be_tetrahedral(molecule: &MolecularGraph, atom: usize) -> bool {
+    let bonds = &molecule.atom_bonds()[atom];
+    let hydrogens = bonds
+        .iter()
+        .filter(|bond| molecule.atomic_numbers()[bond.target()] == 1)
+        .count();
+    let unsaturated = bonds.iter().any(|bond| {
+        !matches!(
+            bond.bond_order(),
+            BondOrder::Single | BondOrder::Up | BondOrder::Down
+        )
+    });
+    bonds.len() >= 3 && hydrogens < 2 && !(molecule.atomic_numbers()[atom] == 6 && unsaturated)
+}
+
+/// Clears tetrahedral tags from atoms that are not stereocentres, as RDKit's
+/// sanitization does: an atom that cannot be tetrahedral (see
+/// [`can_be_tetrahedral`]), a three-coordinate carbon or nitrogen — planar,
+/// or inverting too fast to hold a configuration — and a centre two of whose
+/// neighbours are equivalent, which colour refinement of the graph finds.
+fn clear_false_stereocentres(molecule: &mut MolecularGraph) {
+    let Some(classes) = molecule.chiral_classes() else {
+        return;
+    };
+    let centres: Vec<usize> = (0..classes.len())
+        .filter(|&atom| matches!(classes[atom], ChiralClass::TH(_)))
+        .collect();
+    if centres.is_empty() {
+        return;
+    }
+    let colours = refined_colours(molecule);
+    let false_centres: Vec<usize> = centres
+        .into_iter()
+        .filter(|&atom| {
+            let neighbours: Vec<usize> = molecule.atom_bonds()[atom]
+                .iter()
+                .map(|bond| bond.target())
+                .collect();
+            let planar_or_inverting =
+                neighbours.len() == 3 && matches!(molecule.atomic_numbers()[atom], 6 | 7);
+            let equivalent = neighbours.iter().enumerate().any(|(i, &a)| {
+                neighbours[i + 1..]
+                    .iter()
+                    .any(|&b| colours[a] == colours[b])
+            });
+            !can_be_tetrahedral(molecule, atom) || planar_or_inverting || equivalent
+        })
+        .collect();
+    if let Some(classes) = molecule.chiral_classes_mut() {
+        for atom in false_centres {
+            classes[atom] = ChiralClass::None;
+        }
+    }
+}
+
+/// A colour per atom, equal for atoms colour refinement cannot tell apart:
+/// start from element, charge and isotope, and split by the colours and bond
+/// orders around each atom until nothing splits further.
+fn refined_colours(molecule: &MolecularGraph) -> Vec<usize> {
+    let count = molecule.atomic_numbers().len();
+    let isotope = |atom: usize| molecule.isotopes().map_or(0, |isotopes| isotopes[atom]);
+    let rank = |keys: &[Vec<i64>]| -> Vec<usize> {
+        let mut distinct: Vec<&Vec<i64>> = keys.iter().collect();
+        distinct.sort();
+        distinct.dedup();
+        keys.iter()
+            .map(|key| distinct.binary_search(&key).unwrap())
+            .collect()
+    };
+    let initial: Vec<Vec<i64>> = (0..count)
+        .map(|atom| {
+            vec![
+                i64::from(molecule.atomic_numbers()[atom]),
+                i64::from(molecule.charges()[atom]),
+                i64::from(isotope(atom)),
+            ]
+        })
+        .collect();
+    let mut colours = rank(&initial);
+    loop {
+        let keys: Vec<Vec<i64>> = (0..count)
+            .map(|atom| {
+                let mut around: Vec<i64> = molecule.atom_bonds()[atom]
+                    .iter()
+                    .map(|bond| {
+                        colours[bond.target()] as i64 * 16 + i64::from(bond.bond_order().order())
+                    })
+                    .collect();
+                around.sort_unstable();
+                let mut key = vec![colours[atom] as i64];
+                key.extend(around);
+                key
+            })
+            .collect();
+        let refined = rank(&keys);
+        let classes = |colours: &[usize]| {
+            colours
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        };
+        let done = classes(&refined) == classes(&colours);
+        colours = refined;
+        if done {
+            return colours;
+        }
+    }
+}
+
+/// Carries cis/trans tags through a rewrite. `final_of` gives where each atom
+/// of `original` ended up in `product`, if it survived.
+///
+/// An end's tag is read against its first single-bonded neighbour, its
+/// carrier, and the two ends' tags say whether their carriers are cis or
+/// trans. So a rewrite changes nothing unless it changes a carrier, and then
+/// where the new carrier stands decides: the end's other substituent stands
+/// opposite the old carrier, and a newcomer stands where the neighbour it
+/// replaced stood — RDKit's reading, under which putting a group on a vinyl
+/// carbon keeps the double bond's geometry. An end whose geometry cannot be
+/// followed, or whose double bond is gone, loses its tag.
+fn carry_cis_trans(
+    original: &MolecularGraph,
+    product: &mut MolecularGraph,
+    final_of: &[Option<usize>],
+) {
+    let Some(classes) = original.chiral_classes() else {
+        return;
+    };
+    let origin: HashMap<usize, usize> = final_of
+        .iter()
+        .enumerate()
+        .filter_map(|(atom, &at)| at.map(|at| (at, atom)))
+        .collect();
+    let singles = |molecule: &MolecularGraph, atom: usize| -> Vec<usize> {
+        molecule.atom_bonds()[atom]
+            .iter()
+            .filter(|bond| bond.bond_order() != BondOrder::Double)
+            .map(|bond| bond.target())
+            .collect()
+    };
+    let mut updates = Vec::new();
+    for (atom, &class) in classes.iter().enumerate() {
+        let toggled = match class {
+            ChiralClass::CisTransClockwise => ChiralClass::CisTransCounterclockwise,
+            ChiralClass::CisTransCounterclockwise => ChiralClass::CisTransClockwise,
+            _ => continue,
+        };
+        let Some(at) = final_of[atom] else {
+            continue;
+        };
+        let partner = original.atom_bonds()[atom]
+            .iter()
+            .find(|bond| bond.bond_order() == BondOrder::Double)
+            .and_then(|bond| final_of[bond.target()]);
+        let still_double = partner
+            .is_some_and(|partner| bond_order_in(product, at, partner) == Some(BondOrder::Double));
+        let before = singles(original, atom);
+        let after = singles(product, at);
+        let same_side = match (still_double, before.first(), after.first()) {
+            (true, Some(&old), Some(&new)) => match origin.get(&new) {
+                Some(&was) if was == old => Some(true),
+                Some(&was) if before.contains(&was) => Some(false),
+                _ => {
+                    let lost: Vec<usize> = before
+                        .iter()
+                        .copied()
+                        .filter(|&neighbor| {
+                            final_of[neighbor]
+                                .is_none_or(|now| bond_order_in(product, at, now).is_none())
+                        })
+                        .collect();
+                    match lost.as_slice() {
+                        [lost] => Some(*lost == old),
+                        _ => None,
+                    }
+                }
+            },
+            _ => None,
+        };
+        updates.push((
+            at,
+            match same_side {
+                Some(true) => class,
+                Some(false) => toggled,
+                None => ChiralClass::None,
+            },
+        ));
+    }
+    if let Some(product_classes) = product.chiral_classes_mut() {
+        for (at, class) in updates {
+            product_classes[at] = class;
+        }
+    }
 }
 
 /// Makes the hydrogen change a stereocentre's new bonding calls for, so the
@@ -948,7 +1203,7 @@ impl ReactionSmarts {
         Ok(ReactionSmarts {
             semantics: Semantics::Rdkit,
             conditions: Vec::new(),
-            query: without_stereo(&reactants.pattern),
+            query: heavy_only(&without_stereo(&reactants.pattern)),
             reactants,
             products,
         })
@@ -1077,7 +1332,7 @@ impl ReactionSmarts {
             map_index_of[atom] = Some(index);
         }
         let pattern = match self.semantics {
-            Semantics::Rdkit => without_stereo(&pattern),
+            Semantics::Rdkit => heavy_only(&without_stereo(&pattern)),
             Semantics::Dpo => kekule_tolerant(&pattern),
         };
         self.conditions.push(Condition {
@@ -1193,6 +1448,9 @@ impl ReactionSmarts {
     ///
     /// When multiple reactants are passed, matches that do not touch every reactant
     /// are filtered out so that only genuine multi-reactant interactions are returned.
+    /// Under [`Semantics::Rdkit`], a template written in as many `.`-separated
+    /// parts as there are reactants pairs them in order, as RDKit's
+    /// `RunReactants` does: the first part matches in the first reactant.
     pub fn apply_to(&self, reactants: &[&MolecularGraph]) -> Vec<MolecularGraph> {
         if reactants.is_empty() {
             return Vec::new();
@@ -1201,6 +1459,10 @@ impl ReactionSmarts {
             return self.apply(reactants[0]);
         }
         let combined = MolecularGraph::combine(reactants);
+        let component = template_components(&self.reactants.pattern);
+        let ordered = (self.semantics == Semantics::Rdkit
+            && component.iter().max().map(|&last| last + 1) == Some(reactants.len()))
+        .then_some(component);
         let mut offsets = Vec::with_capacity(reactants.len() + 1);
         offsets.push(0);
         for r in reactants {
@@ -1210,12 +1472,18 @@ impl ReactionSmarts {
         let products = self
             .matches(&combined)
             .into_iter()
-            .filter(|embedding| {
-                (0..reactants.len()).all(|r_idx| {
+            .filter(|embedding| match &ordered {
+                // RDKit pairs the reactant templates with the reactants in
+                // order, the first `.`-separated part with the first molecule.
+                Some(component) => embedding.iter().all(|(&pattern_atom, &atom)| {
+                    let reactant = component[pattern_atom];
+                    atom >= offsets[reactant] && atom < offsets[reactant + 1]
+                }),
+                None => (0..reactants.len()).all(|r_idx| {
                     let start = offsets[r_idx];
                     let end = offsets[r_idx + 1];
                     embedding.values().any(|&atom| atom >= start && atom < end)
-                })
+                }),
             })
             .filter_map(|embedding| self.rewrite(&combined, &embedding))
             .collect();
@@ -1248,6 +1516,9 @@ impl ReactionSmarts {
 
         let mut product = molecule.clone();
         let mut touched: Vec<usize> = Vec::new();
+        // The atoms whose bonds change, as opposed to only their element or
+        // charge.
+        let mut rebonded: Vec<usize> = Vec::new();
 
         // Atoms the product invents, created before any bond is wired so that
         // both ends of every new bond exist.
@@ -1294,6 +1565,8 @@ impl ReactionSmarts {
                 }
                 touched.push(first);
                 touched.push(second);
+                rebonded.push(first);
+                rebonded.push(second);
             }
         }
 
@@ -1307,6 +1580,12 @@ impl ReactionSmarts {
                 if product.atomic_numbers()[atom] != atomic_number {
                     product.atomic_numbers_mut()[atom] = atomic_number;
                     touched.push(atom);
+                    // RDKit copies an atom whose element the template changes
+                    // from the template, so a charge it does not state is
+                    // none: `[O:1]>>[S:1]` makes a methoxide a thiol.
+                    if self.semantics == Semantics::Rdkit && charge_of(expression).is_none() {
+                        product.charges_mut()[atom] = 0;
+                    }
                 }
             }
             if let Some(charge) = charge_of(expression) {
@@ -1323,7 +1602,7 @@ impl ReactionSmarts {
             }
         }
 
-        let detached = self.update_stereo(molecule, &mut product, &atom_of_index, &touched);
+        let detached = self.update_stereo(molecule, &mut product, &atom_of_index, &rebonded);
 
         // Atoms the reaction consumes. Removing shifts every later index, so
         // this goes last and in descending order, and the atoms whose hydrogen
@@ -1346,6 +1625,10 @@ impl ReactionSmarts {
             .filter(|&target| product.atomic_numbers()[target] == 1 && !mapped.contains(&target))
             .collect();
         doomed.extend(hydrogens);
+        if self.semantics == Semantics::Rdkit {
+            let loose = self.loose_fragments(&product, &atom_of_index, &doomed);
+            doomed.extend(loose);
+        }
         for &atom in &doomed {
             for bond in product.atom_bonds()[atom].iter() {
                 touched.push(bond.target());
@@ -1368,10 +1651,37 @@ impl ReactionSmarts {
         }
         survivors.sort_unstable();
         survivors.dedup();
+        // Where each atom of the molecule ended up, for the stereo that has to
+        // follow it.
+        let mut final_of: Vec<Option<usize>> = (0..molecule.atomic_numbers().len())
+            .map(|atom| {
+                (!doomed.contains(&atom))
+                    .then(|| atom - doomed.iter().filter(|&&gone| gone < atom).count())
+            })
+            .collect();
 
         match self.semantics {
             Semantics::Rdkit => {
-                rebalance_hydrogens(&mut product, &survivors);
+                let removed = rebalance_hydrogens(&mut product, &survivors);
+                // An atom left with more bonds than its element forms — a
+                // carbonyl carbon given a fifth bond, with no hydrogen to give
+                // up for it — is no molecule. RDKit returns it unsanitized,
+                // and sanitizing it fails; it is rejected here instead.
+                let over = survivors
+                    .iter()
+                    .filter(|atom| !removed.contains(atom))
+                    .map(|&atom| atom - removed.iter().filter(|&&gone| gone < atom).count())
+                    .any(|atom| over_valent(&product, atom));
+                if over {
+                    return None;
+                }
+                for slot in &mut final_of {
+                    *slot = slot.and_then(|atom| {
+                        (!removed.contains(&atom))
+                            .then(|| atom - removed.iter().filter(|&&gone| gone < atom).count())
+                    });
+                }
+                carry_cis_trans(molecule, &mut product, &final_of);
                 // As RDKit sanitizes a product, though leniently: a product
                 // with no Kekulé structure is still returned, as RDKit's
                 // `RunReactants` returns it unsanitized.
@@ -1379,9 +1689,48 @@ impl ReactionSmarts {
                     perceive_aromaticity(&mut product);
                 }
             }
-            Semantics::Dpo => normalize_product(&mut product, &survivors)?,
+            Semantics::Dpo => {
+                carry_cis_trans(molecule, &mut product, &final_of);
+                normalize_product(&mut product, &survivors)?
+            }
         }
+        clear_false_stereocentres(&mut product);
         Some(product)
+    }
+
+    /// The atoms a consumed atom cut loose: those no atom of the product
+    /// template reaches any more. RDKit's products hold only what is
+    /// connected to the template, so under its reading these go too —
+    /// deleting the ester oxygen of methyl acetate gives acetaldehyde, not
+    /// acetaldehyde and a stray methyl.
+    fn loose_fragments(
+        &self,
+        product: &MolecularGraph,
+        atom_of_index: &HashMap<usize, usize>,
+        doomed: &[usize],
+    ) -> Vec<usize> {
+        let mut reached = vec![false; product.atomic_numbers().len()];
+        let mut stack: Vec<usize> = self
+            .products
+            .by_map_index
+            .keys()
+            .filter_map(|index| atom_of_index.get(index).copied())
+            .collect();
+        for &atom in &stack {
+            reached[atom] = true;
+        }
+        while let Some(atom) = stack.pop() {
+            for bond in product.atom_bonds()[atom].iter() {
+                let next = bond.target();
+                if !reached[next] && !doomed.contains(&next) {
+                    reached[next] = true;
+                    stack.push(next);
+                }
+            }
+        }
+        (0..reached.len())
+            .filter(|&atom| !reached[atom] && !doomed.contains(&atom))
+            .collect()
     }
 
     /// Brings the stereo tags of the atoms the rule keeps or creates in line
@@ -1402,8 +1751,10 @@ impl ReactionSmarts {
     ///   neighbour without replacing one is no longer the same centre and
     ///   loses its tag.
     ///
-    /// A cis/trans or allene tag is dropped when the rule changes a bond of its
-    /// atom or of a neighbour, since what it describes may no longer exist.
+    /// An allene tag is dropped when the rule changes a bond of its atom or of
+    /// a neighbour, since what it describes may no longer exist. Cis/trans
+    /// tags are carried afterwards, once the atoms have their final indices —
+    /// see [`carry_cis_trans`].
     ///
     /// Under [`Semantics::Rdkit`] the hydrogens are re-derived afterwards,
     /// which would swap a centre's neighbours behind this function's back:
@@ -1475,6 +1826,10 @@ impl ReactionSmarts {
                     (None, _, _) => ChiralClass::None,
                 }
             } else if stored != ChiralClass::None
+                && !matches!(
+                    stored,
+                    ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+                )
                 && (rebonded.contains(&atom)
                     || after
                         .iter()
@@ -1484,6 +1839,12 @@ impl ReactionSmarts {
                 ChiralClass::None
             } else {
                 continue;
+            };
+            // A centre the rule left with two hydrogens, or turned into an
+            // sp2 carbon, is no longer tetrahedral, whatever its tag said.
+            let class = match class {
+                ChiralClass::TH(_) if !can_be_tetrahedral(product, atom) => ChiralClass::None,
+                class => class,
             };
             if class == stored {
                 continue;
@@ -1660,7 +2021,9 @@ fn remove_bond(molecule: &mut MolecularGraph, first: usize, second: usize) {
 /// hydrogens, so `[C:1]-[O:2]>>[C:1]=[O:2]` on ethanol would otherwise leave a
 /// carbon with five bonds. Excess hydrogens are dropped first, then
 /// [`MoleculeCore::add_hydrogens`] fills whatever is still short.
-fn rebalance_hydrogens(molecule: &mut MolecularGraph, atoms: &[usize]) {
+///
+/// Returns the hydrogens removed, by their indices before removal.
+fn rebalance_hydrogens(molecule: &mut MolecularGraph, atoms: &[usize]) -> Vec<usize> {
     let mut excess: Vec<usize> = Vec::new();
     for &atom in atoms {
         if atom >= molecule.atomic_numbers().len() || molecule.atomic_numbers()[atom] == 1 {
@@ -1686,4 +2049,17 @@ fn rebalance_hydrogens(molecule: &mut MolecularGraph, atoms: &[usize]) {
     }
 
     molecule.add_hydrogens();
+    excess
+}
+
+/// Whether an atom has more bonds than any valence of its element allows.
+fn over_valent(molecule: &MolecularGraph, atom: usize) -> bool {
+    use chemistry_consts::ElementProperties;
+    let atomic_number = molecule.atomic_numbers()[atom];
+    if atomic_number.valencies().is_none() {
+        return false;
+    }
+    let bonded = molecule.actual_valency(atom)
+        + molecule.radical_states().get(atom).copied().unwrap_or(0) as i8;
+    saturating_valency(atomic_number, molecule.charges()[atom], bonded).is_none()
 }

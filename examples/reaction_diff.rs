@@ -1,5 +1,5 @@
 //! Differential reaction-SMARTS check against RDKit's RunReactants.
-//! Reads `reaction<TAB>reactants<TAB>expected;expected` (notes/reaction_oracle.py).
+//! Reads `reaction<TAB>reactants<TAB>expected;expected` (examples/reaction_oracle.py).
 use oxidane::graph_algorithms::mol_canonization::canonize_mol;
 use oxidane::molecule::reaction::ReactionSmarts;
 use oxidane::prelude::*;

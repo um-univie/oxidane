@@ -22,6 +22,7 @@ pub mod reaction;
 pub mod ring_aromaticity;
 pub mod rule_algebra;
 pub mod scaffold;
+pub mod tautomer;
 pub mod shape;
 pub mod molecule3d;
 pub mod traits;

@@ -351,6 +351,36 @@ impl Canonizer {
         &self.graph_automorphisms
     }
 
+    /// [`tautomer_key`](crate::molecule::tautomer::tautomer_key), reusing this
+    /// canonizer's buffers.
+    ///
+    /// The key every tautomer of `mol` shares, for deduplicating a registry or
+    /// splitting a dataset without counting one compound twice. See
+    /// [`crate::molecule::tautomer`] for what the string means and what it does
+    /// not promise.
+    ///
+    /// ```
+    /// use oxidane::prelude::*;
+    /// use oxidane::graph_algorithms::mol_canonization::Canonizer;
+    /// use oxidane::molecule::tautomer::TautomerRules;
+    ///
+    /// let mut canonizer = Canonizer::new();
+    /// let rules = TautomerRules::new();
+    /// let keto = MolecularGraph::from_smiles_single("O=c1cccc[nH]1").unwrap();
+    /// let enol = MolecularGraph::from_smiles_single("Oc1ccccn1").unwrap();
+    /// assert_eq!(
+    ///     canonizer.tautomer_key(&keto, &rules),
+    ///     canonizer.tautomer_key(&enol, &rules)
+    /// );
+    /// ```
+    pub fn tautomer_key<T: Molecule + Clone + ToSMILES>(
+        &mut self,
+        mol: &T,
+        rules: &crate::molecule::tautomer::TautomerRules,
+    ) -> String {
+        crate::molecule::tautomer::tautomer_key_with(self, mol, rules)
+    }
+
     /// [`canonicalize_and_sort_smiles`], reusing this canonizer's buffers.
     pub fn canonical_smiles(
         &mut self,

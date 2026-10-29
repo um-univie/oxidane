@@ -45,6 +45,11 @@ rustc-hash = "2.1.1"
 canonaut = { version = "=1.1.0", path = "vendor/canonaut-1.1.0" }
 rustfft = "6.4.1"
 
+[dev-dependencies]
+# pubchem_sweep maps the corpus rather than reading it.
+memmap2 = "0.9"
+memchr = "2"
+
 
 [profile.release]
 # faer's SIMD dispatch needs thin LTO; fat LTO discards dispatch symbols.

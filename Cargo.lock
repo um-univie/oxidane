@@ -1219,6 +1219,8 @@ dependencies = [
  "faer",
  "itertools",
  "kiddo",
+ "memchr",
+ "memmap2",
  "ndarray",
  "nohash-hasher",
  "petgraph",

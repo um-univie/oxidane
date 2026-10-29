@@ -16,6 +16,7 @@ mod smarts_tests;
 mod ring_aromaticity_tests;
 mod smiles_tests;
 mod split_tests;
+mod tautomer_tests;
 
 mod forcefield_tests;
 mod mmff_tests;

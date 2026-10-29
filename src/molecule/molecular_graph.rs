@@ -70,6 +70,7 @@ impl std::error::Error for SplitError {}
 /// This function
 #[derive(Debug, Default, Clone)]
 pub struct MolecularGraph {
+    ring_topology_cache: Option<crate::molecule::topology::RingTopologyCache>,
     pub atomic_numbers: Vec<u8>,
     pub atom_classes: Option<Vec<usize>>,
     pub charges: Vec<i8>,
@@ -81,6 +82,10 @@ pub struct MolecularGraph {
 }
 
 impl MoleculeCore for MolecularGraph {
+    fn ring_topology_cache(&self) -> Option<&crate::molecule::topology::RingTopologyCache> {
+        self.ring_topology_cache.as_ref()
+    }
+
     /// `partial_charges` is indexed by atom index when a molecule is split, so
     /// it has to track the atom count. A newly added atom has none of its own —
     /// nothing has computed one for it — and zero is the neutral reading.
@@ -202,6 +207,7 @@ impl MoleculeCore for MolecularGraph {
         }
 
         MolecularGraph {
+            ring_topology_cache: None,
             atomic_numbers,
             charges,
             radical_states,
@@ -215,6 +221,18 @@ impl MoleculeCore for MolecularGraph {
 }
 
 impl MolecularGraph {
+    /// Enable reuse of ring membership across bond-order edits. Connectivity
+    /// and atom numbering are checked exactly on every lookup; direct adjacency
+    /// edits therefore cannot leave stale results. Disabled by default.
+    pub fn set_ring_topology_cache_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.ring_topology_cache
+                .get_or_insert_with(Default::default);
+        } else {
+            self.ring_topology_cache = None;
+        }
+    }
+
     /// A graph assembled from parts a caller already holds.
     ///
     /// Every vector must be indexed by atom and the same length; the bonds must
@@ -235,6 +253,7 @@ impl MolecularGraph {
         atom_bonds: Vec<ArrayVec<[BondTarget; 10]>>,
     ) -> Self {
         MolecularGraph {
+            ring_topology_cache: None,
             atomic_numbers,
             atom_classes,
             charges,
@@ -537,6 +556,7 @@ impl MolecularGraph {
         }
 
         Ok(MolecularGraph {
+            ring_topology_cache: None,
             atomic_numbers,
             atom_classes,
             charges,

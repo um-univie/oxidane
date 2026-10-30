@@ -87,8 +87,18 @@ impl Default for SmilesParseOptions {
 /// only the potassium was marked and the germanium silently acquired a
 /// hydrogen -- and writing the same molecule with the fragments the other way
 /// round moved the hydrogen to the other fragment.
-fn assign_radicals(atoms: &mut [Atom]) {
-    for atom in atoms.iter_mut() {
+///
+/// The bonds are priced by the molecule's own [`MoleculeCore::actual_valency`],
+/// which is what `add_hydrogens` measures against next, and not by
+/// [`Atom::bond_valency`]. The two disagreed about a directional bond between
+/// two aromatic ring atoms -- an aromatic bond carrying a mark, three half-units
+/// to one and two to the other. A ring closed on a mark, as canonical SMILES
+/// writes `[n+]1(ccnc(c\1=C/C)=C)C`, then left the pyridinium nitrogen half a
+/// bond short here and full there: it read back with an unpaired electron its
+/// Kekulé form does not have, and the tautomer key of the canonical SMILES was
+/// not the key of the molecule it was written from.
+fn assign_radicals(atoms: &[Atom], molecule: &mut MolecularGraph) {
+    for (index, atom) in atoms.iter().enumerate() {
         if !atom.is_complex() {
             continue;
         }
@@ -106,12 +116,8 @@ fn assign_radicals(atoms: &mut [Atom]) {
         // sulfur counts three across its two aromatic bonds, and asking which
         // valence three has reached into answers four and invents an unpaired
         // electron the ring does not have.
-        let aromatic = atom
-            .bonds()
-            .iter()
-            .any(|bond| bond.bond_order() == BondOrder::Aromatic);
-        let bonded = atom.bond_valency();
-        let effective = if aromatic {
+        let bonded = molecule.actual_valency(index);
+        let effective = if molecule.has_an_unsettled_bond(index) {
             crate::molecule::base::effective_valency(atom.atomic_number(), atom.charge())
         } else {
             crate::molecule::base::saturating_valency(atom.atomic_number(), atom.charge(), bonded)
@@ -119,7 +125,7 @@ fn assign_radicals(atoms: &mut [Atom]) {
         .unwrap_or(0);
         let difference = effective - bonded;
         if difference > 0 {
-            atom.set_radical(difference as u8);
+            molecule.radical_states_mut()[index] = difference as u8;
         }
     }
 }
@@ -409,8 +415,8 @@ impl<'a> SMILESParser<'a> {
                         .iter()
                         .any(|(_, (a, b, _))| a.is_none() || b.is_none())
                     {
-                        assign_radicals(&mut parser.atoms);
-                        let molecule = MolecularGraph::from_atoms(&parser.atoms);
+                        let mut molecule = MolecularGraph::from_atoms(&parser.atoms);
+                        assign_radicals(&parser.atoms, &mut molecule);
                         molecules.push(molecule);
                         write_orders.push(parser.resolve_write_orders());
                         parser.reset();
@@ -523,9 +529,8 @@ impl<'a> SMILESParser<'a> {
 
         parser.add_all_bonds()?;
 
-        assign_radicals(&mut parser.atoms);
-
-        let molecule = MolecularGraph::from_atoms(&parser.atoms);
+        let mut molecule = MolecularGraph::from_atoms(&parser.atoms);
+        assign_radicals(&parser.atoms, &mut molecule);
         molecules.push(molecule);
         write_orders.push(parser.resolve_write_orders());
 
@@ -3270,6 +3275,36 @@ mod tests {
         let molecules = SMILESParser::parse_smiles("[CH3][NH2]").unwrap();
         assert_eq!(molecules[0].atomic_numbers.len(), 7); // C + 3H + N + 2H, methylamine
         assert_eq!(molecules[0].get_edges().len(), 6); // All single bonds
+    }
+
+    #[test]
+    fn a_stereo_marked_ring_closure_between_aromatic_atoms_leaves_no_radical() {
+        // The canonical writing of PubChem CID 175635843: the ring closes on a
+        // directional bond, so the pyridinium nitrogen has one aromatic bond
+        // and one marked one. Each must read as the Kekulé writing beside it.
+        for (smiles, kekule) in [
+            (
+                "[n+]1(ccnc(c\\1=C/C=C\\CC)=C)C",
+                "CC/C=C\\C=C\\1/C(=C)N=CC=[N+]1C",
+            ),
+            ("[n+]\\1(ccnc(c1=C/C)=C)C", "C[N+]1=CC=NC(=C)/C1=C/C"),
+            ("[n+]1(ccnc(c1=CC)=C)C", "C[N+]1=CC=NC(=C)C1=CC"),
+        ] {
+            let molecules = SMILESParser::parse_smiles(smiles).unwrap();
+            let expected = SMILESParser::parse_smiles(kekule).unwrap();
+            assert!(
+                molecules[0]
+                    .radical_states
+                    .iter()
+                    .all(|&radical| radical == 0),
+                "{smiles}"
+            );
+            assert_eq!(
+                molecules[0].atomic_numbers.len(),
+                expected[0].atomic_numbers.len(),
+                "{smiles}"
+            );
+        }
     }
 
     #[test]

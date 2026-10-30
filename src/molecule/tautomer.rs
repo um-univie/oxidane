@@ -1423,6 +1423,27 @@ fn settle_geometries<M: Molecule + Clone + ToSMILES>(
             classes[atom] = ChiralClass::None;
         }
     }
+
+    // A carbon endpoint's tetrahedral tag goes too. The hydrogen that makes it
+    // a stereocentre is one of the mobile ones: shifted away, the carbon is
+    // sp2 and the centre is gone, and shifted back it can return from either
+    // face. So `CC[C@H](C)C(=O)C`, its enantiomer and their shared enol are one
+    // tautomer class, and the key gave them three strings. A heteroatom
+    // endpoint keeps its tag -- a sulfoxide sulfur is a stereocentre by its
+    // lone pair, not by a hydrogen, and normalization pins it as one.
+    for group in groups.groups() {
+        for &atom in &group.endpoints {
+            if skeleton.atomic_numbers()[atom] == 6
+                && matches!(
+                    skeleton.get_chiral_class(atom),
+                    ChiralClass::TH(_) | ChiralClass::AL(_)
+                )
+                && let Some(classes) = skeleton.chiral_classes_mut()
+            {
+                classes[atom] = ChiralClass::None;
+            }
+        }
+    }
 }
 
 /// The valence an atom spends in the molecule as written: its bonds, counted

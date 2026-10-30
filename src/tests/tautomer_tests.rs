@@ -1274,3 +1274,22 @@ fn fused_phosphorus_closure_is_independent_of_numbering() {
         assert_eq!(normalize(&copy, &rules).unwrap().to_smiles(), expected);
     }
 }
+
+/// A carbon endpoint's stereocentre is made by a mobile hydrogen, so it does
+/// not survive the shift: both enantiomers of a ketone with an alpha
+/// stereocentre and their shared enol are one tautomer class. The key gave
+/// them three strings; RDKit's `HetAtomTautomerv2` gives them one.
+/// Heteroatom rules leave that carbon alone, and with it the stereocentre.
+#[test]
+fn a_carbon_endpoint_loses_its_stereocentre_to_the_shift() {
+    let forms = ["CC[C@H](C)C(=O)C", "CC[C@@H](C)C(=O)C", "CCC(C)=C(O)C"];
+    for form in &forms[1..] {
+        assert_eq!(carbon_key(forms[0]), carbon_key(form), "{form}");
+    }
+    let rules = TautomerRules::with_carbon_endpoints();
+    assert_eq!(
+        normalized_smiles(forms[0], &rules).unwrap(),
+        normalized_smiles(forms[1], &rules).unwrap()
+    );
+    assert_ne!(key(forms[0]), key(forms[1]));
+}

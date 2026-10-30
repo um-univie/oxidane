@@ -1557,4 +1557,34 @@ mod cis_trans_tests {
             assert_eq!(marked_atoms(&molecule), 2, "{smiles} lost its geometry");
         }
     }
+
+    /// A double bond with no geometry, between two that have one, still gets
+    /// a mark at each end from its neighbours -- and two marks, one per end,
+    /// are a geometry. The writer has to make them contradict, or the
+    /// canonical form reads back with a bond the input never specified and
+    /// is not its own canonical form. PubChem records from a full sweep: two
+    /// marks already on one end (89159404), one forced mark per end
+    /// (143881973), a triene whose centre is unspecified (5961800), an
+    /// oxime (137269330), and a cyclooctatetraene whose only free mark sits
+    /// beside a carbonyl (144402149) -- which RDKit's own writer gets wrong.
+    #[test]
+    fn an_unspecified_bond_between_specified_ones_stays_unspecified() {
+        for smiles in [
+            "C/C=C\\C(=C\\C)\\C(=N/C=C\\C)/C=C\\C",
+            "C/C=C\\C(=N/C=C\\C)/C(=C/C)/N=CC=C",
+            "C1=CC=C(C=C1)/C=C/C=C(/C=C/C2=CC=CC=C2)/C=C/C3=CC=CC=C3",
+            "C1=CC=C(C=C1)/C=N/N=C(/C=N/O)/C=N/O",
+            "COC1=CC2=C(C=C1)N=C(C=C2)/C/3=C/C=C/C=C(/C=C3)/C(=O)OC",
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            let written = canonize_mol(&molecule).to_smiles();
+            let reread = MolecularGraph::from_smiles_single(&written).unwrap();
+            assert_eq!(
+                marked_atoms(&reread),
+                marked_atoms(&molecule),
+                "{smiles} -> {written}"
+            );
+            assert_eq!(canonize_mol(&reread).to_smiles(), written, "{smiles}");
+        }
+    }
 }

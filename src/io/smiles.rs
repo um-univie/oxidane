@@ -1570,6 +1570,8 @@ pub trait ToSMILES: Molecule {
             opposite: bool,
         }
         let mut constraints: Vec<DirConstraint> = Vec::new();
+        // Every bond some constraint will put a mark on, as (atom, atom).
+        let mut marked_bonds: Vec<(usize, usize)> = Vec::new();
 
         // A double bond inside a small ring has its geometry forced by the ring
         // -- cyclohexene has no cis and trans to choose between -- so it is not
@@ -1757,6 +1759,8 @@ pub trait ToSMILES: Molecule {
                 before_b,
                 opposite,
             });
+            marked_bonds.push((a, ra));
+            marked_bonds.push((b, rb));
 
             // The two substituents of one double-bond carbon lie on opposite
             // sides of it, and if both end up marked then their symbols have to
@@ -1804,8 +1808,195 @@ pub trait ToSMILES: Molecule {
                     before_b: second_before,
                     opposite: true,
                 });
+                marked_bonds.push((carbon, other));
             }
         }
+
+        // A mark belongs to every double bond at either of its atoms, so a
+        // double bond with no geometry of its own can still end up with a
+        // marked substituent at each end -- put there for the stereogenic
+        // bonds on either side of it along a conjugated chain -- and two
+        // marks, one per end, *are* a geometry. The reader would hand it one
+        // the input never stated, and the canonical form of the canonical form
+        // would not be the canonical form: PubChem's CID 89159404,
+        // `C/C=C\C(=C\C)\C(=N/C=C\C)/C=C\C`, came back with five
+        // stereogenic bonds where it went in with four.
+        //
+        // The input says "no geometry" the way RDKit does, with two marks on
+        // one end placing both substituents on the same side, which
+        // contradicts itself and specifies nothing. So say it the same way:
+        // where one end already carries two marks, require them to agree.
+        // The requirement is added only where it is consistent with every
+        // geometric one -- a parity union-find over the marks tells -- so it
+        // can never cost a bond the input did specify.
+        let mut parity_parent: IntMap<usize, (usize, bool)> = IntMap::default();
+        fn find(parent: &mut IntMap<usize, (usize, bool)>, site: usize) -> (usize, bool) {
+            let (up, parity) = *parent.entry(site).or_insert((site, false));
+            if up == site {
+                return (site, false);
+            }
+            let (root, above) = find(parent, up);
+            let total = parity ^ above;
+            parent.insert(site, (root, total));
+            (root, total)
+        }
+        // Parity of a mark's geometric side relative to its emitted symbol.
+        let joins = |parent: &mut IntMap<usize, (usize, bool)>, c: &DirConstraint, apply: bool| {
+            // `down = up ^ !before`; constraint `down_a ^ down_b == opposite`
+            // becomes `up_a ^ up_b == opposite ^ !before_a ^ !before_b`.
+            let wanted = c.opposite ^ !c.before_a ^ !c.before_b;
+            let (ra, pa) = find(parent, c.child_a);
+            let (rb, pb) = find(parent, c.child_b);
+            if ra == rb {
+                return (pa ^ pb) == wanted;
+            }
+            if apply {
+                parent.insert(rb, (ra, pa ^ pb ^ wanted));
+            }
+            true
+        };
+        for c in &constraints {
+            joins(&mut parity_parent, c, true);
+        }
+        let mut contradictions: Vec<DirConstraint> = Vec::new();
+        for x in 0..atom_count {
+            let Some(bonds_x) = self.get_atom_bonds(x) else {
+                continue;
+            };
+            for y in bonds_x
+                .iter()
+                .filter(|bond| bond.bond_order() == BondOrder::Double)
+                .map(|bond| bond.target())
+                .filter(|&y| y > x)
+            {
+                if is_cis_trans(classes[x]) && is_cis_trans(classes[y]) {
+                    continue;
+                }
+                let marked_at = |end: usize, far: usize| -> Vec<usize> {
+                    let mut subs: Vec<usize> = marked_bonds
+                        .iter()
+                        .filter_map(|&(p, q)| match (p == end, q == end) {
+                            (true, _) if q != far => Some(q),
+                            (_, true) if p != far => Some(p),
+                            _ => None,
+                        })
+                        .collect();
+                    subs.sort_unstable();
+                    subs.dedup();
+                    subs
+                };
+                let (at_x, at_y) = (marked_at(x, y), marked_at(y, x));
+                if at_x.is_empty() || at_y.is_empty() {
+                    continue;
+                }
+                let mut settled = false;
+                for (end, subs) in [(x, &at_x), (y, &at_y)] {
+                    if subs.len() < 2 {
+                        continue;
+                    }
+                    let (child_a, before_a) = mark_target(end, subs[0]);
+                    let (child_b, before_b) = mark_target(end, subs[1]);
+                    let same_side = DirConstraint {
+                        child_a,
+                        before_a,
+                        child_b,
+                        before_b,
+                        opposite: false,
+                    };
+                    if joins(&mut parity_parent, &same_side, false) {
+                        joins(&mut parity_parent, &same_side, true);
+                        contradictions.push(same_side);
+                        settled = true;
+                        break;
+                    }
+                }
+                if settled {
+                    continue;
+                }
+                // Neither end has a second mark to contradict the first, so
+                // give one end a second mark that does. It has to be a mark
+                // that specifies nothing else: on a substituent with no double
+                // bond of its own, or on the end of a stereogenic double bond
+                // that is already marked, tied to lie opposite that mark so
+                // the bond keeps the geometry it has.
+                'ends: for (end, far, subs) in [(x, y, &at_x), (y, x, &at_y)] {
+                    let candidates: Vec<usize> = self
+                        .get_atom_bonds(end)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|bond| bond.bond_order() != BondOrder::Double)
+                        .map(|bond| bond.target())
+                        .filter(|&sub| sub != far && !subs.contains(&sub) && is_usable(end, sub))
+                        .collect();
+                    for sub in candidates {
+                        // A double bond to an atom with nothing else on it --
+                        // a carbonyl's oxygen -- has no far substituent to be
+                        // placed against, so a mark beside it specifies
+                        // nothing. That is the free substituent CID 144402149
+                        // had: a cyclooctatetraene whose unspecified ring bond
+                        // carries an ester, every other bond at its ends taken
+                        // by the neighbouring ring bonds' marks.
+                        let doubles: Vec<usize> = self
+                            .get_atom_bonds(sub)
+                            .unwrap_or_default()
+                            .iter()
+                            .filter(|bond| bond.bond_order() == BondOrder::Double)
+                            .map(|bond| bond.target())
+                            .filter(|&partner| {
+                                self.get_atom_bonds(partner).unwrap_or_default().len() > 1
+                            })
+                            .collect();
+                        let (existing, existing_before) = mark_target(end, subs[0]);
+                        let (added, added_before) = mark_target(end, sub);
+                        let mut needed = vec![DirConstraint {
+                            child_a: existing,
+                            before_a: existing_before,
+                            child_b: added,
+                            before_b: added_before,
+                            opposite: false,
+                        }];
+                        match doubles.as_slice() {
+                            [] => {}
+                            &[partner]
+                                if is_cis_trans(classes[sub]) && is_cis_trans(classes[partner]) =>
+                            {
+                                let Some(reference) = marked_at(sub, partner)
+                                    .into_iter()
+                                    .find(|&other| other != end)
+                                else {
+                                    continue;
+                                };
+                                let (held, held_before) = mark_target(sub, reference);
+                                let (tied, tied_before) = mark_target(sub, end);
+                                needed.push(DirConstraint {
+                                    child_a: held,
+                                    before_a: held_before,
+                                    child_b: tied,
+                                    before_b: tied_before,
+                                    opposite: true,
+                                });
+                            }
+                            _ => continue,
+                        }
+                        let mut trial = parity_parent.clone();
+                        if !needed.iter().all(|c| {
+                            let fits = joins(&mut trial, c, false);
+                            if fits {
+                                joins(&mut trial, c, true);
+                            }
+                            fits
+                        }) {
+                            continue;
+                        }
+                        parity_parent = trial;
+                        marked_bonds.push((end, sub));
+                        contradictions.extend(needed);
+                        break 'ends;
+                    }
+                }
+            }
+        }
+        constraints.extend(contradictions);
 
         // Propagate a consistent set of emitted symbols. `up[child]` = true means
         // `/`; the geometric side is `down = if before { up } else { !up }`, and each

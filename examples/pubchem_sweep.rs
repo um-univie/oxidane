@@ -18,10 +18,11 @@
 //! * ordinary canonical SMILES preserves formula, reparses and is idempotent,
 //! * one CID-seeded atom permutation preserves ordinary canonical SMILES,
 //!   normalized tautomer SMILES and tautomer keys for every component,
+//! * the canonical SMILES, read back, has the key its input had,
 //! * and nothing panics.
 //!
 //! ```text
-//! cargo run --release --example pubchem_sweep -- <path> [--limit N] [--threads N] [--max-atoms N] [--cache on|off] [--tautomers on|off] [--ionizable on|off]
+//! cargo run --release --example pubchem_sweep -- <path> [--limit N] [--threads N] [--max-atoms N] [--cache on|off] [--tautomers on|off] [--normalize on|off] [--ionizable on|off]
 //! ```
 //!
 //! The corpus is mapped rather than read: the records are found by looking for
@@ -37,6 +38,8 @@
 //! atoms per component and log every skipped record. Cache defaults to on.
 //! `--tautomers off` runs the canonicalization checks alone, leaving
 //! normalization and tautomer keys out, so the two halves can be told apart.
+//! `--normalize off` keeps the keys and leaves out only normalization, which
+//! is three quarters of the sweep's time and the part fewest callers need.
 //! Failures are written to stderr with their CID so they can be looked up.
 
 use oxidane::graph_algorithms::mol_canonization::{canonize_mol, reorder_molecule};
@@ -89,6 +92,7 @@ struct Options {
     max_atoms: usize,
     cache: bool,
     tautomers: bool,
+    normalize: bool,
 }
 
 #[derive(Default)]
@@ -109,6 +113,8 @@ struct Counts {
     canonical_permutation: AtomicU64,
     tautomer_permutation: AtomicU64,
     key_permutation: AtomicU64,
+    /// The canonical SMILES, read back, keyed differently from its input.
+    key_canonical: AtomicU64,
     nonconverged: AtomicU64,
     /// Records whose valences no element allows, which are not molecules to
     /// normalize and are counted apart from the failures that would be bugs.
@@ -132,6 +138,7 @@ impl Counts {
             (&self.canonical_permutation, &other.canonical_permutation),
             (&self.tautomer_permutation, &other.tautomer_permutation),
             (&self.key_permutation, &other.key_permutation),
+            (&self.key_canonical, &other.key_canonical),
             (&self.nonconverged, &other.nonconverged),
             (&self.impossible, &other.impossible),
             (&self.oversize, &other.oversize),
@@ -160,6 +167,7 @@ impl Counts {
             &self.canonical_permutation,
             &self.tautomer_permutation,
             &self.key_permutation,
+            &self.key_canonical,
             &self.nonconverged,
             &self.impossible,
             &self.oversize,
@@ -226,6 +234,10 @@ impl Counts {
             self.key_permutation.load(Ordering::Relaxed)
         );
         println!(
+            "  key_canonical : {}",
+            self.key_canonical.load(Ordering::Relaxed)
+        );
+        println!(
             "  did not converge       : {}",
             self.nonconverged.load(Ordering::Relaxed)
         );
@@ -276,15 +288,16 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             counts.canonical_formula.fetch_add(1, Ordering::Relaxed);
             eprintln!("canonical_formula\t{cid}\t{smiles}\t{canonical_smiles}");
         }
-        match MolecularGraph::from_smiles_single(&canonical_smiles) {
+        let reread = MolecularGraph::from_smiles_single(&canonical_smiles);
+        match &reread {
             Ok(again) => {
-                if MolecularFormula::from_molecule(&again)
+                if MolecularFormula::from_molecule(again)
                     != MolecularFormula::from_molecule(molecule)
                 {
                     counts.canonical_formula.fetch_add(1, Ordering::Relaxed);
                     eprintln!("canonical_roundtrip_formula\t{cid}\t{smiles}\t{canonical_smiles}");
                 }
-                let rewritten = canonize_mol(&again).to_smiles();
+                let rewritten = canonize_mol(again).to_smiles();
                 if rewritten != canonical_smiles {
                     counts.canonical_idempotence.fetch_add(1, Ordering::Relaxed);
                     eprintln!(
@@ -305,6 +318,20 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             );
         }
         if !options.tautomers {
+            continue;
+        }
+        let key = tautomer_key(molecule, rules);
+        if tautomer_key(&permuted, rules) != key {
+            counts.key_permutation.fetch_add(1, Ordering::Relaxed);
+            eprintln!("key_permutation\t{cid}\t{smiles}");
+        }
+        if let Ok(again) = &reread
+            && tautomer_key(again, rules) != key
+        {
+            counts.key_canonical.fetch_add(1, Ordering::Relaxed);
+            eprintln!("key_canonical\t{cid}\t{smiles}\t{canonical_smiles}");
+        }
+        if !options.normalize {
             continue;
         }
         let normal = match try_normalize(molecule, rules) {
@@ -329,10 +356,6 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             counts.tautomer_permutation.fetch_add(1, Ordering::Relaxed);
             eprintln!("tautomer_permutation\t{cid}\t{smiles}\t{written}\t{permuted_normal:?}");
         }
-        if tautomer_key(&permuted, rules) != tautomer_key(molecule, rules) {
-            counts.key_permutation.fetch_add(1, Ordering::Relaxed);
-            eprintln!("key_permutation\t{cid}\t{smiles}");
-        }
 
         if MolecularFormula::from_molecule(&normal) != MolecularFormula::from_molecule(molecule) {
             counts.formula.fetch_add(1, Ordering::Relaxed);
@@ -349,7 +372,7 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             eprintln!("tautomer_roundtrip_formula\t{cid}\t{smiles}\t{written}");
         }
         reparsed.set_ring_topology_cache_enabled(options.cache);
-        if tautomer_key(&reparsed, rules) != tautomer_key(molecule, rules) {
+        if tautomer_key(&reparsed, rules) != key {
             counts.key.fetch_add(1, Ordering::Relaxed);
             eprintln!("key\t{cid}\t{smiles}\t{written}");
         }
@@ -374,6 +397,7 @@ fn main() {
     let mut max_atoms = 0usize;
     let mut cache = true;
     let mut tautomers = true;
+    let mut normalize = true;
     let mut ionizable = false;
     while let Some(option) = arguments.next() {
         let value = arguments.next().expect("each option requires a value");
@@ -393,6 +417,13 @@ fn main() {
                     "on" => true,
                     "off" => false,
                     _ => panic!("--tautomers takes on or off"),
+                }
+            }
+            "--normalize" => {
+                normalize = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => panic!("--normalize takes on or off"),
                 }
             }
             "--ionizable" => {
@@ -416,6 +447,7 @@ fn main() {
         max_atoms,
         cache,
         tautomers,
+        normalize,
     };
     let mut rules = TautomerRules::new();
     rules.ionizable_endpoints = ionizable;
@@ -450,14 +482,17 @@ fn main() {
     };
     let work = &corpus[..end_of_work];
 
-    // One span per worker, cut at record boundaries. No reader thread, no
-    // barrier: a slow record holds up its own span and nothing else.
+    // Spans cut at record boundaries, many per worker. No reader thread, no
+    // barrier: a slow record holds up its own span and nothing else. Four per
+    // worker left the last forty minutes of a full PubChem run on a handful of
+    // threads, because the later records are larger and their spans finish
+    // last; small spans let idle workers take the rest of the work.
     let workers = if threads > 0 {
         threads
     } else {
         rayon::current_num_threads()
     };
-    let spans = cut_into_spans(work, workers * 4);
+    let spans = cut_into_spans(work, workers * 64);
     let in_flight = InFlight::new(spans.len());
     let finished = AtomicBool::new(false);
 
@@ -545,6 +580,7 @@ fn main() {
         &counts.canonical_permutation,
         &counts.tautomer_permutation,
         &counts.key_permutation,
+        &counts.key_canonical,
         &counts.key,
         &counts.panics,
         &counts.oversize,

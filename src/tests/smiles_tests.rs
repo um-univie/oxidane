@@ -330,11 +330,18 @@ mod aromatization_tests {
             "O=C(c1ccccn1)C2C34c5c6c7c8c9c%10c%11c7C23c%12c%11c%13c%14c%15c%12c%16c4c%17c5c%18c%19c6c8c%20c%21c9c%22c%10c%13c%23c%24c%22c%25c%21c%26c%20c%19c%27c%28c%29c%30c%31c(c(c%14%23)c%32c%31c%33c%29c(c%18%27)c%17c%33c%16c%15%32)c%24c%25c%30c%26%28"
         );
 
-        let molecule = diff_smiles(
+        let mut mols = MolecularGraph::from_smiles(
             "C12C(O)C(O)C(OC1CO)OC1C(O)C(O)C(OC3C(O)C(O)C(OC4C(CO)OC(OC5C(CO)OC(OC6C(O)C(O)C(OC7C(COc8cc9c%10[n-]c(nc%11nc(nc%12[n-]c(nc%13nc(n%10)-c%10c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c%10-%13)c%10c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c%10%12)-c%10c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c%10-%11)c9cc8)OC(O2)C(O)C7O)OC6CO)C(O)C5O)C(O)C4O)OC3CO)OC1CO.[Zn+2]",
-        );
+        ).unwrap();
         assert_eq!(
-            molecule,
+            mols.len(),
+            2,
+            "multi-component SMILES must parse both the ligand and the [Zn+2] counterion"
+        );
+        assert_eq!(mols[1].to_smiles(), "[Zn+2]");
+        let _ = mols[0].aromatize_opensmiles();
+        assert_eq!(
+            mols[0].to_smiles(),
             "C12C(O)C(O)C(OC1CO)OC3C(O)C(O)C(OC4C(O)C(O)C(OC5C(CO)OC(OC6C(CO)OC(OC7C(O)C(O)C(OC8C(COc9cc%10c%11[n-]c(nc-%12nc(nc%13[n-]c(nc-%14nc(n%11)-c%15c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c-%14%15)c%16c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c%13%16)-c%17c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c(OCC(F)(F)F)c-%12%17)c%10cc9)OC(O2)C(O)C8O)OC7CO)C(O)C6O)C(O)C5O)OC4CO)OC3CO"
         );
 
@@ -490,7 +497,6 @@ mod graph_comparison_tests {
 #[cfg(test)]
 mod new_aromatization {
     use super::*;
-    
 
     #[test]
     fn test_furan_aromatization() {
@@ -527,6 +533,8 @@ mod new_aromatization {
         let mut molecule = MolecularGraph::from_smiles_single("C1=CC=CC=CC=C1").unwrap();
 
         molecule.aromatize_opensmiles().unwrap();
+        assert!((0..molecule.len()).all(|i| !molecule.is_atom_aromatic(i)));
+        assert_eq!(molecule.to_smiles(), "C1=CC=CC=CC=C1");
     }
 
     #[test]
@@ -567,19 +575,15 @@ mod new_aromatization {
         .unwrap();
         molecule.aromatize_opensmiles().unwrap();
         println!("{}", molecule.to_smiles());
-        let mut number_of_aromatic_atoms = 0;
-        for atom_index in 0..molecule.len() {
-            if molecule.get_atomic_number(atom_index) == 6 {
-                number_of_aromatic_atoms += 1;
-            }
-        }
-        assert_eq!(number_of_aromatic_atoms, 20); // Five rings should be aromatic
+        let number_of_aromatic_atoms = (0..molecule.len())
+            .filter(|&i| molecule.is_atom_aromatic(i))
+            .count();
+        assert_eq!(number_of_aromatic_atoms, 20); // 16 carbons + 4 nitrogens in aromatic rings
 
         // [22]annulene
         let mut molecule =
             MolecularGraph::from_smiles_single("C1=CC=CC=CC=CC=CC=CC=CC=CC=CC=CC=C1").unwrap();
         molecule.aromatize_opensmiles().unwrap();
-        let _number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
@@ -590,28 +594,45 @@ mod new_aromatization {
         let mut molecule = MolecularGraph::from_smiles_single("C1=CC2=CC3=CC4=C5C6=C3C7=C2C(=C1)C8=C9C7=C1C6=C2C3=C6C1=C1C9=C(C=CC1=CC6=CC1=C3C3=C6C(=C1)C=C1C=CC=C7C1=C6C1=C6C3=C2C5=C2C6=C3C(=CC2=C4)C=CC2=C3C1=C7C=C2)C=C8").unwrap();
         molecule.aromatize_opensmiles().unwrap();
         println!("{}", molecule.to_smiles());
-        let _number_of_aromatic_atoms = 0;
         for atom_index in 0..molecule.len() {
             if molecule.get_atomic_number(atom_index) == 6 {
                 assert!(molecule.is_atom_aromatic(atom_index));
             }
         }
     }
+
     #[test]
     fn test_porphyrin() {
+        // Porphyrin has 24 ring atoms: 4 pyrrolic rings and 4 methine bridges.
+        // In the localized OpenSMILES model, 16 carbons and 4 nitrogens are aromatic,
+        // while 4 carbons carry localized double bonds.
         let mut molecule = MolecularGraph::from_smiles_single(
             "C1=CC2=CC3=CC=C(N3)C=C4C=CC(=N4)C=C5C=CC(=N5)C=C1N2",
         )
         .unwrap();
         molecule.aromatize_opensmiles().unwrap();
-        println!("{}", molecule.to_smiles());
+        let arom_c_1 = (0..molecule.len())
+            .filter(|&i| molecule.get_atomic_number(i) == 6 && molecule.is_atom_aromatic(i))
+            .count();
+        let arom_n_1 = (0..molecule.len())
+            .filter(|&i| molecule.get_atomic_number(i) == 7 && molecule.is_atom_aromatic(i))
+            .count();
+        assert_eq!(arom_c_1, 16);
+        assert_eq!(arom_n_1, 4);
 
         let mut molecule = MolecularGraph::from_smiles_single(
             "C1=CC2=CC5=CC=C(C=C4C=CC(C=C3C=CC(=CC1=N2)N3)=N4)N5",
         )
         .unwrap();
         molecule.aromatize_opensmiles().unwrap();
-        println!("{}", molecule.to_smiles());
+        let arom_c_2 = (0..molecule.len())
+            .filter(|&i| molecule.get_atomic_number(i) == 6 && molecule.is_atom_aromatic(i))
+            .count();
+        let arom_n_2 = (0..molecule.len())
+            .filter(|&i| molecule.get_atomic_number(i) == 7 && molecule.is_atom_aromatic(i))
+            .count();
+        assert_eq!(arom_c_2, 16);
+        assert_eq!(arom_n_2, 4);
     }
 }
 
@@ -619,18 +640,24 @@ mod new_aromatization {
 mod chirality_tests {
     use super::*;
     use crate::graph_algorithms::mol_canonization::{self, reorder_molecule};
-    
+
     use crate::molecule::chirality::ChiralClass;
     use crate::molecule::molecular_graph::MolecularGraph;
 
     #[test]
     fn chiral_smiles() {
+        // C[C@H](C)C is constitutionally achiral (isobutane), but verifies
+        // that unperceived parsed SMILES stereotags are preserved round-trip.
         let molecule = MolecularGraph::from_smiles("C[C@H](C)C").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
-
-        println!("{:?}", molecule.chiral_classes());
         molecule.aromatize_opensmiles().unwrap();
         assert_eq!(molecule.to_smiles(), "C[C@H](C)C");
+
+        // Genuinely chiral tetrahedral center:
+        let molecule = MolecularGraph::from_smiles("C[C@H](Cl)CC").unwrap();
+        let mut molecule = molecule.first().unwrap().clone();
+        molecule.aromatize_opensmiles().unwrap();
+        assert_eq!(molecule.to_smiles(), "C[C@H](Cl)CC");
 
         let molecule = MolecularGraph::from_smiles("N1[C@H](Cl)[C@@H](Cl)C(Cl)CC1").unwrap();
         let mut molecule = molecule.first().unwrap().clone();
@@ -697,7 +724,10 @@ mod chirality_tests {
     #[test]
     fn allene_chirality_update() {
         let mut mol = MolecularGraph::from_smiles_single("NC(Br)=[C@]=C(O)C").unwrap();
-        assert_eq!(mol.chiral_classes().unwrap()[3].clockness(), ChiralClass::Counterclockwise);
+        assert_eq!(
+            mol.chiral_classes().unwrap()[3].clockness(),
+            ChiralClass::Counterclockwise
+        );
 
         let labeling = vec![2, 1, 0, 3, 4, 5, 6];
         reorder_molecule(&mut mol, &labeling);
@@ -710,9 +740,6 @@ mod chirality_tests {
     fn cis_trans_chirality_update() {
         // Test molecule: cis/trans alkene (e.g., CHF=CHF)
         let mut mol = MolecularGraph::from_smiles_single("F/C=C/F").unwrap();
-        let chiral_classes = mol.chiral_classes().unwrap().to_vec();
-        println!("Chiral classes: {:?}", chiral_classes);
-        println!("Molecule: {:?}", mol.to_smiles());
 
         // Reordering the atoms must preserve the (E) stereochemistry; the emitted
         // directional bonds change form but still describe trans-difluoroethene
@@ -720,40 +747,10 @@ mod chirality_tests {
         let labeling = vec![1, 0, 3, 2];
         reorder_molecule(&mut mol, &labeling);
         assert_eq!(mol.to_smiles(), "C(/F)=C\\F");
+    }
 
-        let mut mol = MolecularGraph::from_smiles_single("F/C(C)=C(C)/F").unwrap();
-        let chiral_classes = mol.chiral_classes().unwrap().to_vec();
-        println!("Chiral classes: {:?}", chiral_classes);
-        println!("Molecule: {:?}", mol.to_smiles());
-
-        let labeling = vec![1, 0, 3, 2];
-        reorder_molecule(&mut mol, &labeling);
-        println!("Molecule: {:?}", mol.to_smiles());
-
-        let mol = MolecularGraph::from_smiles_single("F/C(C)=C(C)/F").unwrap();
-        println!("Molecule: {:?}", mol.to_smiles());
-        println!("Starting canonization");
-        // let mol = mol_canonization(&mol);
-
-        println!("Chiral classes: {:?}", mol.chiral_classes());
-        println!("Molecule: {:?}", mol.to_smiles());
-
-        let mol = MolecularGraph::from_smiles_single("F[C@@H]=[C@H]F").unwrap();
-        // let mol = mol_canonization(&mol);
-        println!("Molecule: {:?}", mol.to_smiles());
-
-        let mol = MolecularGraph::from_smiles_single("F[C@H]=[C@@H]F").unwrap();
-        // let mol = mol_canonization(&mol);
-        println!("Molecule: {:?}", mol.to_smiles());
-
-        let mol = MolecularGraph::from_smiles_single("C1(=NC)SC(=C)C(=O)N1(C)").unwrap();
-
-        println!("Molecule: {:?}", mol.to_smiles());
-
-        let mol = MolecularGraph::from_smiles_single("C1(=NC4)SC(=C)C(=O)N1(C4)").unwrap();
-        // let mol = mol_canonization(&mol);
-        println!("Molecule: {:?}", mol.to_smiles());
-
+    #[test]
+    fn test_cysteine_chiral_canonization() {
         // L-Cysteine: all input forms must canonicalize identically, and the
         // enantiomer (D-Cysteine) must stay distinct. The canonical form's
         // chirality sense matches RDKit (N[C@@H](CS)C(=O)O for L).
@@ -763,7 +760,8 @@ mod chirality_tests {
             "N[C@@H](CS)C(=O)O",
             "OC(=O)[C@@H](N)CS",
         ];
-        let l_canonical = mol_canonization::canonicalize_and_sort_smiles(l_forms[0], false).unwrap();
+        let l_canonical =
+            mol_canonization::canonicalize_and_sort_smiles(l_forms[0], false).unwrap();
         assert_eq!(l_canonical, "SC[C@H](N)C(O)=O");
         for form in &l_forms[1..] {
             assert_eq!(
@@ -778,23 +776,6 @@ mod chirality_tests {
             mol_canonization::canonicalize_and_sort_smiles("C([C@H](C(=O)O)N)S", false).unwrap();
         assert_eq!(d_canonical, "SC[C@@H](N)C(O)=O");
         assert_ne!(l_canonical, d_canonical);
-    }
-}
-
-mod tautomer_tests {
-    use crate::prelude::*;
-
-    #[test]
-    fn test_tautomers() {
-        let mut molecule = MolecularGraph::from_smiles_single("CC=CC=O").unwrap();
-        let mut tautomers = molecule.find_tautomers();
-        molecule.remove_tautomeric_hydrogens(&mut tautomers);
-        println!("{:?}", tautomers);
-        println!("{:#?}", molecule.atomic_numbers());
-
-        let molecule = MolecularGraph::from_smiles_single("CC=CO").unwrap();
-        let tautomers = molecule.find_tautomers();
-        println!("{:?}", tautomers);
     }
 }
 
@@ -816,7 +797,10 @@ mod subgraph_isomorphism_tests {
 
         assert_eq!(ethanol.match_submolecule(&carbon).unwrap().len(), 2);
         assert_eq!(ethanol.match_submolecule(&oxygen).unwrap().len(), 1);
-        assert!(ethanol.match_submolecule(&nitrogen).is_none(), "no nitrogen in ethanol");
+        assert!(
+            ethanol.match_submolecule(&nitrogen).is_none(),
+            "no nitrogen in ethanol"
+        );
 
         // A one-atom molecule against a one-atom pattern.
         let methane = MolecularGraph::from_smiles_single("C").unwrap();
@@ -889,7 +873,10 @@ mod subgraph_isomorphism_tests {
         for (pattern, expected) in [("CC", 2), ("CO", 1), ("CCO", 1)] {
             let query = MolecularGraph::from_smiles_single_raw(pattern).unwrap();
             assert_eq!(
-                ethanol.match_submolecule(&query).map(|m| m.len()).unwrap_or(0),
+                ethanol
+                    .match_submolecule(&query)
+                    .map(|m| m.len())
+                    .unwrap_or(0),
                 expected,
                 "{pattern}"
             );
@@ -912,8 +899,20 @@ mod subgraph_isomorphism_tests {
         let single_bond_pattern = MolecularGraph::from_smiles_single_raw("CC").unwrap();
         let double_bond_pattern = MolecularGraph::from_smiles_single_raw("C=C").unwrap();
 
-        assert_eq!(literal.match_submolecule(&single_bond_pattern).unwrap().len(), 6);
-        assert_eq!(literal.match_submolecule(&double_bond_pattern).unwrap().len(), 6);
+        assert_eq!(
+            literal
+                .match_submolecule(&single_bond_pattern)
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(
+            literal
+                .match_submolecule(&double_bond_pattern)
+                .unwrap()
+                .len(),
+            6
+        );
 
         // Perceived by default: the ring becomes aromatic, so it no longer has
         // any plain single or double bonds to find.
@@ -1077,7 +1076,11 @@ mod isotope_tests {
     fn an_unstated_isotope_stays_unstated() {
         let labelled = MolecularGraph::from_smiles_single("[13CH3]CO").unwrap();
         assert_eq!(labelled.get_isotope(0), Some(13));
-        assert_eq!(labelled.get_isotope(1), None, "the second carbon carries no label");
+        assert_eq!(
+            labelled.get_isotope(1),
+            None,
+            "the second carbon carries no label"
+        );
         assert_eq!(labelled.get_isotope(2), None, "the oxygen carries no label");
 
         // The effective mass number is still available, and is the same
@@ -1132,7 +1135,11 @@ mod radical_tests {
                 hydrogens,
                 "{smiles}: hydrogen count"
             );
-            assert_eq!(mol.radical_states()[0], radicals, "{smiles}: unpaired electrons");
+            assert_eq!(
+                mol.radical_states()[0],
+                radicals,
+                "{smiles}: unpaired electrons"
+            );
         }
     }
 
@@ -1154,14 +1161,19 @@ mod radical_tests {
         for (smiles, atom_count) in [("C", 5), ("CCO", 9), ("c1ccccc1", 12), ("N", 4)] {
             let mol = MolecularGraph::from_smiles_single(smiles).unwrap();
             assert_eq!(mol.atomic_numbers().len(), atom_count, "{smiles}");
-            assert!(mol.radical_states().iter().all(|&state| state == 0), "{smiles}");
+            assert!(
+                mol.radical_states().iter().all(|&state| state == 0),
+                "{smiles}"
+            );
         }
     }
 
     /// Charged species keep their stated hydrogens too.
     #[test]
     fn charged_bracketed_atoms_keep_their_hydrogens() {
-        for smiles in ["[NH4+]", "[NH3+]", "[N+]", "[O-]", "[OH-]", "[OH3+]", "[BH4-]", "[Na+]", "[Cl-]"] {
+        for smiles in [
+            "[NH4+]", "[NH3+]", "[N+]", "[O-]", "[OH-]", "[OH3+]", "[BH4-]", "[Na+]", "[Cl-]",
+        ] {
             let mol = MolecularGraph::from_smiles_single(smiles).unwrap();
             assert_eq!(mol.to_smiles(), smiles);
         }
@@ -1184,11 +1196,10 @@ mod charge_valency_tests {
     fn charged_species_round_trip() {
         for smiles in [
             // Nitrogen and beyond: a positive charge buys a bond.
-            "[NH4+]", "[NH3+]", "[N+]", "C[N+]", "C[NH3+]", "[NH-]C", "C[N-]C",
-            "[OH3+]", "[OH-]", "[O-]", "C[O-]", "C[O+]", "[S-]C", "[PH4+]",
+            "[NH4+]", "[NH3+]", "[N+]", "C[N+]", "C[NH3+]", "[NH-]C", "C[N-]C", "[OH3+]", "[OH-]",
+            "[O-]", "C[O-]", "C[O+]", "[S-]C", "[PH4+]",
             // Boron's group: a negative charge buys one.
-            "[BH4-]",
-            // Carbon's group: either sign costs one.
+            "[BH4-]", // Carbon's group: either sign costs one.
             "C[CH2+]", "[SiH3]",
             // Metals and halides have no hydrogens to gain or lose.
             "[Na+]", "[Cl-]", "[Fe]",
@@ -1203,11 +1214,11 @@ mod charge_valency_tests {
     #[test]
     fn radical_counts_follow_the_charge() {
         for (smiles, atom, radicals) in [
-            ("[N+]", 0, 4),    // tetravalent, no bonds at all
-            ("C[N+]", 1, 3),   // the nitrogen, one bond short of four
+            ("[N+]", 0, 4),  // tetravalent, no bonds at all
+            ("C[N+]", 1, 3), // the nitrogen, one bond short of four
             ("[NH3+]", 0, 1),
             ("[NH4+]", 0, 0),
-            ("[O-]", 0, 1),    // monovalent, no bonds
+            ("[O-]", 0, 1), // monovalent, no bonds
             ("[OH-]", 0, 0),
             ("[Na+]", 0, 0),
             ("[BH4-]", 0, 0),
@@ -1243,10 +1254,287 @@ mod organic_subset_tests {
     /// hydrogen, or more hydrogens than the lowest valence.
     #[test]
     fn everything_else_still_gets_brackets() {
-        for smiles in ["[NH4+]", "[CH3]", "[13CH3]C", "[2H]O", "c1cc[nH]c1", "[Na+]", "[Fe]"] {
+        for smiles in [
+            "[NH4+]",
+            "[CH3]",
+            "[13CH3]C",
+            "[2H]O",
+            "c1cc[nH]c1",
+            "[Na+]",
+            "[Fe]",
+        ] {
             let mol = MolecularGraph::from_smiles_single(smiles).unwrap();
             assert_eq!(mol.to_smiles(), smiles, "{smiles}");
         }
+    }
+}
+
+/// Malformed strings must come back as an error, never as a panic. Both cases
+/// here were found by fuzzing the parser with the output a sequence decoder
+/// produces before it has learned to close what it opens.
+#[cfg(test)]
+mod malformed_smiles_tests {
+    use crate::io::SMILESParseError;
+    use crate::prelude::*;
+
+    #[test]
+    fn a_ring_label_that_is_never_closed_is_rejected() {
+        // The chiral centre counts the pending closure among its neighbours
+        // when it records its tag, so silently dropping the closure left the
+        // tag describing an ordering the molecule does not have.
+        assert!(matches!(
+            MolecularGraph::from_smiles("C[C@H]1C"),
+            Err(SMILESParseError::RingIndexError)
+        ));
+        assert!(matches!(
+            MolecularGraph::from_smiles("C1CC"),
+            Err(SMILESParseError::RingIndexError)
+        ));
+        // Closing it is all it takes to be a molecule again.
+        assert!(MolecularGraph::from_smiles("C[C@H]1CC1").is_ok());
+        assert!(MolecularGraph::from_smiles("C1CC1").is_ok());
+    }
+
+    #[test]
+    fn a_ring_closure_may_still_span_a_dot() {
+        // Two fragments joined by a ring bond are one molecule, and the label
+        // is open across the dot rather than unclosed.
+        assert!(MolecularGraph::from_smiles("C1CC.CC1").is_ok());
+    }
+
+    #[test]
+    fn an_unterminated_bracket_is_rejected() {
+        // Everything inside a bracket atom is read forward using the closing
+        // bracket as a sentinel, so without one the reads ran off the string.
+        assert!(matches!(
+            MolecularGraph::from_smiles("[H]["),
+            Err(SMILESParseError::EOL)
+        ));
+        assert!(matches!(
+            MolecularGraph::from_smiles("C["),
+            Err(SMILESParseError::EOL)
+        ));
+        assert!(matches!(
+            MolecularGraph::from_smiles("CC[C@"),
+            Err(SMILESParseError::EOL)
+        ));
+    }
+}
+
+/// Cis/trans geometry through canonization, one case per defect found by
+/// sweeping PubChem.
+///
+/// Every one of these passed the whole suite before it was fixed, and every one
+/// was reduced from a two-hundred-character polycyclic dye where nothing was
+/// legible. The reductions are the tests: each is the smallest structure that
+/// shows its cause.
+mod cis_trans_tests {
+    use crate::graph_algorithms::mol_canonization::canonize_mol;
+    use crate::prelude::*;
+
+    /// Reads the SMILES, canonizes it, and reads the result back.
+    fn round_trip(smiles: &str) -> MolecularGraph {
+        let molecule = MolecularGraph::from_smiles_single(smiles).expect("the SMILES parses");
+        let written = canonize_mol(&molecule).to_smiles();
+        MolecularGraph::from_smiles_single(&written)
+            .unwrap_or_else(|_| panic!("{smiles} wrote {written}, which does not parse"))
+    }
+
+    fn marked_atoms(molecule: &MolecularGraph) -> usize {
+        (0..molecule.atomic_numbers().len())
+            .filter(|&atom| {
+                matches!(
+                    molecule.get_chiral_class(atom),
+                    ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+                )
+            })
+            .count()
+    }
+
+    /// Geometry survives canonization, whatever kind of bond has to carry the
+    /// mark: a ring closure, an aromatic ring bond, or the bond a pair of
+    /// conjugated double bonds share.
+    #[test]
+    fn geometry_survives_canonization() {
+        for smiles in [
+            // The mark has to go on a ring-closure digit.
+            "C1/C=C\\CC/C=C\\C1",
+            "C1C/C=C\\C=C/CC1",
+            // On an aromatic ring bond, for a double bond hanging off the ring.
+            "C/C=C1\\SC(=C/C)C=C1",
+            "C/C=C1\\N(C)C(=C/C)C=C1",
+            // On the bond two conjugated double bonds share.
+            "C/C=C/C(Cl)=C/C",
+            "C/C=C/C(=C/C)/Cl",
+            "C/C=C(/C)\\C=C(/N)\\F",
+            // And the plain cases, which never broke and must not start.
+            "F/C=C/F",
+            "C/C=C/C=C/C",
+            "OC(=O)/C=C\\C(=O)O",
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).expect("parses");
+            assert_eq!(
+                marked_atoms(&round_trip(smiles)),
+                marked_atoms(&molecule),
+                "{smiles} lost geometry"
+            );
+        }
+    }
+
+    /// Canonization settles, rather than alternating between two spellings of
+    /// the same geometry.
+    ///
+    /// It used to do neither: the marks were dropped one per pass until none
+    /// were left, so the form was stable only once it had become wrong.
+    #[test]
+    fn canonization_of_geometry_settles() {
+        for smiles in [
+            "C1/C=C\\CC/C=C\\C1",
+            "C1C/C=C\\C=C/CC1",
+            "C/C=C/C(Cl)=C/C",
+            "F/C=C/F",
+        ] {
+            let once = canonize_mol(&MolecularGraph::from_smiles_single(smiles).unwrap());
+            let twice =
+                canonize_mol(&MolecularGraph::from_smiles_single(&once.to_smiles()).unwrap());
+            assert_eq!(
+                twice.to_smiles(),
+                once.to_smiles(),
+                "{smiles} does not settle"
+            );
+        }
+    }
+
+    /// The two geometries stay different compounds.
+    ///
+    /// Preserving marks is not the same as preserving geometry: the first
+    /// attempt at the ring-closure fix kept every mark, was perfectly
+    /// idempotent, and had inverted the molecule -- cis,cis cycloocta-1,5-diene
+    /// came back as cis,trans. Only a comparison against a reference
+    /// implementation showed it, so this pins the distinction directly.
+    #[test]
+    fn the_two_geometries_do_not_collapse_together() {
+        let canonical =
+            |s: &str| canonize_mol(&MolecularGraph::from_smiles_single(s).unwrap()).to_smiles();
+        for (one, other) in [
+            ("C1/C=C\\CC/C=C\\C1", "C1/C=C\\CC/C=C/C1"),
+            ("F/C=C/F", "F/C=C\\F"),
+            ("C/C=C/C=C/C", "C/C=C\\C=C/C"),
+            ("C/C=C/C(Cl)=C/C", "C/C=C/C(Cl)=C\\C"),
+        ] {
+            assert_ne!(canonical(one), canonical(other), "{one} and {other}");
+        }
+    }
+
+    /// Geometry on a double bond hanging off an aromatic ring survives, which
+    /// needs the mark to be written on an aromatic bond *and* read back.
+    ///
+    /// This was a known loss for a while, recorded by a test that asserted the
+    /// loss and said to restore the emission once the parser could take it.
+    /// What blocked it: `MoleculeCore::actual_valency` counted a directional
+    /// bond as a single one, so an aromatic carbon carrying a mark looked half
+    /// a bond short of its valence, gained a hydrogen, and left its ring with no
+    /// Kekulé structure -- `c1/ccccc1` came back with two hydrogens on the
+    /// marked carbon and would not parse.
+    #[test]
+    fn geometry_on_an_aromatic_ring_survives() {
+        for smiles in ["C/C=C1\\SC(=C/C)C=C1", "C/C=C1\\N(C)C(=C/C)C=C1"] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).expect("parses");
+            assert_eq!(
+                marked_atoms(&round_trip(smiles)),
+                marked_atoms(&molecule),
+                "{smiles} lost geometry"
+            );
+        }
+        // And the bare ring the fix turned on still reads back with the right
+        // hydrogen count, which is what it was breaking.
+        let benzene = MolecularGraph::from_smiles_single("c1/ccccc1").expect("parses");
+        let hydrogens = benzene
+            .get_atom_bonds(0)
+            .unwrap()
+            .iter()
+            .filter(|bond| benzene.atomic_numbers()[bond.target()] == 1)
+            .count();
+        assert_eq!(hydrogens, 1, "a marked aromatic carbon gained a hydrogen");
+    }
+
+    /// A ring atom whose bonds *all* carry marks is still a ring atom, and the
+    /// hydrogen filler has to agree with the valence model about that.
+    ///
+    /// A quinoid thiophene is written `=c1/s/c(cc1)=`: both alpha carbons hold
+    /// an exocyclic double bond, and the marks that place its geometry sit on
+    /// the sulfur's two ring bonds, so the sulfur has no aromatic bond of its
+    /// own. `actual_valency` prices those marks as a ring atom's and measures
+    /// three; the filler used to ask only for a literal aromatic bond, find
+    /// none, trust the three, and hand the sulfur a hydrogen it has no room for.
+    /// Four PubChem macrocycles came back `C68H21` from a `C68H20` molecule.
+    #[test]
+    fn a_ring_atom_with_only_marks_gains_no_hydrogen() {
+        let quinoid = MolecularGraph::from_smiles_single("C(=c1/s/c(cc1)=C)").expect("parses");
+        let sulfur = quinoid
+            .atomic_numbers()
+            .iter()
+            .position(|&number| number == 16)
+            .expect("has a sulfur");
+        let hydrogens = quinoid
+            .get_atom_bonds(sulfur)
+            .unwrap()
+            .iter()
+            .filter(|bond| quinoid.atomic_numbers()[bond.target()] == 1)
+            .count();
+        assert_eq!(hydrogens, 0, "a marked ring sulfur gained a hydrogen");
+
+        // The narrower question had a reason, and it still holds: a lone mark on
+        // an ordinary substituent is an ordinary single bond, so these two
+        // writings of one molecule must fill the same way.
+        let hydrogen_count = |smiles: &str| {
+            let molecule = MolecularGraph::from_smiles_single(smiles).expect("parses");
+            molecule
+                .atomic_numbers()
+                .iter()
+                .filter(|&&number| number == 1)
+                .count()
+        };
+        assert_eq!(
+            hydrogen_count("Cl/Cl(=O)=N/N=O"),
+            hydrogen_count("ClCl(=O)=N/N=O"),
+            "a mark alone changed the hydrogen count"
+        );
+        // And two marked phenyls on one phosphorus are bonds into two separate
+        // rings, not ring bonds of one.
+        assert_eq!(hydrogen_count("N=P(/c1ccccc1)(\\c2ccccc2)C"), 14);
+    }
+
+    /// A double bond a small ring holds cis carries no mark at all, since the
+    /// ring already decides it -- and a mark written anyway competes with the
+    /// exocyclic bond that is genuinely stereogenic.
+    #[test]
+    fn a_ring_that_forces_the_geometry_gets_no_marks() {
+        // Pure ring double bonds in small rings (<= 7 members) force cis geometry
+        // and must not emit directional marks in canonical SMILES.
+        for smiles in ["C1CC/C=C\\CC1", "C1CC/C=C\\C1"] {
+            let canon = canonize_mol(&MolecularGraph::from_smiles_single(smiles).unwrap());
+            let written = canon.to_smiles();
+            assert!(
+                !written.contains('/') && !written.contains('\\'),
+                "{smiles} -> {written}: ring double bond should have no directional marks"
+            );
+            let parsed = MolecularGraph::from_smiles_single(&written).unwrap();
+            assert_eq!(marked_atoms(&parsed), 0, "{smiles} -> {written}");
+        }
+
+        // When both a forced-cis ring double bond and stereogenic acyclic/exocyclic
+        // double bonds are present, only the acyclic/exocyclic bonds retain marks
+        // (4 marked atoms: 2 for each stereogenic double bond; 0 for the ring double bond).
+        let smiles = "C/C=C1\\C=C(/C=C/C)C=C1";
+        let canon = canonize_mol(&MolecularGraph::from_smiles_single(smiles).unwrap());
+        let written = canon.to_smiles();
+        let parsed = MolecularGraph::from_smiles_single(&written).unwrap();
+        assert_eq!(
+            marked_atoms(&parsed),
+            4,
+            "{smiles} -> {written}: only the two non-ring double bonds should be marked"
+        );
     }
 
     /// The two substituents on one end of a double bond sit on opposite
@@ -1262,33 +1550,11 @@ mod organic_subset_tests {
             "C/C(=C\\1\\CCCC1C)/C#N",
         ] {
             let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
-            assert_eq!(cis_trans_atoms(&molecule), 0, "{smiles} kept a geometry");
+            assert_eq!(marked_atoms(&molecule), 0, "{smiles} kept a geometry");
         }
-        for smiles in [
-            "F/C(/Cl)=C/F",
-            "F/C(Cl)=C(\\Br)/I",
-            "C/C(=C/1\\CCCC1C)/C#N",
-        ] {
+        for smiles in ["F/C(/Cl)=C/F", "F/C(Cl)=C(\\Br)/I", "C/C(=C/1\\CCCC1C)/C#N"] {
             let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
-            assert_eq!(cis_trans_atoms(&molecule), 2, "{smiles} lost its geometry");
+            assert_eq!(marked_atoms(&molecule), 2, "{smiles} lost its geometry");
         }
-    }
-
-    fn cis_trans_atoms(molecule: &MolecularGraph) -> usize {
-        use crate::molecule::chirality::ChiralClass;
-        molecule
-            .chiral_classes()
-            .map(|classes| {
-                classes
-                    .iter()
-                    .filter(|class| {
-                        matches!(
-                            class,
-                            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
-                        )
-                    })
-                    .count()
-            })
-            .unwrap_or(0)
     }
 }

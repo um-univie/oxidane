@@ -125,13 +125,7 @@ pub trait MoleculeCore {
             .any(|&radical_state| radical_state > 0)
     }
 
-    /// This function returns the valency_delta of an atom
-    ///
-    ///
-    /// # Examples
-    /// use oxidane::prelude::*;
-    /// let molecule = Molecule3D::from_smiles("C1CCCCC1CC2CCCCC2");
-    /// assert_eq!(molecule.valency_delta(0), Some(0));
+    /// Difference between expected and actual valency for an atom, or `None` if the element has no expected valency.
     fn valency_delta(&self, atom_index: usize) -> Option<i8> {
         let expected_valency = self.expected_valency(atom_index)?;
         let actual_valency = self.actual_valency(atom_index);
@@ -183,8 +177,7 @@ pub trait MoleculeCore {
         let shift = match element {
             5 | 13 | 31 | 49 | 81 => -charge,
             6 | 14 | 32 | 50 | 82 => -charge.abs(),
-            7 | 15 | 33 | 51 | 83 | 8 | 16 | 34 | 52 | 84
-                | 9 | 17 | 35 | 53 | 85 => charge,
+            7 | 15 | 33 | 51 | 83 | 8 | 16 | 34 | 52 | 84 | 9 | 17 | 35 | 53 | 85 => charge,
             _ => -charge.abs(),
         };
         let radicals = self.radical_states().get(atom_index).copied().unwrap_or(0) as i16;
@@ -254,18 +247,14 @@ pub trait MoleculeCore {
         self.atomic_numbers().get(atom_index)?.electronegativity()
     }
 
-    /// This function returns the oxidation state of an atom
+    /// Calculates the formal oxidation state of an atom by comparing electronegativities across its bonds.
     ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
     /// assert_eq!(molecule.get_oxidation_state(0), -3);
-    ///
     /// ```
     fn get_oxidation_state(&self, atom_index: usize) -> i8 {
         let mut state = self.get_atom_charge(atom_index);
@@ -280,7 +269,7 @@ pub trait MoleculeCore {
         state
     }
 
-    /// This function returns the number of bonded elements of a specific type in case of invalid atom index it returns 0 to keep the api simple
+    /// Number of bonded neighbors matching element `element`, or 0 if `atom_index` is out of bounds.
     fn number_of_bonded_element(&self, atom_index: usize, element: u8) -> usize {
         let Some(bonds) = self.get_atom_bonds(atom_index) else {
             return 0;
@@ -295,22 +284,90 @@ pub trait MoleculeCore {
         self.atomic_numbers()[atom_index].valencies()?.next()
     }
 
-    /// This function returns the actual valency of an atom. In case of fractional valency it returns the rounded down value (e.g. fused aromatic systems are treated as aromatic)
+    /// Whether `atom_index` is one of an aromatic ring's atoms.
     ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
+    /// `is_atom_aromatic` asks whether it still has an aromatic bond, and that
+    /// misses the atom whose ring bonds *all* carry directional marks -- it has
+    /// none left to be recognised by, so its neighbours' bonds were counted as
+    /// single, they gained a hydrogen each, and the ring stopped kekulizing.
+    /// Two directional bonds on one atom mean it sits in a ring of them; one
+    /// directional bond and no aromatic bond is an ordinary substituent and
+    /// stays single.
+    fn sits_in_an_aromatic_ring(&self, atom_index: usize) -> bool {
+        if self.is_atom_aromatic(atom_index) {
+            return true;
+        }
+        // Two marks and an aromatic neighbour along one of them. Both halves
+        // are needed: two marks alone is also what a carbon between two
+        // stereogenic double bonds looks like, and calling that aromatic gives
+        // it a valence it does not have -- 56 perfectly ordinary dienes stopped
+        // parsing when the count alone was the test.
+        let mut marks = 0usize;
+        let mut an_aromatic_neighbour = false;
+        for bond in self.atom_bonds()[atom_index].iter() {
+            if bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down {
+                marks += 1;
+                an_aromatic_neighbour |= self.is_atom_aromatic(bond.target());
+            }
+        }
+        // And the atom has to be one an aromatic ring could hold: at most three
+        // connections, because a fourth leaves no room for the π system.
+        // Without that, a phosphorus carrying two marked phenyls --
+        // `N=P(/c1ccccc1)(\c2ccccc2)C` -- was read as sitting in an aromatic
+        // ring, its two bonds priced at three half-units each, and it came back
+        // a hydrogen heavier than it went in. Those bonds join it to two
+        // *separate* rings; they are not ring bonds of one.
+        marks >= 2 && self.atom_bonds()[atom_index].len() <= 3 && an_aromatic_neighbour
+    }
+
+    /// Whether any of `atom_index`'s bonds is one [`MoleculeCore::actual_valency`]
+    /// prices above a single bond -- three half-units rather than two.
     ///
-    /// # Returns
-    /// The actual valency of the atom as an `i8`
-    ///
-    ///
+    /// That is the question "is this atom's valence settled?", and it has to be
+    /// asked exactly the way the pricing asks it. An aromatic bond is the
+    /// obvious case. The other is a directional mark between two atoms of an
+    /// aromatic ring, which the pricing also charges three half-units for: a
+    /// quinoid thiophene written `=c1/s/c(cc1)=` leaves its sulfur no aromatic
+    /// bond of its own, both ring bonds having been marked to place the
+    /// exocyclic geometry. Priced as a ring atom it measures three; asked for
+    /// aromatic bonds it answers none, and the gap between the two readings
+    /// became a hydrogen the molecule has no room for.
+    fn has_an_unsettled_bond(&self, atom_index: usize) -> bool {
+        self.get_atom_bonds(atom_index)
+            .unwrap_or_default()
+            .iter()
+            .any(|bond| match bond.bond_order() {
+                BondOrder::Aromatic => true,
+                BondOrder::Up | BondOrder::Down => {
+                    self.sits_in_an_aromatic_ring(atom_index)
+                        && self.sits_in_an_aromatic_ring(bond.target())
+                }
+                _ => false,
+            })
+    }
+
+    /// Actual valency of an atom. Fractional aromatic valencies round down.
     fn actual_valency(&self, atom_index: usize) -> i8 {
+        // A directional mark is not a bond order; it says which side of a
+        // double bond a substituent sits on, and the bond underneath it is
+        // whatever it would otherwise have been. Between two aromatic atoms
+        // that is an aromatic bond, worth three half-units rather than the two
+        // a single bond gets. Counting it as single leaves the atom looking
+        // half a bond short, which rounds up to a whole missing hydrogen:
+        // `c1/ccccc1` gained a second hydrogen on the marked carbon, and its
+        // ring then had no Kekulé structure at all.
+        let directional = |target: usize| {
+            if self.sits_in_an_aromatic_ring(atom_index) && self.sits_in_an_aromatic_ring(target) {
+                3
+            } else {
+                2
+            }
+        };
         (self.atom_bonds()[atom_index]
             .iter()
             .map(|bond| match bond.bond_order() {
                 BondOrder::Single => 2,
-                BondOrder::Up => 2,
-                BondOrder::Down => 2,
+                BondOrder::Up | BondOrder::Down => directional(bond.target()),
                 BondOrder::Double => 4,
                 BondOrder::Triple => 6,
                 BondOrder::Quadruple => 8,
@@ -321,14 +378,7 @@ pub trait MoleculeCore {
             / 2
     }
 
-    /// This function returns the degree of an atom, which is the sum of the valency delta, the charge and the radical state
-    ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    ///
-    /// # Returns
-    /// The degree of the atom as an `i8`
-    ///
+    /// Degree of an atom, calculated as actual valency plus radicals minus effective valency.
     fn get_atom_degree(&self, atom_index: usize) -> Option<i8> {
         let actual_valency = self.actual_valency(atom_index);
         let charge = self.get_atom_charge(atom_index);
@@ -353,14 +403,7 @@ pub trait MoleculeCore {
         Some(isotope)
     }
 
-    /// This function returns the degree of all atoms in the molecule
-    ///
-    /// # Arguments
-    /// * 'self' - The molecule
-    ///
-    /// # Returns
-    /// A vector of degrees for all atoms in the molecule as an `i8`
-    ///
+    /// Degree of all atoms in the molecule.
     fn degrees(&self) -> Vec<i8> {
         self.atomic_numbers()
             .iter()
@@ -377,52 +420,30 @@ pub trait MoleculeCore {
             .iter()
             .enumerate()
             .map(|(index, &element)| match self.get_isotope(index) {
-                Some(mass_number) => crate::atom::isotope_mass(element, mass_number).unwrap_or(f64::NAN),
+                Some(mass_number) => {
+                    crate::atom::isotope_mass(element, mass_number).unwrap_or(f64::NAN)
+                }
                 None => element.monoisotopic_mass().unwrap_or(0.0),
             })
             .sum::<f64>()
     }
 
-    /// This function returns the number of atoms in the molecule, which is the length of the atomic numbers vector
-    ///
-    /// # Arguments
-    /// * 'self' - The molecule
-    ///
-    /// # Returns
-    /// The number of atoms in the molecule as an `usize`
+    /// Number of atoms in the molecule.
     fn number_of_atoms(&self) -> usize {
         self.atomic_numbers().len()
     }
 
-    /// This function returns the formal charge of the molecule, which is the sum of the charges of all atoms
-    ///
-    /// # Arguments
-    /// * 'self' - The molecule
-    ///
-    /// # Returns
-    /// The formal charge of the molecule as an `i32`
+    /// Net formal charge of the molecule, summing charges across all atoms.
     fn formal_charge(&self) -> i32 {
         self.charges().iter().sum::<i8>() as i32
     }
 
-    /// This function returns a copy of the formal charge of an atom
-    ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    ///
-    /// # Returns
-    /// The charge of the atom as an `i8`
+    /// Formal charge of the atom at `atom_index`.
     fn get_atom_charge(&self, atom_index: usize) -> i8 {
         self.charges()[atom_index]
     }
 
-    /// This function returns a mutable reference to the formal charge of an atom
-    ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    ///
-    /// # Returns
-    /// The charge of the atom as an `i8`
+    /// Mutable reference to the formal charge of the atom at `atom_index`.
     fn get_atom_charge_mut(&mut self, atom_index: usize) -> &mut i8 {
         &mut self.charges_mut()[atom_index]
     }
@@ -440,43 +461,29 @@ pub trait MoleculeCore {
             .filter(|&isotope| isotope != 0)
     }
 
-    /// This function returns the chiral class of an atom, if one is specified
-    ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    ///
-    /// # Returns
-    /// The chiral class of the atom as an `Option<ChiralClass>`
+    /// Chiral class of the atom at `atom_index`, or [`ChiralClass::None`] if unspecified.
     fn get_chiral_class(&self, atom_index: usize) -> ChiralClass {
         self.chiral_classes()
             .and_then(|chirals| chirals.get(atom_index).copied())
             .unwrap_or(ChiralClass::None)
     }
 
-    /// This function returns whether an atom is radical, if no radical state is specified we assume the atom is not radical
-    ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    ///
-    /// # Returns
-    /// The radical state of the atom as a `bool`
+    /// Returns `true` if the atom at `atom_index` has a non-zero radical state.
     fn is_atom_radical(&self, atom_index: usize) -> bool {
-        self.radical_states().get(atom_index).is_some_and(|&state| state > 0)
+        self.radical_states()
+            .get(atom_index)
+            .is_some_and(|&state| state > 0)
     }
 
-    /// This function sets the radical state of an atom
-    ///
-    /// # Arguments
-    /// * 'atom_index' - The index of the atom
-    /// * 'is_radical' - The new radical state of the atom
-    ///
-    /// # Returns
-    /// The radical state of the atom as a `bool`
+    /// Sets the radical state of the atom at `atom_index`.
     fn set_atom_radical_state(&mut self, atom_index: usize, radical_state: u8) {
         if atom_index < self.radical_states().len() {
             self.radical_states_mut()[atom_index] = radical_state;
         } else {
-            debug_assert!(false, "atom index out of bounds, could not set radical state");
+            debug_assert!(
+                false,
+                "atom index out of bounds, could not set radical state"
+            );
         }
     }
 
@@ -553,18 +560,20 @@ pub trait MoleculeCore {
             .map(|bonds| bonds.as_mut_slice())
     }
 
-    /// This function builds a smiles tree from the molecule
-    ///
-    /// # Arguments
-    /// * 'start_index' - The index of the atom to start the tree from
-    /// * 'bond_type' - The type of bond to start the tree from
-    /// * 'parent_index' - The index of the parent atom
-    /// * 'visited' - A vector of visited atoms
-    /// * 'ring_closures' - A vector of ring closures
-    /// * 'traversal_order' - A vector of the traversal order of the tree
-    ///
-    /// # Returns
-    /// The root of the smiles tree
+    /// Whether SMILES represents this atom in its neighbour's bracket H count.
+    /// Only a terminal, unlabelled, neutral, nonradical hydrogen on a non-H atom
+    /// may fold. The traversal, H counts and stereo ordering share this rule.
+    fn hydrogen_folds_into_neighbour(&self, atom: usize) -> bool {
+        self.atomic_numbers()[atom] == 1
+            && self.get_isotope(atom).is_none()
+            && self.charges().get(atom).copied().unwrap_or(0) == 0
+            && self.radical_states().get(atom).copied().unwrap_or(0) == 0
+            && self.atom_bonds()[atom].len() == 1
+            && self.atom_bonds()[atom][0].bond_order() == BondOrder::Single
+            && self.atomic_numbers()[self.atom_bonds()[atom][0].target()] != 1
+    }
+
+    /// Builds a SMILES traversal tree, recording non-tree edges as closures.
     fn build_smiles_tree(
         &self,
         start_index: usize,
@@ -581,20 +590,14 @@ pub trait MoleculeCore {
         let mut bonds = self.atom_bonds()[start_index];
         bonds.sort_by_key(|bond| bond.target());
 
-        // A hydrogen folds into its neighbour's `H` count and needs no node of
-        // its own — unless it carries an isotope, which can only be written as
-        // a separate atom (`O[2H]`). Checking whether the molecule has any
-        // isotopes at all first keeps the common case to one `Option` test.
-        let has_labelled_hydrogens = self.isotopes().is_some();
-
         for neighbor in bonds {
             if Some(neighbor.target()) == parent_index {
                 continue;
             }
 
-            if self.atomic_numbers()[neighbor.target()] == 1
-                && !(has_labelled_hydrogens && self.get_isotope(neighbor.target()).is_some())
-            {
+            // The tree, bracket counts and stereo ordering must use the same
+            // folding rule: every other hydrogen is emitted exactly once.
+            if self.hydrogen_folds_into_neighbour(neighbor.target()) {
                 continue;
             }
 
@@ -861,34 +864,117 @@ pub trait MoleculeCore {
     /// Without this both came back with a hydrogen the file had ruled out.
     /// An entry of `None`, or an index past the end, means "use the model".
     fn add_hydrogens_with_valences(&mut self, valences: &[Option<u8>]) {
+        // How many hydrogens each atom is short of the valence its bonds have
+        // already reached into -- the smallest of its element's normal valences
+        // that they have not outgrown, which is what OpenSMILES asks for and
+        // what every other toolkit fills by. `OS=O` is sulfurous acid, its
+        // sulfur three bonds into a valence of four and so one hydrogen short;
+        // against sulfur's valence of two it looked already over and got none.
+        // `MoleculeCore::get_atom_degree` keeps the narrower reading, because
+        // aromaticity, hybridization and Crippen all measure against it and
+        // mean it.
+        //
+        // The exemption is written against the atom's *bonds*. `actual_valency`
+        // prices an aromatic bond above a single one, so thiophene's sulfur
+        // measures three and this would find it a bond short of four and hand
+        // it a hydrogen it has no room for. The atom's aromatic flag is not the
+        // test: a ring perception has **rejected** keeps the orders that made it
+        // look aromatic, so the flag reads false while the valency still reads
+        // three. Nor is ring membership the test -- that loses a cyclic
+        // H-phosphonate, whose phosphorus is four bonds into a valence of five
+        // and genuinely one hydrogen short.
+        //
+        // What this costs is worth stating. Where two writings of one compound
+        // leave an atom with different bond orders -- which happens wherever
+        // perception refuses a ring one way and not the other -- the rule turns
+        // that difference into a hydrogen, and `normalize`'s answer stops
+        // matching the molecule it was written from: seven merocyanine dyes and
+        // a germanium macrocycle do that, over thirty million records. Taking
+        // the rule out costs more. Dialkyl H-phosphonates are then written
+        // `[P](OC)(OC)=O`, whose bracket makes `assign_radicals` give the
+        // phosphorus an unpaired electron on the way back in, so the answer no
+        // longer shares a key with what it came from -- twelve of those in the
+        // first four hundred thousand records alone, and `OS=O` loses its
+        // answer entirely. Both costs are the same underlying defect: an atom
+        // whose valence two readings disagree about. Fixing that upstream is
+        // what would settle it.
         let degrees = self.degrees();
-        degrees.iter().enumerate().for_each(|(index, &degree)| {
-            let atomic_number = self.atomic_numbers()[index];
+        let shortfalls: Vec<i8> = (0..self.len())
+            .map(|index| {
+                // An aromatic bond has no whole number of π units, and a
+                // *directional* one has no settled order at all -- the mark says
+                // which side a substituent sits on, and what lies under it is
+                // decided later, by perception. `actual_valency` already prices
+                // such a bond at three half-units when the atom sits in a ring
+                // the input wrote aromatic, so measuring the atom here and then
+                // topping it up counts the same bond two ways.
+                //
+                // Hydrogens are filled before `localize_aromatic_bonds` and
+                // `aromatize` have run, so the aromaticity in question is the
+                // one the *input asserted*, which perception may go on to
+                // refuse. A merocyanine dye writes `/s/c(...)`; its sulfur was
+                // read as valence three, given a hydrogen, and then the ring was
+                // rejected -- leaving an ordinary sulfide carrying a hydrogen it
+                // cannot have, and a formula one heavier than the molecule.
+                //
+                // What counts as unsettled is whatever `actual_valency` priced
+                // above a single bond, which `has_an_unsettled_bond` asks in
+                // those same terms -- so the ring atom whose bonds all carry
+                // marks is caught too, and not merely the one with an aromatic
+                // bond left to be recognised by. Asking the narrower question
+                // cost four quinoid macrocycles, whose canonical form came back
+                // a hydrogen heavier than it went out.
+                //
+                // A lone `/` or `\` is still a single bond that has been told
+                // which way to lean, worth exactly one either way: counting
+                // every mark as unsettled gave `Cl/Cl(=O)=N/N=O` and
+                // `ClCl(=O)=N/N=O` different hydrogen counts, hence different
+                // canonization invariants, hence different canonical forms for
+                // one molecule. `sits_in_an_aromatic_ring` is what keeps the
+                // two apart.
+                if self.has_an_unsettled_bond(index) {
+                    return -degrees[index];
+                }
+                let radicals = self.radical_states().get(index).copied().unwrap_or(0) as i8;
+                let spent = self.actual_valency(index) + radicals;
+                saturating_valency(
+                    self.atomic_numbers()[index],
+                    self.get_atom_charge(index),
+                    spent,
+                )
+                .map_or(0, |valence| valence - spent)
+            })
+            .collect();
+        shortfalls
+            .iter()
+            .enumerate()
+            .for_each(|(index, &shortfall)| {
+                let atomic_number = self.atomic_numbers()[index];
 
-            if atomic_number == 1 {
-                return;
-            }
+                if atomic_number == 1 {
+                    return;
+                }
 
-            let number_of_hydrogens = match valences.get(index).copied().flatten() {
-                // The stated valence counts the bonds already there, so what is
-                // left over is the hydrogen count. A file may state a valence
-                // the bonds already exceed, which leaves nothing to add rather
-                // than something to remove.
-                Some(valence) => (valence as i8 - self.actual_valency(index)).max(0),
-                None => -degree,
-            };
+                let number_of_hydrogens = match valences.get(index).copied().flatten() {
+                    // The stated valence counts the bonds already there, so what is
+                    // left over is the hydrogen count. A file may state a valence
+                    // the bonds already exceed, which leaves nothing to add rather
+                    // than something to remove.
+                    Some(valence) => (valence as i8 - self.actual_valency(index)).max(0),
+                    None => shortfall,
+                };
 
-            for _ in 0..number_of_hydrogens {
-                let _hydrogen_index = self.atomic_numbers().len();
-                let atom = Atom::new(1)
-                    .with_charge(0)
-                    .with_radical(0)
-                    .with_bonds(array_vec!([BondTarget;10] => BondTarget::single(index)))
-                    .with_chiral_class(ChiralClass::None);
+                for _ in 0..number_of_hydrogens {
+                    let _hydrogen_index = self.atomic_numbers().len();
+                    let atom = Atom::new(1)
+                        .with_charge(0)
+                        .with_radical(0)
+                        .with_bonds(array_vec!([BondTarget;10] => BondTarget::single(index)))
+                        .with_chiral_class(ChiralClass::None);
 
-                self.add_atom(atom);
-            }
-        });
+                    self.add_atom(atom);
+                }
+            });
     }
 
     /// Returns true if the molecule contains explicitly defined hydrogen atoms
@@ -1193,7 +1279,7 @@ pub trait MoleculeCore {
     /// * `cycle` - BitSet representing a cycle
     ///
     /// # Returns
-    /// A Vec<usize> containing the atom indices in order
+    /// A `Vec<usize>` containing the atom indices in order
     fn fundamental_cycle_to_vec(&self, cycle: &BitSet) -> Vec<usize> {
         let mut atoms = cycle.iter().collect::<Vec<_>>();
 
@@ -1314,105 +1400,6 @@ pub trait MoleculeCore {
         } else {
             false
         }
-    }
-
-    fn remove_tautomeric_hydrogens(&mut self, tautomers: &mut [bool]) -> Vec<usize> {
-        let mut hydrogens_to_remove = Vec::new();
-        for (atom_index, &is_tautomeric) in tautomers.iter().enumerate() {
-            if is_tautomeric {
-                let bond_count = self.atom_bonds()[atom_index].len();
-                let expected_valency = self.expected_valency(atom_index).unwrap_or(0);
-                if bond_count + 1 > expected_valency as usize {
-                    let bonds = self.get_atom_bonds(atom_index).unwrap_or_default();
-                    for bond in bonds.iter() {
-                        if self.get_atomic_number(bond.target()) == 1 {
-                            hydrogens_to_remove.push(bond.target());
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        for hydrogen_index in hydrogens_to_remove.iter() {
-            self.remove_atom(*hydrogen_index);
-        }
-        hydrogens_to_remove
-    }
-
-    fn find_tautomers(&self) -> Vec<bool> {
-        let mut is_tautomeric = vec![false; self.len()];
-        let mut stack = Vec::new();
-        let mut visited = vec![false; self.len()];
-
-        // Find all oxygen atoms as starting points
-        let oxygens = self
-            .atomic_numbers()
-            .iter()
-            .enumerate()
-            .filter(|&(_, atomic_number)| *atomic_number == 8)
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-
-        // Process each oxygen atom as a potential start of a tautomeric path
-        for &start_oxygen in &oxygens {
-            // Reset visited for each new oxygen starting point
-            visited.fill(false);
-
-            // Mark hydrogens as visited since they can't be part of conjugated system
-            for (atom_index, &atomic_number) in self.atomic_numbers().iter().enumerate() {
-                if atomic_number == 1 {
-                    visited[atom_index] = true;
-                }
-            }
-
-            // Initialize search from this oxygen
-            stack.push((start_oxygen, Vec::new(), None, 0));
-            visited[start_oxygen] = true;
-
-            while let Some((current, current_path, last_bond_order, path_length)) = stack.pop() {
-                let bonds = self.atom_bonds()[current].clone();
-
-                // Check if there are any unvisited double bonds
-                let has_unvisited_double_bonds = bonds
-                    .iter()
-                    .any(|bond| !visited[bond.target()] && bond.bond_order() == BondOrder::Double);
-
-                // If we have a valid path and no unvisited double bonds that could lead to longer paths
-                if !has_unvisited_double_bonds && last_bond_order.is_some() {
-                    // Mark the entire path as tautomeric
-                    is_tautomeric[start_oxygen] = true;
-                    for &(atom, _, _) in &current_path {
-                        is_tautomeric[atom] = true;
-                    }
-                    is_tautomeric[current] = true;
-                }
-
-                for bond in bonds {
-                    let target = bond.target();
-
-                    if visited[target] {
-                        continue;
-                    }
-
-                    let is_valid_continuation = match last_bond_order {
-                        None => true,
-                        Some(BondOrder::Single) => bond.bond_order() == BondOrder::Double,
-                        Some(BondOrder::Double) => bond.bond_order() == BondOrder::Single,
-                        _ => false,
-                    };
-
-                    if is_valid_continuation {
-                        let mut new_path = current_path.clone();
-                        new_path.push((current, target, bond.bond_order()));
-
-                        stack.push((target, new_path, Some(bond.bond_order()), path_length + 1));
-                        visited[target] = true;
-                    }
-                }
-            }
-        }
-
-        is_tautomeric
     }
 
     /// The atoms and bonds that lie on a ring.

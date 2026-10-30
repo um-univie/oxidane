@@ -21,12 +21,12 @@
 //!
 //! # Structure
 //!
-//! - [`mol`] — the molecule as the rules need it: Kekulé bond orders, ring
+//! - `mol` — the molecule as the rules need it: Kekulé bond orders, ring
 //!   membership, and Mancude-ring averaged atomic numbers.
-//! - [`digraph`] — the hierarchical digraph, built lazily.
-//! - [`rules`] — the nine sequence rules and the substituent sort.
-//! - [`configs`] — tetrahedral centres and double bonds.
-//! - [`descriptor`] — descriptors and like/unlike pair lists.
+//! - `digraph` — the hierarchical digraph, built lazily.
+//! - `rules` — the nine sequence rules and the substituent sort.
+//! - `configs` — tetrahedral centres and double bonds.
+//! - `descriptor` — descriptors and like/unlike pair lists.
 //!
 //! Allenes are covered too, though RDKit's labeller does not cover them: the
 //! axis is treated as a collapsed tetrahedral centre whose four ligands are
@@ -155,7 +155,10 @@ fn budgeted<T>(
     label: impl FnOnce(&mut Ctx) -> T,
 ) -> T {
     let granted = cap.min(*remaining);
-    let mut ctx = Ctx { master, budget: granted };
+    let mut ctx = Ctx {
+        master,
+        budget: granted,
+    };
     let result = label(&mut ctx);
     *remaining -= granted - ctx.budget;
     result
@@ -219,9 +222,12 @@ impl MolecularGraph {
 
         // Cheap pass: constitutional rules only, tight budget.
         for (index, config) in found.iter().enumerate() {
-            let descriptor = budgeted(&mut remaining, &CONSTITUTIONAL_RULES, CONSTITUTIONAL_BUDGET, |ctx| {
-                config.label(&mut digraphs[index], ctx)
-            });
+            let descriptor = budgeted(
+                &mut remaining,
+                &CONSTITUTIONAL_RULES,
+                CONSTITUTIONAL_BUDGET,
+                |ctx| config.label(&mut digraphs[index], ctx),
+            );
             if descriptor != Descriptor::Unknown {
                 labels[index] = descriptor;
             }
@@ -343,7 +349,9 @@ fn find_configurations(mol: &MolecularGraph) -> Vec<Configuration> {
     let mut configs = Vec::new();
 
     for (atom, &class) in classes.iter().enumerate() {
-        let ChiralClass::TH(tag) = class else { continue };
+        let ChiralClass::TH(tag) = class else {
+            continue;
+        };
         let neighbours = index_sorted_neighbors(mol, atom);
         // The stored tag is expressed against the index-sorted neighbour
         // order, so that is the reference order the parity is taken from.
@@ -357,8 +365,12 @@ fn find_configurations(mol: &MolecularGraph) -> Vec<Configuration> {
     }
 
     for (centre, &class) in classes.iter().enumerate() {
-        let ChiralClass::AL(tag) = class else { continue };
-        let Some(carriers) = index_sorted_allene_carriers(mol, centre) else { continue };
+        let ChiralClass::AL(tag) = class else {
+            continue;
+        };
+        let Some(carriers) = index_sorted_allene_carriers(mol, centre) else {
+            continue;
+        };
         let mut ends: Vec<usize> = mol.atom_bonds()[centre]
             .iter()
             .map(|bond| bond.target())
@@ -433,7 +445,7 @@ fn stereogenic_double_bonds(
 /// reference used throughout the crate.
 ///
 /// The parser stores each `@`/`@@` relative to the atom's SMILES *written* order.
-/// `write_orders[center]` holds `(has_from, heavy_neighbors_in_written_order)` as
+/// `write_orders[center]` holds the from-atom flag, neighbor order and ring count as
 /// captured during parsing; the implicit hydrogen (added afterwards) belongs right
 /// after the from-atom, or first for a fragment root. Re-expressing the tag against
 /// the atom's index-sorted neighbor ordering yields a reference that does not depend
@@ -442,7 +454,7 @@ fn stereogenic_double_bonds(
 /// right after parsing (with hydrogens already added).
 pub(crate) fn normalize_tetrahedral_references(
     mol: &mut MolecularGraph,
-    write_orders: &crate::io::IntMap<usize, (bool, Vec<usize>)>,
+    write_orders: &crate::io::IntMap<usize, crate::io::SmilesWriteOrder>,
 ) {
     let Some(classes) = mol.chiral_classes() else {
         return;
@@ -456,9 +468,10 @@ pub(crate) fn normalize_tetrahedral_references(
         let ChiralClass::TH(raw) = class else {
             continue;
         };
-        let Some((has_from, heavy)) = write_orders.get(&center) else {
+        let Some(order) = write_orders.get(&center) else {
             continue;
         };
+        let (has_from, heavy) = (order.has_from, &order.neighbors);
         // Hydrogens on this centre that the parser added afterwards, ascending
         // by index. A hydrogen written out as its own atom (`[C@@]([H])...`)
         // is already in `heavy` at the position it was written, so including
@@ -475,7 +488,7 @@ pub(crate) fn normalize_tetrahedral_references(
         // hydrogen(s), then the remaining heavy neighbors — or hydrogen(s) first
         // for a fragment root that has no from-atom.
         let mut written: Vec<usize> = Vec::with_capacity(4);
-        if *has_from {
+        if has_from {
             if let Some((&first, rest)) = heavy.split_first() {
                 written.push(first);
                 written.extend(&hydrogens);
@@ -494,6 +507,15 @@ pub(crate) fn normalize_tetrahedral_references(
             continue;
         }
         let sorted = index_sorted_neighbors(mol, center);
+        let raw = if crate::molecule::chirality::tetrahedral_ring_closure_inverts(
+            mol,
+            center,
+            order.ring_closures,
+        ) {
+            3 - raw
+        } else {
+            raw
+        };
         updates.push((center, tetrahedral_tag_for_order(raw, &written, &sorted)));
     }
     if updates.is_empty() {
@@ -568,7 +590,7 @@ mod tests {
 /// Call once, right after parsing, with hydrogens already added.
 pub(crate) fn normalize_allene_references(
     mol: &mut MolecularGraph,
-    write_orders: &crate::io::IntMap<usize, (bool, Vec<usize>)>,
+    write_orders: &crate::io::IntMap<usize, crate::io::SmilesWriteOrder>,
 ) {
     let Some(classes) = mol.chiral_classes() else {
         return;
@@ -580,7 +602,9 @@ pub(crate) fn normalize_allene_references(
 
     let mut updates: Vec<(usize, u8)> = Vec::new();
     for (centre, &class) in classes.iter().enumerate() {
-        let ChiralClass::AL(raw) = class else { continue };
+        let ChiralClass::AL(raw) = class else {
+            continue;
+        };
         let Some(written) = written_allene_carriers(mol, centre, write_orders) else {
             continue;
         };
@@ -608,16 +632,17 @@ pub(crate) fn normalize_allene_references(
 fn written_allene_carriers(
     mol: &MolecularGraph,
     centre: usize,
-    write_orders: &crate::io::IntMap<usize, (bool, Vec<usize>)>,
+    write_orders: &crate::io::IntMap<usize, crate::io::SmilesWriteOrder>,
 ) -> Option<Vec<usize>> {
-    let (_, centre_written) = write_orders.get(&centre)?;
+    let centre_written = &write_orders.get(&centre)?.neighbors;
     if centre_written.len() != 2 {
         return None;
     }
 
     let mut carriers = Vec::with_capacity(4);
     for &end in centre_written {
-        let (has_from, heavy) = write_orders.get(&end)?;
+        let order = write_orders.get(&end)?;
+        let (has_from, heavy) = (order.has_from, &order.neighbors);
         let mut hydrogens: Vec<usize> = mol.atom_bonds()[end]
             .iter()
             .map(|bond| bond.target())
@@ -626,7 +651,7 @@ fn written_allene_carriers(
         hydrogens.sort_unstable();
 
         let mut order: Vec<usize> = Vec::with_capacity(3);
-        if *has_from {
+        if has_from {
             let (&first, rest) = heavy.split_first()?;
             order.push(first);
             order.extend(&hydrogens);

@@ -13,7 +13,7 @@ pub trait MoleculeChirality: MoleculeCore {
     ///
     /// The two classes are set so that `class(a) != class(b)` holds exactly when
     /// the first single-bond neighbor of each carbon (`subs[0]`) sit on opposite
-    /// sides (trans) of the double bond — the invariant that [`to_smiles`] reads
+    /// sides (trans) of the double bond — the invariant that `to_smiles` reads
     /// back to emit directional bonds and that canonization maintains.
     ///
     /// # Examples
@@ -31,9 +31,9 @@ pub trait MoleculeChirality: MoleculeCore {
         // Every mark on the carbon is read, not only the first: its two
         // substituents sit on opposite sides of the double bond, so two marks
         // placing them on the same side contradict each other and say nothing
-        // about the geometry. Such an end gives `None` and the bond gets no
-        // tag -- which is what RDKit does. Taking the first mark instead
-        // invented a geometry PubChem's
+        // about the geometry. Such an end gives `None`, the bond gets no tag,
+        // and the marks are spent as plain bonds below -- which is what RDKit
+        // does. Taking the first mark instead invented a geometry PubChem's
         // `C(=C\1\C=CC...)` never stated.
         let side_of = |mol: &Self, carbon: usize| -> Option<(usize, bool)> {
             let mut first: Option<(usize, bool)> = None;
@@ -68,22 +68,55 @@ pub trait MoleculeChirality: MoleculeCore {
 
         let mut assignments: Vec<(usize, ChiralClass)> = Vec::new();
         let mut to_convert: Vec<usize> = Vec::new();
+        let mut candidates: Vec<(usize, usize, bool)> = Vec::new();
+
+        // What may end a bond whose geometry is a fact about the molecule: one
+        // double bond, and room for the geometry to mean anything.
+        //
+        // Cis and trans are the two ways of arranging *one* substituent each
+        // side of a double bond, so an end needs a double bond and at most two
+        // other bonds. A hypervalent centre has neither: PubChem's
+        // `N/N=N/N=I(=N/N=N/N)(=NN=N)/N=N/N` gives its iodine four double bonds
+        // and four neighbours, and there is no cis or trans to be had there.
+        //
+        // The test has to be structural, and it was not. What decided it was
+        // how many of the atom's double bonds happened to be written with
+        // slashes on both ends, which is a fact about the writing: the same
+        // iodine came back with a geometry when this crate rewrote the
+        // molecule and without one when PubChem wrote it, the mark changed the
+        // canonical invariants, and the canonical form of the canonical form
+        // was not the canonical form. Twenty-seven records of the corpus are
+        // this, and nine more of the permutation failures.
+        let is_stereogenic_end = |mol: &Self, atom: usize| -> bool {
+            let Some(bonds) = mol.get_atom_bonds(atom) else {
+                return false;
+            };
+            if bonds.len() > 3 {
+                return false;
+            }
+            bonds
+                .iter()
+                .filter(|bond| bond.bond_order() == BondOrder::Double)
+                .count()
+                == 1
+        };
 
         for a in 0..self.len() {
-            let Some(b) = self
+            // Every double bond at this atom, not merely the first. An atom can
+            // carry two -- a phosphaalkene's phosphorus does -- and the one the
+            // marks describe need not be the one listed first, so taking the
+            // first read the geometry off an unmarked bond and found none.
+            let partners: Vec<usize> = self
                 .get_atom_bonds(a)
                 .unwrap_or_default()
                 .iter()
-                .find(|bo| bo.bond_order() == BondOrder::Double)
+                .filter(|bo| bo.bond_order() == BondOrder::Double)
                 .map(|bo| bo.target())
-            else {
-                continue;
-            };
-            if b <= a {
-                continue; // handle each double bond once
-            }
-
-            let (Some((dir_a, up_a)), Some((dir_b, up_b))) = (side_of(self, a), side_of(self, b))
+                .filter(|&target| target > a)
+                .collect();
+            let Some((b, (dir_a, up_a), (dir_b, up_b))) = partners
+                .into_iter()
+                .find_map(|target| Some((target, side_of(self, a)?, side_of(self, target)?)))
             else {
                 continue; // both ends need a directional bond to be stereogenic
             };
@@ -94,10 +127,74 @@ pub trait MoleculeChirality: MoleculeCore {
                 continue;
             };
 
+            if !is_stereogenic_end(self, a) || !is_stereogenic_end(self, b) {
+                continue;
+            }
+
             let side_a0 = if sub_a0 == dir_a { up_a } else { !up_a };
             let side_b0 = if sub_b0 == dir_b { up_b } else { !up_b };
             let trans = side_a0 != side_b0;
 
+            candidates.push((a, b, trans));
+        }
+
+        // A cis/trans tag is stored on an atom, so an atom can hold the
+        // geometry of one double bond and no more. In a cumulene every centre
+        // ends two of them -- PubChem writes `CI=I(=I(=I(=C)\\C)/C)\\C`, four
+        // iodines in a row -- and the second assignment overwrote the first,
+        // leaving a tag that described neither bond and a count of marks the
+        // writer could not reproduce. Such a bond is refused rather than
+        // guessed at, and refused from both sides so that the answer does not
+        // depend on which was read first. A chlorine carrying `=O` and `=N`
+        // keeps its geometry: only one of its two double bonds is marked, so
+        // only one tag is asked for.
+        // A double bond inside a small ring has its geometry forced by the ring
+        // -- cyclohexene has no cis and trans to choose between -- so it is not
+        // stereogenic and carries no tag. The writer has always known this and
+        // refuses to mark such a bond; the reader did not, so a mark written
+        // for a *neighbouring* bond was read as a geometry for the ring bond
+        // too, and a molecule came back with one more stereogenic bond than it
+        // went in with. A cyanine dye is the case the corpus found, and RDKit
+        // reads the same five bonds either way. Seven is the usual cut-off:
+        // beyond it a ring is slack enough for cis and trans to differ.
+        const SMALLEST_STRAINED_RING: usize = 7;
+        let ring_is_small = |mol: &Self, a: usize, b: usize| -> bool {
+            let mut seen = vec![false; mol.len()];
+            let mut frontier = vec![a];
+            seen[a] = true;
+            for step in 1..SMALLEST_STRAINED_RING {
+                let mut next = Vec::new();
+                for &atom in &frontier {
+                    for bond in mol.get_atom_bonds(atom).unwrap_or_default() {
+                        let target = bond.target();
+                        if atom == a && target == b {
+                            continue;
+                        }
+                        if target == b {
+                            let _ = step;
+                            return true;
+                        }
+                        if !seen[target] {
+                            seen[target] = true;
+                            next.push(target);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+            false
+        };
+        candidates.retain(|&(a, b, _)| !ring_is_small(self, a, b));
+
+        let mut ends = vec![0usize; self.len()];
+        for &(a, b, _) in &candidates {
+            ends[a] += 1;
+            ends[b] += 1;
+        }
+        for (a, b, trans) in candidates {
+            if ends[a] > 1 || ends[b] > 1 {
+                continue;
+            }
             assignments.push((a, ChiralClass::CisTransCounterclockwise));
             assignments.push((
                 b,
@@ -129,6 +226,60 @@ pub trait MoleculeChirality: MoleculeCore {
         for atom_idx in to_convert {
             self.convert_directional_to_single(atom_idx);
         }
+        // Any mark this did not recognise as describing a double bond is still
+        // sitting on a bond as an order, and `Up` is not an order anything
+        // downstream knows what to do with: aromaticity perception does not
+        // count it among a ring's bonds, so the ring comes up a bond short and
+        // fails to kekulize -- the crate could not read back its own canonical
+        // form for a thiophene with two exocyclic double bonds. Spend the rest
+        // here, aromatic where the bond joins two aromatic atoms and single
+        // otherwise.
+        for atom in 0..self.len() {
+            let leftovers: Vec<usize> = self
+                .get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .filter(|bond| {
+                    bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down
+                })
+                .map(|bond| bond.target())
+                .collect();
+            for target in leftovers {
+                let aromatic_here = |mol: &Self, index: usize| {
+                    if mol.is_atom_aromatic(index) {
+                        return true;
+                    }
+                    let directional: Vec<usize> = mol
+                        .get_atom_bonds(index)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|bond| {
+                            bond.bond_order() == BondOrder::Up
+                                || bond.bond_order() == BondOrder::Down
+                        })
+                        .map(|bond| bond.target())
+                        .collect();
+                    directional.len() >= 2 && directional.iter().any(|&n| mol.is_atom_aromatic(n))
+                };
+                let order = if aromatic_here(self, atom) && aromatic_here(self, target) {
+                    BondOrder::Aromatic
+                } else {
+                    BondOrder::Single
+                };
+                for (from, to) in [(atom, target), (target, atom)] {
+                    if let Some(bonds) = self.get_atom_bonds_mut(from) {
+                        for bond in bonds {
+                            if bond.target() == to
+                                && (bond.bond_order() == BondOrder::Up
+                                    || bond.bond_order() == BondOrder::Down)
+                            {
+                                bond.bond_order = order;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if assignments.is_empty() {
             return;
         }
@@ -141,23 +292,76 @@ pub trait MoleculeChirality: MoleculeCore {
         }
     }
 
-    /// Converts all directional bonds (up/down) connected to an atom to single bonds
+    /// Spends the directional bonds at an atom, now that their geometry has
+    /// been read into a chirality class.
+    ///
+    /// A directional mark says which side a substituent is on; it is not itself
+    /// a bond order, so once the geometry is recorded the bond goes back to
+    /// what it would otherwise have been. That is a single bond -- unless the
+    /// bond joins two aromatic atoms, in which case it was an aromatic bond
+    /// carrying a mark, and making it single takes a bond out of the ring: the
+    /// ring then has no Kekulé structure and the molecule will not parse.
+    /// `C/C=C1\SC(=C/C)C=C1` canonizes to a thiophene with two exocyclic double
+    /// bonds and a mark on a ring bond, and this crate could not read its own
+    /// output back.
     fn convert_directional_to_single(&mut self, atom_idx: usize) {
+        // Whether the bond a mark sits on was an aromatic one.
+        //
+        // `is_atom_aromatic` asks whether the atom still has an aromatic bond,
+        // and that fails exactly where two marks meet: a ring atom whose ring
+        // bonds *both* carry marks has no aromatic bond left to be recognised
+        // by, so both of its bonds were restored as single, the ring came up
+        // two bonds short, and it would not kekulize. An atom carrying two
+        // directional bonds is in a ring of them, which is the case being
+        // missed; one directional bond and no aromatic bond is an ordinary
+        // substituent bond and stays single.
+        let looks_aromatic = |mol: &Self, atom: usize| {
+            if mol.is_atom_aromatic(atom) {
+                return true;
+            }
+            let directional: Vec<usize> = mol
+                .get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .filter(|bond| {
+                    bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down
+                })
+                .map(|bond| bond.target())
+                .collect();
+            // Two marks *and* an aromatic neighbour: two marks alone is what a
+            // carbon between two stereogenic double bonds looks like too.
+            directional.len() >= 2 && directional.iter().any(|&n| mol.is_atom_aromatic(n))
+        };
+        let restored = |mol: &Self, from: usize, to: usize| {
+            if looks_aromatic(mol, from) && looks_aromatic(mol, to) {
+                BondOrder::Aromatic
+            } else {
+                BondOrder::Single
+            }
+        };
+
         let mut neighbors_to_change = Vec::new();
-        if let Some(bonds) = self.get_atom_bonds_mut(atom_idx) {
-            for bond in bonds {
-                if bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down {
-                    neighbors_to_change.push(bond.target());
-                    bond.bond_order = BondOrder::Single;
-                }
+        for bond in self.get_atom_bonds(atom_idx).unwrap_or_default().iter() {
+            if bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down {
+                neighbors_to_change.push((bond.target(), restored(self, atom_idx, bond.target())));
             }
         }
 
-        for neighbor in neighbors_to_change {
+        for &(neighbor, order) in &neighbors_to_change {
+            if let Some(bonds) = self.get_atom_bonds_mut(atom_idx) {
+                for bond in bonds {
+                    if bond.target() == neighbor
+                        && (bond.bond_order() == BondOrder::Up
+                            || bond.bond_order() == BondOrder::Down)
+                    {
+                        bond.bond_order = order;
+                    }
+                }
+            }
             if let Some(bonds) = self.get_atom_bonds_mut(neighbor) {
                 for bond in bonds {
                     if bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down {
-                        bond.bond_order = BondOrder::Single;
+                        bond.bond_order = order;
                     }
                 }
             }
@@ -169,7 +373,7 @@ pub trait MoleculeChirality: MoleculeCore {
 ///
 /// The definitions of the chiral classes are based on the following source:
 ///
-/// http://opensmiles.org/opensmiles.html
+/// <http://opensmiles.org/opensmiles.html>
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum ChiralClass {
     TH(u8), // @ 1..=2 1 = anti-clockwise, 2 = clockwise
@@ -267,6 +471,29 @@ pub fn tetrahedral_tag_for_order(stored: u8, reference: &[usize], target: &[usiz
     } else {
         stored
     }
+}
+
+/// SMILES compatibility convention for a saturated three-coordinate centre
+/// with one written ring closure and no folded H. RDKit applies an extra parity
+/// inversion here in both its parser and writer (`chiralAtomNeedsTagInversion`,
+/// Code/GraphMol/Canon.cpp). Applying it on only one side inverts nitrogen
+/// stereochemistry when a ring closure becomes an ordinary branch.
+/// Four-coordinate centres and unsaturated lone-pair centres are unaffected.
+pub(crate) fn tetrahedral_ring_closure_inverts<M: MoleculeCore + ?Sized>(
+    mol: &M,
+    atom: usize,
+    ring_closures: usize,
+) -> bool {
+    let bonds = &mol.atom_bonds()[atom];
+    ring_closures == 1
+        && bonds.len() == 3
+        && bonds.iter().all(|bond| {
+            !mol.hydrogen_folds_into_neighbour(bond.target())
+                && matches!(
+                    bond.bond_order(),
+                    BondOrder::Single | BondOrder::Up | BondOrder::Down | BondOrder::Coordinate
+                )
+        })
 }
 
 /// The four carriers of an allene centre, in the canonical reference ordering
@@ -408,11 +635,7 @@ const OCT_ROTATIONS: [[u8; 6]; 24] = [
 /// old and new SMILES respectively. Returns `None` when the input is not a
 /// valid OH class (1-30) or the neighbor lists are not a permutation of each
 /// other with length 6.
-pub fn remap_oh_number(
-    config: u8,
-    old_neighbors: &[usize],
-    new_neighbors: &[usize],
-) -> Option<u8> {
+pub fn remap_oh_number(config: u8, old_neighbors: &[usize], new_neighbors: &[usize]) -> Option<u8> {
     if !(1..=30).contains(&config) || old_neighbors.len() != 6 || new_neighbors.len() != 6 {
         return None;
     }
@@ -761,7 +984,10 @@ impl ChiralClassifier for Molecule3D {
 
         // Keyed on the pair, not on which end we were called with, so both
         // calls agree.
-        let (first, second) = (center_atom_index.min(partner), center_atom_index.max(partner));
+        let (first, second) = (
+            center_atom_index.min(partner),
+            center_atom_index.max(partner),
+        );
 
         let reference = |atom: usize, exclude: usize| -> Option<usize> {
             self.get_atom_bonds(atom)?
@@ -780,19 +1006,20 @@ impl ChiralClassifier for Molecule3D {
         // second position — and it is every bit as stereogenic; requiring two
         // threw away the configuration of every oxime and hydrazone in the
         // corpus. Three or more is not a double bond geometry at all.
-        let ends_are_stereogenic = [(first, second), (second, first)]
-            .iter()
-            .all(|&(atom, exclude)| {
-                self.get_atom_bonds(atom).is_some_and(|bonds| {
-                    let substituents = bonds
-                        .iter()
-                        .filter(|bond| {
-                            bond.bond_order() != BondOrder::Double && bond.target() != exclude
-                        })
-                        .count();
-                    (1..=2).contains(&substituents)
-                })
-            });
+        let ends_are_stereogenic =
+            [(first, second), (second, first)]
+                .iter()
+                .all(|&(atom, exclude)| {
+                    self.get_atom_bonds(atom).is_some_and(|bonds| {
+                        let substituents = bonds
+                            .iter()
+                            .filter(|bond| {
+                                bond.bond_order() != BondOrder::Double && bond.target() != exclude
+                            })
+                            .count();
+                        (1..=2).contains(&substituents)
+                    })
+                });
         if !ends_are_stereogenic {
             return ChiralClass::None;
         }
@@ -1233,15 +1460,15 @@ impl ChiralClassifier for Molecule3D {
             return ChiralClass::None;
         }
 
-        let central_position = match self.get_atom_position(index) {
-            Some(pos) => pos,
-            None => return ChiralClass::None,
-        };
+        // The centre's own position is not part of the measure below, but a
+        // centre without coordinates is a molecule with nothing to read.
+        if self.get_atom_position(index).is_none() {
+            return ChiralClass::None;
+        }
 
         // Store the tag against the centre's index-sorted neighbor ordering (the
         // convention used everywhere else), independent of bond listing order.
-        let mut sorted_neighbors: Vec<usize> =
-            neighbors.iter().map(|n| n.target()).collect();
+        let mut sorted_neighbors: Vec<usize> = neighbors.iter().map(|n| n.target()).collect();
         sorted_neighbors.sort_unstable();
 
         let neighbor_positions: Vec<Vector3D> = sorted_neighbors
@@ -1253,18 +1480,26 @@ impl ChiralClassifier for Molecule3D {
             return ChiralClass::None;
         }
 
-        // Calculate vectors from central atom to neighbors
-        let vectors: Vec<Vector3D> = neighbor_positions
-            .iter()
-            .map(|&pos| pos - central_position)
-            .collect();
-
-        // Calculate the signed volume of the tetrahedron
-        let signed_volume = vectors[0].dot(&vectors[1].cross(&vectors[2]));
+        // The signed volume of the tetrahedron the four neighbours make,
+        // measured from the first of them rather than from the centre.
+        //
+        // Three vectors from the centre answer the same question wherever
+        // the centre sits inside its neighbours, and the two differ then
+        // only by a positive factor -- see
+        // [`crate::molecule::embed::chirality::StereoCenter`], which
+        // derives it. They part company on a distorted centre, where the
+        // three-vector form leaves one neighbour out of the measurement
+        // entirely and swings with the centre atom's own position: on a
+        // strained steroid it read a squashed ring-fusion carbon as
+        // confidently correct where RDKit read the mirror image. This form
+        // goes to zero exactly when the four neighbours go coplanar, which
+        // is when there is no handedness left to read.
+        let edge = |index: usize| neighbor_positions[index] - neighbor_positions[0];
+        let signed_volume = edge(1).dot(&edge(2).cross(&edge(3)));
 
         if signed_volume.abs() < f64::EPSILON {
             ChiralClass::None // Planar arrangement
-        } else if signed_volume > 0.0 {
+        } else if signed_volume < 0.0 {
             // Matches this crate's documented `ChiralClass::TH` convention
             // (`TH(u8), // @ 1..=2  1 = anti-clockwise, 2 = clockwise`) and
             // the SMILES parser's `@@` -> `TH(2)` mapping
@@ -1280,21 +1515,9 @@ impl ChiralClassifier for Molecule3D {
         }
     }
 
-    /// Determines the chirality of an allene-like structure.
+    /// Determines the chirality of an allene-like structure from terminal substituents.
     ///
-    /// # Arguments
-    ///
-    /// * `neighbors` - A slice of `BondTarget` representing the neighbors of the central atom.
-    ///
-    /// # Returns
-    ///
-    /// An `Option<ChiralClass>` indicating the chirality of the allene structure, if determinable.
-    ///
-    /// # Notes
-    ///
-    /// This function assumes that the central atom (index) is already known to be part of an
-    /// allene-like structure. The `index` parameter has been removed as it was not used in the
-    /// function body.
+    /// Assumes the central atom is already known to be part of an allene system.
     fn determine_allene_chirality(&self, neighbors: &[BondTarget]) -> Option<ChiralClass> {
         let [left, right] = neighbors else {
             return None;
@@ -1321,21 +1544,8 @@ impl ChiralClassifier for Molecule3D {
 
     /// Calculates the normal vector of the plane formed by a central atom and its two neighbors.
     ///
-    /// # Arguments
-    ///
-    /// * `center` - The index of the central atom.
-    /// * `neighbors` - A slice of `BondTarget` representing the neighboring atoms.
-    ///
-    /// # Returns
-    ///
-    /// * `Option<Vector>` - The normal vector of the plane if all positions are valid and there are exactly two neighbors, or `None` otherwise.
-    ///
-    /// # Safety
-    ///
-    /// This function checks that:
-    /// - The `neighbors` slice contains exactly two elements.
-    /// - All atom positions (center and neighbors) are valid.
-    /// - The resulting vectors are not parallel (to avoid a zero cross product).
+    /// Returns `None` if `neighbors` does not contain exactly two atoms, if any position is missing,
+    /// or if the vectors are collinear.
     fn calculate_plane(&self, center: usize, neighbors: &[BondTarget]) -> Option<Vector3D> {
         if neighbors.len() != 2 {
             return None;
@@ -1454,7 +1664,7 @@ impl ChiralClassifier for Molecule3D {
 /// # Arguments
 /// * `chiral_classes` - The array of chiral classes to update
 /// * `mol` - The molecule whose chirality needs to be updated
-/// * `labeling` - The new ordering of atoms (e.g., [1,2,0] means atom 0 moves to position 1)
+/// * `labeling` - The new ordering of atoms (e.g., `[1,2,0]` means atom 0 moves to position 1)
 ///
 /// # Examples
 /// ```

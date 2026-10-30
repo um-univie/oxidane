@@ -1183,7 +1183,6 @@ fn keys_carry_the_version_and_rules_that_made_them() {
 /// alone -- they have no tautomeric group at all -- so every failure was the
 /// canonical writer's.
 #[test]
-#[ignore = "needs the SMILES writer to mark a double bond beside a ring closure"]
 fn ring_closure_double_bonds_keep_their_geometry() {
     use crate::graph_algorithms::mol_canonization::canonize_mol;
 

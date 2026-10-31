@@ -21,11 +21,6 @@ pub trait Molecule:
 }
 
 pub trait MoleculeCore {
-    /// An optional cache for connectivity-only ring membership.
-    fn ring_topology_cache(&self) -> Option<&crate::molecule::topology::RingTopologyCache> {
-        None
-    }
-
     fn atom_bonds(&self) -> &Vec<ArrayVec<[BondTarget; 10]>>;
     fn atom_bonds_mut(&mut self) -> &mut Vec<ArrayVec<[BondTarget; 10]>>;
     fn atomic_numbers(&self) -> &[u8];
@@ -1446,10 +1441,6 @@ pub trait MoleculeCore {
         cyclic_atoms: &mut BitSet,
         cyclic_bonds: &mut FxHashSet<(usize, usize)>,
     ) {
-        if let Some(cache) = self.ring_topology_cache() {
-            cache.fill(self, cyclic_atoms, cyclic_bonds);
-            return;
-        }
         cyclic_atoms.clear();
         cyclic_bonds.clear();
         self.walk_cyclic_bonds(|first, second| {

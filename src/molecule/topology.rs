@@ -22,11 +22,7 @@ pub struct DistanceMatrix {
 impl DistanceMatrix {
     /// A matrix from a row-major `size` by `size` block of distances.
     pub fn from_values(size: usize, values: Vec<u8>) -> Self {
-        assert_eq!(
-            values.len(),
-            size * size,
-            "a distance matrix must be square"
-        );
+        assert_eq!(values.len(), size * size, "a distance matrix must be square");
         Self { size, values }
     }
 
@@ -194,114 +190,4 @@ fn shortest_cycle_through<M: MoleculeCore + ?Sized>(
     }
 
     None
-}
-
-/// Optional connectivity cache. Bond orders are deliberately excluded. Each
-/// clone has its own slot and shares only the immutable cached topology.
-#[derive(Debug, Default)]
-pub struct RingTopologyCache {
-    value: std::sync::RwLock<Option<std::sync::Arc<CachedRings>>>,
-}
-
-#[derive(Debug)]
-struct CachedRings {
-    atom_count: usize,
-    neighbours: Vec<Vec<usize>>,
-    atoms: bit_set::BitSet,
-    bonds: rustc_hash::FxHashSet<(usize, usize)>,
-}
-
-impl Clone for RingTopologyCache {
-    fn clone(&self) -> Self {
-        Self {
-            value: std::sync::RwLock::new(self.value.read().unwrap().clone()),
-        }
-    }
-}
-
-impl RingTopologyCache {
-    pub(crate) fn fill<M: MoleculeCore + ?Sized>(
-        &self,
-        molecule: &M,
-        atoms: &mut bit_set::BitSet,
-        bonds: &mut rustc_hash::FxHashSet<(usize, usize)>,
-    ) {
-        let matches = |cached: &CachedRings| {
-            cached.atom_count == molecule.len()
-                && cached.neighbours.len() == molecule.atom_bonds().len()
-                && cached
-                    .neighbours
-                    .iter()
-                    .zip(molecule.atom_bonds())
-                    .all(|(old, new)| old.iter().copied().eq(new.iter().map(|bond| bond.target())))
-        };
-        {
-            let guard = self.value.read().unwrap();
-            if let Some(cached) = guard.as_ref().filter(|cached| matches(cached)) {
-                atoms.clone_from(&cached.atoms);
-                bonds.clone_from(&cached.bonds);
-                return;
-            }
-        }
-        // Exact comparison above also protects callers using raw adjacency
-        // mutation. A hash alone would make correctness depend on collisions.
-        atoms.clear();
-        bonds.clear();
-        molecule.walk_cyclic_bonds(|first, second| {
-            atoms.insert(first);
-            atoms.insert(second);
-            bonds.insert(crate::molecule::utils::order_tuple(first, second));
-        });
-        *self.value.write().unwrap() = Some(std::sync::Arc::new(CachedRings {
-            atom_count: molecule.len(),
-            neighbours: molecule
-                .atom_bonds()
-                .iter()
-                .map(|row| row.iter().map(|bond| bond.target()).collect())
-                .collect(),
-            atoms: atoms.clone(),
-            bonds: bonds.clone(),
-        }));
-    }
-}
-
-#[cfg(test)]
-mod cache_tests {
-    use super::*;
-    use crate::graph_algorithms::mol_canonization::reorder_molecule;
-    use crate::prelude::*;
-
-    fn agrees_with_uncached(molecule: &MolecularGraph) {
-        let cached = molecule.find_cyclic_bonds_and_atoms();
-        let mut uncached = molecule.clone();
-        uncached.set_ring_topology_cache_enabled(false);
-        assert_eq!(cached, uncached.find_cyclic_bonds_and_atoms());
-    }
-
-    #[test]
-    fn ring_cache_tracks_raw_connectivity_edits_and_clones() {
-        let mut molecule = MolecularGraph::from_smiles_single("C1CCCCC1CC").unwrap();
-        molecule.set_ring_topology_cache_enabled(true);
-        assert_eq!(molecule.find_cyclic_bonds_and_atoms().1.len(), 6);
-        let original = molecule.clone();
-        // Opening a ring through the raw public adjacency API must invalidate
-        // the answer without relying on callers to remember a cache method.
-        molecule.atom_bonds_mut()[0].retain(|bond| bond.target() != 1);
-        molecule.atom_bonds_mut()[1].retain(|bond| bond.target() != 0);
-        assert!(molecule.find_cyclic_bonds_and_atoms().1.is_empty());
-        assert_eq!(original.find_cyclic_bonds_and_atoms().1.len(), 6);
-        agrees_with_uncached(&molecule);
-    }
-
-    #[test]
-    fn ring_cache_survives_bond_order_edits_and_reordering() {
-        let mut molecule = MolecularGraph::from_smiles_single("c1ccccc1CC").unwrap();
-        molecule.set_ring_topology_cache_enabled(true);
-        let rings = molecule.find_cyclic_bonds_and_atoms();
-        molecule.localize_aromatic_bonds().unwrap();
-        assert_eq!(rings, molecule.find_cyclic_bonds_and_atoms());
-        let order: Vec<usize> = (0..molecule.len()).rev().collect();
-        reorder_molecule(&mut molecule, &order);
-        agrees_with_uncached(&molecule);
-    }
 }

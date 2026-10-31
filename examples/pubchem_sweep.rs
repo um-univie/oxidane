@@ -22,7 +22,7 @@
 //! * and nothing panics.
 //!
 //! ```text
-//! cargo run --release --example pubchem_sweep -- <path> [--limit N] [--threads N] [--max-atoms N] [--cache on|off] [--tautomers on|off] [--normalize on|off] [--ionizable on|off]
+//! cargo run --release --example pubchem_sweep -- <path> [--limit N] [--threads N] [--max-atoms N] [--tautomers on|off] [--normalize on|off] [--ionizable on|off]
 //! ```
 //!
 //! The corpus is mapped rather than read: the records are found by looking for
@@ -35,7 +35,7 @@
 //! on, and a reporter prints anything that has been in flight too long.
 //!
 //! The default atom limit is zero (unlimited); positive limits count heavy
-//! atoms per component and log every skipped record. Cache defaults to on.
+//! atoms per component and log every skipped record.
 //! `--tautomers off` runs the canonicalization checks alone, leaving
 //! normalization and tautomer keys out, so the two halves can be told apart.
 //! `--normalize off` keeps the keys and leaves out only normalization, which
@@ -90,7 +90,6 @@ impl InFlight {
 /// What one sweep checks, and under what limits.
 struct Options {
     max_atoms: usize,
-    cache: bool,
     tautomers: bool,
     normalize: bool,
 }
@@ -260,12 +259,12 @@ impl Counts {
 fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, options: &Options) {
     counts.seen.fetch_add(1, Ordering::Relaxed);
     // A component at a time, as the rest of the module does.
-    let Ok(mut molecules) = MolecularGraph::from_smiles(smiles) else {
+    let Ok(molecules) = MolecularGraph::from_smiles(smiles) else {
         counts.unparsed.fetch_add(1, Ordering::Relaxed);
         eprintln!("unparsed\t{cid}\t{smiles}");
         return;
     };
-    for molecule in &mut molecules {
+    for molecule in &molecules {
         // Canonization uses heavy atoms as graph vertices. SMILES length is
         // neither an atom count nor a useful bound for disconnected records.
         let heavy = molecule.atomic_numbers().iter().filter(|&&z| z > 1).count();
@@ -274,7 +273,6 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             eprintln!("oversize\t{cid}\t{smiles}\t{heavy}");
             continue;
         }
-        molecule.set_ring_topology_cache_enabled(options.cache);
         // One deterministic random relabelling per component, reproducible across shards/threads.
         let mut labeling: Vec<usize> = (0..molecule.len()).collect();
         let mut rng = StdRng::seed_from_u64(cid.parse::<u64>().unwrap_or(0) ^ 0xBEEF);
@@ -362,7 +360,7 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             eprintln!("formula\t{cid}\t{smiles}\t{written}");
             continue;
         }
-        let Ok(mut reparsed) = MolecularGraph::from_smiles_single(&written) else {
+        let Ok(reparsed) = MolecularGraph::from_smiles_single(&written) else {
             counts.reparse.fetch_add(1, Ordering::Relaxed);
             eprintln!("reparse\t{cid}\t{smiles}\t{written}");
             continue;
@@ -371,7 +369,6 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             counts.formula.fetch_add(1, Ordering::Relaxed);
             eprintln!("tautomer_roundtrip_formula\t{cid}\t{smiles}\t{written}");
         }
-        reparsed.set_ring_topology_cache_enabled(options.cache);
         if tautomer_key(&reparsed, rules) != key {
             counts.key.fetch_add(1, Ordering::Relaxed);
             eprintln!("key\t{cid}\t{smiles}\t{written}");
@@ -395,7 +392,6 @@ fn main() {
     let mut limit = usize::MAX;
     let mut threads = 0usize;
     let mut max_atoms = 0usize;
-    let mut cache = true;
     let mut tautomers = true;
     let mut normalize = true;
     let mut ionizable = false;
@@ -404,13 +400,6 @@ fn main() {
         match option.as_str() {
             "--limit" => limit = value.parse().expect("--limit takes a number"),
             "--threads" => threads = value.parse().expect("--threads takes a number"),
-            "--cache" => {
-                cache = match value.as_str() {
-                    "on" => true,
-                    "off" => false,
-                    _ => panic!("--cache takes on or off"),
-                }
-            }
             "--max-atoms" => max_atoms = value.parse().expect("--max-atoms takes a number"),
             "--tautomers" => {
                 tautomers = match value.as_str() {
@@ -445,7 +434,6 @@ fn main() {
 
     let options = Options {
         max_atoms,
-        cache,
         tautomers,
         normalize,
     };

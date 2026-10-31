@@ -42,7 +42,9 @@
 //! is three quarters of the sweep's time and the part fewest callers need.
 //! Failures are written to stderr with their CID so they can be looked up.
 
-use oxidane::graph_algorithms::mol_canonization::{canonize_mol, reorder_molecule};
+use oxidane::graph_algorithms::mol_canonization::{
+    canonize_mol, canonize_mol_perceived, reorder_molecule,
+};
 use oxidane::molecular_formula::MolecularFormula;
 use oxidane::molecule::tautomer::{
     NormalizationError, TautomerRules, normalize, tautomer_key, try_normalize,
@@ -279,7 +281,11 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
         labeling.shuffle(&mut rng);
         let mut permuted = molecule.clone();
         reorder_molecule(&mut permuted, &labeling);
-        let canonical = canonize_mol(molecule);
+        // `from_smiles` has perceived aromaticity already, and perceiving it
+        // again is a fifth of what canonizing costs. The permuted copy still
+        // goes through `canonize_mol`, so perception in a different atom order
+        // is checked against this answer rather than assumed to agree.
+        let canonical = canonize_mol_perceived(molecule);
         let canonical_smiles = canonical.to_smiles();
         if MolecularFormula::from_molecule(&canonical) != MolecularFormula::from_molecule(molecule)
         {
@@ -295,7 +301,7 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
                     counts.canonical_formula.fetch_add(1, Ordering::Relaxed);
                     eprintln!("canonical_roundtrip_formula\t{cid}\t{smiles}\t{canonical_smiles}");
                 }
-                let rewritten = canonize_mol(again).to_smiles();
+                let rewritten = canonize_mol_perceived(again).to_smiles();
                 if rewritten != canonical_smiles {
                     counts.canonical_idempotence.fetch_add(1, Ordering::Relaxed);
                     eprintln!(
@@ -656,21 +662,4 @@ fn check_catching_panics(
         counts.panics.fetch_add(1, Ordering::Relaxed);
         eprintln!("panic\t{cid}\t{smiles}");
     }
-}
-
-fn check_chunk(chunk: &[String], rules: &TautomerRules, counts: &Counts, options: &Options) {
-    let batch_size = chunk
-        .len()
-        .div_ceil(rayon::current_num_threads() * 8)
-        .clamp(1, 64);
-    chunk.par_chunks(batch_size).for_each(|batch| {
-        let local = Counts::default();
-        for line in batch {
-            let mut fields = line.split('\t');
-            let cid = fields.next().unwrap();
-            let smiles = fields.next().unwrap();
-            check_catching_panics(cid, smiles, rules, &local, options);
-        }
-        counts.merge(&local);
-    });
 }

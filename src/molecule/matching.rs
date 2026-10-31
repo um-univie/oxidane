@@ -539,6 +539,13 @@ pub struct DegreeConstrainedInstance {
     settled_matching: Vec<Option<usize>>,
     edge_count: usize,
     decided: Vec<bool>,
+    /// The problem's own edges, by the vertices they join.
+    ends: Vec<(usize, usize)>,
+    /// How many more edges each vertex can still refuse (`[0]`) and still take
+    /// (`[1]`) before its degree is out of reach, at the start of a pass and as
+    /// the pass goes.
+    settled_room: Vec<[usize; 2]>,
+    room: Vec<[usize; 2]>,
 }
 
 impl DegreeConstrainedInstance {
@@ -551,11 +558,27 @@ impl DegreeConstrainedInstance {
     ) -> Option<Self> {
         let mut factor = Factor::build(vertex_count, edges, required_degree)?;
         factor.solve()?;
+        // A solved problem has every degree within reach, so none of these
+        // subtractions can go below zero.
+        let mut settled_room: Vec<[usize; 2]> = required_degree
+            .iter()
+            .map(|&required| [0, required])
+            .collect();
+        for &(first, second) in edges {
+            settled_room[first][0] += 1;
+            settled_room[second][0] += 1;
+        }
+        for room in settled_room.iter_mut() {
+            room[0] -= room[1];
+        }
         Some(Self {
             settled_alive: factor.alive.clone(),
             settled_matching: factor.matched.clone(),
             edge_count: edges.len(),
             decided: vec![false; edges.len()],
+            ends: edges.to_vec(),
+            room: settled_room.clone(),
+            settled_room,
             factor,
         })
     }
@@ -570,6 +593,7 @@ impl DegreeConstrainedInstance {
         self.factor.alive.copy_from_slice(&self.settled_alive);
         self.factor.matched.copy_from_slice(&self.settled_matching);
         self.decided.iter_mut().for_each(|seen| *seen = false);
+        self.room.copy_from_slice(&self.settled_room);
         for &(index, wanted) in priority {
             if index >= self.edge_count || self.decided[index] {
                 continue;
@@ -580,17 +604,40 @@ impl DegreeConstrainedInstance {
             // decision is feasible and nothing has to be searched for. Most do
             // agree -- the order exists to express a preference, and a
             // preference is usually already met.
-            if self.factor.selects(index) == wanted {
+            let taken = if self.factor.selects(index) == wanted {
                 self.factor.commit(index, wanted);
-                continue;
-            }
-            if !self.factor.force(index, wanted) {
+                wanted
+            } else if self.has_room(index, wanted) && self.factor.force(index, wanted) {
+                wanted
+            } else {
                 self.factor.commit(index, !wanted);
-            }
+                !wanted
+            };
+            let (first, second) = self.ends[index];
+            let side = usize::from(taken);
+            self.room[first][side] -= 1;
+            self.room[second][side] -= 1;
         }
         (0..self.edge_count)
             .map(|index| self.factor.selects(index))
             .collect()
+    }
+
+    /// Whether both ends of an edge can still afford the decision, counting
+    /// only the decisions already made at each of them.
+    ///
+    /// A `force` the matching cannot make costs a search of everything the
+    /// freed vertex can reach before it fails, and four in five that the
+    /// normalizer asks for do fail -- the priority list offers every π unit,
+    /// charge and hydrogen slot in turn, and most go to an atom that has already
+    /// taken all it can. Such a decision is out of reach at a glance: a vertex
+    /// whose every remaining unit is spoken for cannot take another edge, and
+    /// one that has refused all it can spare cannot refuse another. Saying no
+    /// without the search is the same answer `force` would give.
+    fn has_room(&self, index: usize, wanted: bool) -> bool {
+        let (first, second) = self.ends[index];
+        let side = usize::from(wanted);
+        self.room[first][side] > 0 && self.room[second][side] > 0
     }
 }
 

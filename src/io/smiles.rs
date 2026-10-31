@@ -468,12 +468,19 @@ impl<'a> SMILESParser<'a> {
                 // `pointer` has already advanced past the `%`, so the next
                 // byte is at `pointer` and the digits begin one further on.
                 b'%' if bytes.get(pointer) == Some(&b'(') => {
+                    // At most five digits, as RDKit allows. The number indexes
+                    // a table the parser grows to fit it, so an unbounded one
+                    // overflowed, or asked for terabytes and aborted the
+                    // process: `C%(999999999999)CC%(999999999999)` did.
                     let mut cursor = pointer + 1;
                     let mut value = 0usize;
                     let mut digits = 0;
                     while let Some(&digit) = bytes.get(cursor) {
                         if !digit.is_ascii_digit() {
                             break;
+                        }
+                        if digits == MAX_RING_CLOSURE_DIGITS {
+                            return Err(SMILESParseError::RingIndexError);
                         }
                         value = value * 10 + byte_to_number(digit) as usize;
                         cursor += 1;
@@ -991,10 +998,16 @@ impl<'a> SMILESParser<'a> {
         self.current_atom_is_complex = true;
 
         if bytes[*position].is_ascii_digit() {
+            // Any mass number is accepted, as RDKit accepts `[999C]`, but one
+            // past what the field holds is refused rather than wrapped:
+            // `[65536C]` overflowed it.
             let mut temp_number: u16 = 0;
             while bytes[*position].is_ascii_digit() {
                 let number = byte_to_number(bytes[*position]);
-                temp_number = temp_number * 10 + number as u16;
+                temp_number = temp_number
+                    .checked_mul(10)
+                    .and_then(|value| value.checked_add(number as u16))
+                    .ok_or(SMILESParseError::SMILESComplexError)?;
                 *position += 1;
             }
             self.isotope = Some(temp_number);
@@ -1173,27 +1186,6 @@ fn parse_number_on_end_of_chiral_class(chiral_class: &[u8]) -> u8 {
     number
 }
 
-fn is_valid_isotope(atomic_number: u8, isotope: u16) -> bool {
-    // On a wildcard the isotope field is not a nuclide at all: `[1*]`, `[2*]`
-    // and so on are how attachment points get numbered, so any value is valid.
-    if atomic_number == WILDCARD_ATOMIC_NUMBER {
-        return true;
-    }
-    let Some(isotopes) = atomic_number.isotopes() else {
-        // If the atomic number is not found, we assume that the isotope is not valid
-        // This is a bit of a hack but it should work
-        return false;
-    };
-
-    for iso in isotopes {
-        // TODO check if this is correct for all cases
-        if iso.mass.round() as u16 == isotope {
-            return true;
-        }
-    }
-    false
-}
-
 /// Where a cis/trans double bond's `/` and `\` marks are to be written.
 ///
 /// Two kinds of place, because a SMILES has two kinds of bond. A tree edge is
@@ -1219,6 +1211,9 @@ impl DirectionalMarks {
         self.ring.get(&(at, partner)).copied()
     }
 }
+
+/// The most digits an extended ring-closure number `%(nnnnn)` may carry.
+const MAX_RING_CLOSURE_DIGITS: usize = 5;
 
 /// The largest ring-closure number two digits after `%` can hold. Past it the
 /// writer reuses numbers where it can, and writes the extended `%(nnn)` form
@@ -2112,22 +2107,6 @@ pub trait ToSMILES: Molecule {
         {
             smiles.push(if *mark == BondOrder::Up { '/' } else { '\\' });
         }
-
-        let is_current_bond_aromatic = node.bond_type() == BondOrder::Aromatic;
-
-        // A mark is *not* written on an aromatic bond, and that costs real
-        // geometry: a double bond hanging off an aromatic ring needs a marked
-        // substituent on each of its carbons, the ring-side one being a ring
-        // bond, so dropping it writes half a description and a reader discards
-        // the geometry. Writing it fixed 582 of 40,000 stereochemically loaded
-        // PubChem records -- and produced SMILES this crate cannot read back,
-        // because the parser counts a directional bond as a single one when it
-        // works out implicit hydrogens. An aromatic carbon with a marked ring
-        // bond then gains a hydrogen it should not have, and the ring will no
-        // longer kekulize: `c1/ccccc1` comes back with two hydrogens on the
-        // marked carbon. A canonical form that this crate cannot parse is worse
-        // than one that loses a geometry, so the mark stays unwritten until the
-        // parser can take it. See `geometry_survives_canonization`.
 
         if !is_current_bond_aromatic {
             match node.bond_type() {
@@ -3304,6 +3283,40 @@ mod tests {
                 expected[0].atomic_numbers.len(),
                 "{smiles}"
             );
+        }
+    }
+
+    #[test]
+    fn an_oversized_ring_closure_or_isotope_is_refused() {
+        // Five digits is the most an extended ring closure may carry.
+        assert!(SMILESParser::parse_smiles("C%(99999)CC%(99999)").is_ok());
+        assert!(matches!(
+            SMILESParser::parse_smiles("C%(999999999999)CC%(999999999999)"),
+            Err(SMILESParseError::RingIndexError)
+        ));
+        assert!(matches!(
+            SMILESParser::parse_smiles("C%(99999999999999999999999)CC"),
+            Err(SMILESParseError::RingIndexError)
+        ));
+        // Any mass number the field holds is kept, as RDKit keeps it.
+        let molecules = SMILESParser::parse_smiles("[999C]").unwrap();
+        assert_eq!(molecules[0].get_atom_isotope(0), Some(999));
+        assert!(SMILESParser::parse_smiles("[65535C]").is_ok());
+        assert!(SMILESParser::parse_smiles("[65536C]").is_err());
+    }
+
+    #[test]
+    fn marks_to_two_separate_rings_stay_single_bonds() {
+        // The phosphorus has four neighbours, so its marked bonds to two
+        // phenyls are substituent bonds, not bonds of a ring of marks.
+        let molecule = SMILESParser::parse_smiles_single_with(
+            "N=P(/c1ccccc1)(\\c2ccccc2)C",
+            SmilesParseOptions { aromaticity: None },
+        )
+        .unwrap();
+        let phosphorus = 1;
+        for bond in molecule.get_atom_bonds(phosphorus).unwrap() {
+            assert_ne!(bond.bond_order(), BondOrder::Aromatic, "{bond:?}");
         }
     }
 

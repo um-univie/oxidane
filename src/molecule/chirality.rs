@@ -245,23 +245,9 @@ pub trait MoleculeChirality: MoleculeCore {
                 .map(|bond| bond.target())
                 .collect();
             for target in leftovers {
-                let aromatic_here = |mol: &Self, index: usize| {
-                    if mol.is_atom_aromatic(index) {
-                        return true;
-                    }
-                    let directional: Vec<usize> = mol
-                        .get_atom_bonds(index)
-                        .unwrap_or_default()
-                        .iter()
-                        .filter(|bond| {
-                            bond.bond_order() == BondOrder::Up
-                                || bond.bond_order() == BondOrder::Down
-                        })
-                        .map(|bond| bond.target())
-                        .collect();
-                    directional.len() >= 2 && directional.iter().any(|&n| mol.is_atom_aromatic(n))
-                };
-                let order = if aromatic_here(self, atom) && aromatic_here(self, target) {
+                let order = if self.sits_in_an_aromatic_ring(atom)
+                    && self.sits_in_an_aromatic_ring(target)
+                {
                     BondOrder::Aromatic
                 } else {
                     BondOrder::Single
@@ -314,26 +300,13 @@ pub trait MoleculeChirality: MoleculeCore {
         // two bonds short, and it would not kekulize. An atom carrying two
         // directional bonds is in a ring of them, which is the case being
         // missed; one directional bond and no aromatic bond is an ordinary
-        // substituent bond and stays single.
-        let looks_aromatic = |mol: &Self, atom: usize| {
-            if mol.is_atom_aromatic(atom) {
-                return true;
-            }
-            let directional: Vec<usize> = mol
-                .get_atom_bonds(atom)
-                .unwrap_or_default()
-                .iter()
-                .filter(|bond| {
-                    bond.bond_order() == BondOrder::Up || bond.bond_order() == BondOrder::Down
-                })
-                .map(|bond| bond.target())
-                .collect();
-            // Two marks *and* an aromatic neighbour: two marks alone is what a
-            // carbon between two stereogenic double bonds looks like too.
-            directional.len() >= 2 && directional.iter().any(|&n| mol.is_atom_aromatic(n))
-        };
+        // substituent bond and stays single. `sits_in_an_aromatic_ring` is the
+        // one place that asks this, so the pricing in `actual_valency` and the
+        // order restored here agree; a copy here lacked its four-neighbour
+        // guard and made the bonds of `N=P(/c1ccccc1)(\c2ccccc2)C`'s
+        // phosphorus to two separate rings aromatic.
         let restored = |mol: &Self, from: usize, to: usize| {
-            if looks_aromatic(mol, from) && looks_aromatic(mol, to) {
+            if mol.sits_in_an_aromatic_ring(from) && mol.sits_in_an_aromatic_ring(to) {
                 BondOrder::Aromatic
             } else {
                 BondOrder::Single

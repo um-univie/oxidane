@@ -4,7 +4,6 @@ use crate::molecule::chirality::*;
 use crate::molecule::graph::AtomInvariant;
 use crate::prelude::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 thread_local! {
     /// Automorphism generators collected from the most recent nauty run, each a
@@ -33,7 +32,7 @@ fn collect_automorphism_generator(
 //     },
 // };
 //use nauty_pet::autom::AutomGroup;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use canonaut::structs::CanonautManager;
 
@@ -1004,7 +1003,7 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
     // smallest tag vector any of them produces.
     const MAX_GROUP: usize = 4096;
     let identity: Vec<usize> = (0..molecule.len()).collect();
-    let mut seen: HashSet<Vec<usize>> = HashSet::new();
+    let mut seen: FxHashSet<Vec<usize>> = FxHashSet::default();
     seen.insert(identity.clone());
     // Two elements that agree on the atoms a tag depends on rewrite the tags
     // the same way, and most of a large group's elements agree with the
@@ -1013,7 +1012,7 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
     // walked in full and only a new *restriction* is paid for.
     let restriction =
         |element: &[usize]| -> Vec<usize> { watched.iter().map(|&atom| element[atom]).collect() };
-    let mut evaluated: HashSet<Vec<usize>> = HashSet::new();
+    let mut evaluated: FxHashSet<Vec<usize>> = FxHashSet::default();
     evaluated.insert(restriction(&identity));
     let mut frontier = vec![identity];
     while let Some(element) = frontier.pop() {

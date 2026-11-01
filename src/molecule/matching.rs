@@ -735,6 +735,21 @@ impl DegreeConstrainedInstance {
     }
 }
 
+/// What one edge of an f-factor problem is in the gadget.
+#[derive(Clone, Copy)]
+enum Ends {
+    /// Two externals, `first` standing for the edge at its first vertex, joined
+    /// by gadget edge `pair`; the edge is taken when they are matched together.
+    Pair {
+        first: usize,
+        second: usize,
+        pair: usize,
+    },
+    /// One external shared by both ends, between the internals of one vertex
+    /// and the copies of `supplier`; the edge is taken when it goes to a copy.
+    Shared { external: usize, supplier: usize },
+}
+
 /// The gadget an f-factor problem reduces to, built once and then edited.
 ///
 /// The reduction is the usual one: each edge of the problem becomes a pair of
@@ -743,6 +758,17 @@ impl DegreeConstrainedInstance {
 /// every external of its own. A perfect matching of the gadget is exactly a
 /// selection meeting every degree: an edge is taken when its two externals are
 /// matched to each other, and left when each goes to an internal instead.
+///
+/// A vertex wanting fewer edges than it refuses is cheaper the other way
+/// round: `b` *copies* of it, each joined to every external of its own, take
+/// exactly `b` of its edges, where Tutte's `d - b` internals would each be
+/// joined to all `d`. The pools the normalizer draws hydrogens and charges from
+/// are such vertices -- dozens of offers for a handful of placements -- and
+/// they were most of the gadget. An edge between a copied vertex and an
+/// internal one needs only one external, joined to the internals of one end
+/// and the copies of the other: absorbed by an internal, it is refused at both
+/// ends; held by a copy, taken at both. Two copied vertices are never made
+/// neighbours, so every edge is one of the two kinds.
 ///
 /// The point of holding it rather than rebuilding it is the lexicographic pass,
 /// which decides one edge at a time and asks after each whether the rest can
@@ -759,10 +785,13 @@ struct Factor {
     adjacency: Adjacency,
     /// Which gadget edges are still in the graph.
     alive: Vec<bool>,
-    /// Gadget vertices, externals first, two per edge of the problem.
+    /// Gadget vertices, externals first, then each problem vertex's own.
     vertex_count: usize,
-    /// The gadget edge joining the two externals of each problem edge.
-    pair_edge: Vec<usize>,
+    /// What each problem edge became.
+    ends: Vec<Ends>,
+    /// The problem vertex an internal or a copy belongs to, and `usize::MAX`
+    /// for an external.
+    owner: Vec<usize>,
     matched: Vec<Option<usize>>,
     workspace: SearchWorkspace,
     switched: Vec<usize>,
@@ -793,34 +822,81 @@ impl Factor {
             }
         }
 
-        // Externals: two per edge, numbered so that edge `i` owns `2i` and
-        // `2i + 1`. Internals follow, and each is joined to every external of
-        // the vertex it belongs to.
+        // Copies where they are fewer than internals would be, largest vertex
+        // first, and never for two neighbours.
+        let mut by_degree: Vec<usize> = (0..vertex_count)
+            .filter(|&vertex| required_degree[vertex] < degree[vertex] - required_degree[vertex])
+            .collect();
+        by_degree.sort_unstable_by_key(|&vertex| std::cmp::Reverse(degree[vertex]));
+        let mut copied = vec![false; vertex_count];
+        let mut beside_copied = vec![false; vertex_count];
+        for vertex in by_degree {
+            if beside_copied[vertex] {
+                continue;
+            }
+            copied[vertex] = true;
+            for &(first, second) in edges {
+                if first == vertex {
+                    beside_copied[second] = true;
+                } else if second == vertex {
+                    beside_copied[first] = true;
+                }
+            }
+        }
+
+        // Externals first, in edge order; then, vertex by vertex, its
+        // internals or its copies, each joined to every external of its own.
         let mut external_start = vec![0usize; vertex_count + 1];
         for vertex in 0..vertex_count {
             external_start[vertex + 1] = external_start[vertex] + degree[vertex];
         }
         let mut next_external = external_start.clone();
         let mut externals = vec![0usize; external_start[vertex_count]];
-        for (index, &(first, second)) in edges.iter().enumerate() {
-            externals[next_external[first]] = 2 * index;
-            next_external[first] += 1;
-            externals[next_external[second]] = 2 * index + 1;
-            next_external[second] += 1;
-        }
-        let mut gadget_vertices = 2 * edges.len();
-        let mut gadget_edges: Vec<(usize, usize)> = (0..edges.len())
-            .map(|index| (2 * index, 2 * index + 1))
-            .collect();
-        let pair_edge: Vec<usize> = (0..edges.len()).collect();
-        let mut first_internal = vec![0usize; vertex_count];
-        for vertex in 0..vertex_count {
-            first_internal[vertex] = gadget_vertices;
-            for _ in 0..(degree[vertex] - required_degree[vertex]) {
-                let internal = gadget_vertices;
+        let mut push_external = |vertex: usize, external: usize| {
+            externals[next_external[vertex]] = external;
+            next_external[vertex] += 1;
+        };
+        let mut gadget_vertices = 0;
+        let mut gadget_edges: Vec<(usize, usize)> = Vec::new();
+        let mut ends: Vec<Ends> = Vec::with_capacity(edges.len());
+        for &(first, second) in edges {
+            if copied[first] || copied[second] {
+                let external = gadget_vertices;
                 gadget_vertices += 1;
+                push_external(first, external);
+                push_external(second, external);
+                let supplier = if copied[first] { first } else { second };
+                ends.push(Ends::Shared { external, supplier });
+            } else {
+                let (a, b) = (gadget_vertices, gadget_vertices + 1);
+                gadget_vertices += 2;
+                push_external(first, a);
+                push_external(second, b);
+                ends.push(Ends::Pair {
+                    first: a,
+                    second: b,
+                    pair: gadget_edges.len(),
+                });
+                gadget_edges.push((a, b));
+            }
+        }
+        let own_count = |vertex: usize| {
+            if copied[vertex] {
+                required_degree[vertex]
+            } else {
+                degree[vertex] - required_degree[vertex]
+            }
+        };
+        let mut owner = vec![usize::MAX; gadget_vertices];
+        let mut first_own = vec![0usize; vertex_count];
+        for vertex in 0..vertex_count {
+            first_own[vertex] = gadget_vertices;
+            for _ in 0..own_count(vertex) {
+                let own = gadget_vertices;
+                gadget_vertices += 1;
+                owner.push(vertex);
                 for &external in &externals[external_start[vertex]..external_start[vertex + 1]] {
-                    gadget_edges.push((external, internal));
+                    gadget_edges.push((external, own));
                 }
             }
         }
@@ -829,7 +905,8 @@ impl Factor {
                 adjacency: Adjacency::from_edges(0, &[]),
                 alive: Vec::new(),
                 vertex_count: 0,
-                pair_edge,
+                ends,
+                owner,
                 matched: Vec::new(),
                 workspace: SearchWorkspace::new(0),
                 switched: Vec::new(),
@@ -843,30 +920,50 @@ impl Factor {
 
         // A first selection made on the problem itself: an edge is taken while
         // both its ends still want one, and otherwise each end's external goes
-        // to a spare internal of its own. Most degrees come out right this way,
+        // to a spare internal of its own (a shared external goes to a copy if
+        // taken and an internal if not). Most degrees come out right this way,
         // so the blossom search only has the shortfall to repair. Matching
         // externals to whatever neighbour is free instead takes every edge,
         // leaves every internal unmatched, and costs one search per pair of
         // them -- seven in ten of all the searches a normalization made.
         let mut matched = vec![None; gadget_vertices];
         let mut wanted = required_degree.to_vec();
-        let mut spare: Vec<usize> = first_internal.clone();
-        let internal_end =
-            |vertex: usize| first_internal[vertex] + degree[vertex] - required_degree[vertex];
-        for (index, &(first, second)) in edges.iter().enumerate() {
-            let (a, b) = (2 * index, 2 * index + 1);
-            if wanted[first] > 0 && wanted[second] > 0 {
-                wanted[first] -= 1;
-                wanted[second] -= 1;
-                matched[a] = Some(b);
-                matched[b] = Some(a);
-                continue;
-            }
-            for (external, vertex) in [(a, first), (b, second)] {
-                if spare[vertex] < internal_end(vertex) {
+        let mut spare: Vec<usize> = first_own.clone();
+        let mut pair_with_spare =
+            |matched: &mut Vec<Option<usize>>, external: usize, vertex: usize| {
+                if spare[vertex] < first_own[vertex] + own_count(vertex) {
                     matched[external] = Some(spare[vertex]);
                     matched[spare[vertex]] = Some(external);
                     spare[vertex] += 1;
+                }
+            };
+        for (index, &(first, second)) in edges.iter().enumerate() {
+            let take = wanted[first] > 0 && wanted[second] > 0;
+            if take {
+                wanted[first] -= 1;
+                wanted[second] -= 1;
+            }
+            match ends[index] {
+                Ends::Pair {
+                    first: a,
+                    second: b,
+                    ..
+                } => {
+                    if take {
+                        matched[a] = Some(b);
+                        matched[b] = Some(a);
+                    } else {
+                        pair_with_spare(&mut matched, a, first);
+                        pair_with_spare(&mut matched, b, second);
+                    }
+                }
+                Ends::Shared { external, supplier } => {
+                    let absorber = if supplier == first { second } else { first };
+                    pair_with_spare(
+                        &mut matched,
+                        external,
+                        if take { supplier } else { absorber },
+                    );
                 }
             }
         }
@@ -874,7 +971,8 @@ impl Factor {
             alive: vec![true; gadget_edges.len()],
             adjacency,
             vertex_count: gadget_vertices,
-            pair_edge,
+            ends,
+            owner,
             matched,
             workspace: SearchWorkspace::new(gadget_vertices),
             switched: Vec::new(),
@@ -883,7 +981,13 @@ impl Factor {
 
     /// Whether the selection in hand takes the problem's `index`th edge.
     fn selects(&self, index: usize) -> bool {
-        self.matched.get(2 * index).copied().flatten() == Some(2 * index + 1)
+        match self.ends.get(index) {
+            Some(&Ends::Pair { first, second, .. }) => self.matched[first] == Some(second),
+            Some(&Ends::Shared { external, supplier }) => {
+                self.matched[external].is_some_and(|own| self.owner[own] == supplier)
+            }
+            None => false,
+        }
     }
 
     /// A perfect matching of the whole gadget, or `None` when it has none.
@@ -937,9 +1041,26 @@ impl Factor {
     /// it means they no longer have each other. Either way the matching in hand
     /// already agrees with the decision, so nothing about it changes.
     fn commit(&mut self, index: usize, taken: bool) {
-        let pair = self.pair_edge[index];
+        let (a, b, pair) = match self.ends[index] {
+            Ends::Pair {
+                first,
+                second,
+                pair,
+            } => (first, second, pair),
+            Ends::Shared { external, supplier } => {
+                // Taking it closes the way to the internals, leaving it the way
+                // to the copies.
+                for position in 0..self.adjacency[external].len() {
+                    let (own, edge) = self.adjacency[external][position];
+                    if (self.owner[own] == supplier) != taken {
+                        self.alive[edge] = false;
+                    }
+                }
+                return;
+            }
+        };
         if taken {
-            for external in [2 * index, 2 * index + 1] {
+            for external in [a, b] {
                 for position in 0..self.adjacency[external].len() {
                     let (_, edge) = self.adjacency[external][position];
                     if edge != pair {
@@ -960,9 +1081,39 @@ impl Factor {
     /// the decision cannot be had -- and then the gadget and the matching are
     /// left exactly as they were.
     fn force(&mut self, index: usize, wanted: bool) -> bool {
-        let (a, b) = (2 * index, 2 * index + 1);
-        let pair = self.pair_edge[index];
         self.switched.clear();
+        let (a, b, pair) = match self.ends[index] {
+            Ends::Pair {
+                first,
+                second,
+                pair,
+            } => (first, second, pair),
+            Ends::Shared { external, supplier } => {
+                // The external's partner is on the side being closed, so
+                // closing it frees the two of them, and one path rejoins them.
+                let Some(partner) = self.matched[external] else {
+                    return false;
+                };
+                for position in 0..self.adjacency[external].len() {
+                    let (own, edge) = self.adjacency[external][position];
+                    if (self.owner[own] == supplier) != wanted && self.alive[edge] {
+                        self.alive[edge] = false;
+                        self.switched.push(edge);
+                    }
+                }
+                self.matched[external] = None;
+                self.matched[partner] = None;
+                if self.repair(external) {
+                    return true;
+                }
+                for &edge in &self.switched {
+                    self.alive[edge] = true;
+                }
+                self.matched[external] = Some(partner);
+                self.matched[partner] = Some(external);
+                return false;
+            }
+        };
         let restore: [(usize, Option<usize>); 4];
 
         if wanted {

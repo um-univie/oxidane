@@ -712,7 +712,9 @@ impl Factor {
             .map(|index| (2 * index, 2 * index + 1))
             .collect();
         let pair_edge: Vec<usize> = (0..edges.len()).collect();
+        let mut first_internal = vec![0usize; vertex_count];
         for vertex in 0..vertex_count {
+            first_internal[vertex] = gadget_vertices;
             for _ in 0..(degree[vertex] - required_degree[vertex]) {
                 let internal = gadget_vertices;
                 gadget_vertices += 1;
@@ -741,12 +743,42 @@ impl Factor {
             adjacency[a].push((b, edge));
             adjacency[b].push((a, edge));
         }
+
+        // A first selection made on the problem itself: an edge is taken while
+        // both its ends still want one, and otherwise each end's external goes
+        // to a spare internal of its own. Most degrees come out right this way,
+        // so the blossom search only has the shortfall to repair. Matching
+        // externals to whatever neighbour is free instead takes every edge,
+        // leaves every internal unmatched, and costs one search per pair of
+        // them -- seven in ten of all the searches a normalization made.
+        let mut matched = vec![None; gadget_vertices];
+        let mut wanted = required_degree.to_vec();
+        let mut spare: Vec<usize> = first_internal.clone();
+        let internal_end =
+            |vertex: usize| first_internal[vertex] + degree[vertex] - required_degree[vertex];
+        for (index, &(first, second)) in edges.iter().enumerate() {
+            let (a, b) = (2 * index, 2 * index + 1);
+            if wanted[first] > 0 && wanted[second] > 0 {
+                wanted[first] -= 1;
+                wanted[second] -= 1;
+                matched[a] = Some(b);
+                matched[b] = Some(a);
+                continue;
+            }
+            for (external, vertex) in [(a, first), (b, second)] {
+                if spare[vertex] < internal_end(vertex) {
+                    matched[external] = Some(spare[vertex]);
+                    matched[spare[vertex]] = Some(external);
+                    spare[vertex] += 1;
+                }
+            }
+        }
         Some(Factor {
             alive: vec![true; gadget_edges.len()],
             adjacency,
             vertex_count: gadget_vertices,
             pair_edge,
-            matched: vec![None; gadget_vertices],
+            matched,
             workspace: SearchWorkspace::new(gadget_vertices),
             switched: Vec::new(),
         })
@@ -763,10 +795,10 @@ impl Factor {
             return Some(());
         }
         let mut matched = std::mem::take(&mut self.matched);
-        // Every problem edge contributes an external pair, listed first in
-        // adjacency. Pairing free neighbours directly avoids resetting all
-        // search arrays for a path consisting of just one edge. The blossom
-        // search still repairs any pairs a perfect matching needs to change.
+        // Whatever the first selection left free is paired with a free
+        // neighbour where it has one, which avoids resetting all search arrays
+        // for a path consisting of just one edge. The blossom search still
+        // repairs any pairs a perfect matching needs to change.
         for vertex in 0..self.vertex_count {
             if matched[vertex].is_some() {
                 continue;

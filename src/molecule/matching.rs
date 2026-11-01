@@ -110,6 +110,7 @@ pub fn maximum_matching_from(
         return matched;
     }
 
+    let adjacency = Adjacency::from_lists(&adjacency);
     let mut workspace = SearchWorkspace::new(vertex_count);
     let mut state = Search::new(&adjacency, &alive, &mut workspace);
 
@@ -122,6 +123,61 @@ pub fn maximum_matching_from(
         }
     }
     matched
+}
+
+/// `(neighbour, edge)` per vertex, every vertex's list in one allocation.
+///
+/// The f-factor gadget has some seven times the vertices of the problem it
+/// stands for, and a list apiece made building it cost more than solving it.
+struct Adjacency {
+    start: Vec<usize>,
+    entries: Vec<(usize, usize)>,
+}
+
+impl Adjacency {
+    /// Each edge listed at both its ends, in the order the edges are given.
+    fn from_edges(vertex_count: usize, edges: &[(usize, usize)]) -> Self {
+        let mut start = vec![0usize; vertex_count + 1];
+        for &(a, b) in edges {
+            start[a + 1] += 1;
+            start[b + 1] += 1;
+        }
+        for vertex in 0..vertex_count {
+            start[vertex + 1] += start[vertex];
+        }
+        let mut next = start.clone();
+        let mut entries = vec![(0, 0); start[vertex_count]];
+        for (edge, &(a, b)) in edges.iter().enumerate() {
+            entries[next[a]] = (b, edge);
+            next[a] += 1;
+            entries[next[b]] = (a, edge);
+            next[b] += 1;
+        }
+        Self { start, entries }
+    }
+
+    fn from_lists(lists: &[Vec<(usize, usize)>]) -> Self {
+        let mut start = Vec::with_capacity(lists.len() + 1);
+        start.push(0);
+        let mut entries = Vec::with_capacity(lists.iter().map(Vec::len).sum());
+        for list in lists {
+            entries.extend_from_slice(list);
+            start.push(entries.len());
+        }
+        Self { start, entries }
+    }
+
+    fn len(&self) -> usize {
+        self.start.len().saturating_sub(1)
+    }
+}
+
+impl std::ops::Index<usize> for Adjacency {
+    type Output = [(usize, usize)];
+
+    fn index(&self, vertex: usize) -> &Self::Output {
+        &self.entries[self.start[vertex]..self.start[vertex + 1]]
+    }
 }
 
 /// Owned by the matching problem, not by an individual augmentation. Repairs
@@ -152,7 +208,7 @@ impl SearchWorkspace {
 
 struct Search<'a> {
     vertex_count: usize,
-    adjacency: &'a [Vec<(usize, usize)>],
+    adjacency: &'a Adjacency,
     /// The factor graph stays fixed while decisions disable individual edges.
     alive: &'a [bool],
     parent: &'a mut Vec<usize>,
@@ -167,7 +223,7 @@ struct Search<'a> {
 
 impl<'a> Search<'a> {
     fn new(
-        adjacency: &'a [Vec<(usize, usize)>],
+        adjacency: &'a Adjacency,
         alive: &'a [bool],
         workspace: &'a mut SearchWorkspace,
     ) -> Self {
@@ -662,7 +718,7 @@ impl DegreeConstrainedInstance {
 /// questions of it. That record cost minutes; it now costs half a second.
 struct Factor {
     /// `(neighbour, gadget edge)` per gadget vertex.
-    adjacency: Vec<Vec<(usize, usize)>>,
+    adjacency: Adjacency,
     /// Which gadget edges are still in the graph.
     alive: Vec<bool>,
     /// Gadget vertices, externals first, two per edge of the problem.
@@ -702,10 +758,17 @@ impl Factor {
         // Externals: two per edge, numbered so that edge `i` owns `2i` and
         // `2i + 1`. Internals follow, and each is joined to every external of
         // the vertex it belongs to.
-        let mut externals_of_vertex: Vec<Vec<usize>> = vec![Vec::new(); vertex_count];
+        let mut external_start = vec![0usize; vertex_count + 1];
+        for vertex in 0..vertex_count {
+            external_start[vertex + 1] = external_start[vertex] + degree[vertex];
+        }
+        let mut next_external = external_start.clone();
+        let mut externals = vec![0usize; external_start[vertex_count]];
         for (index, &(first, second)) in edges.iter().enumerate() {
-            externals_of_vertex[first].push(2 * index);
-            externals_of_vertex[second].push(2 * index + 1);
+            externals[next_external[first]] = 2 * index;
+            next_external[first] += 1;
+            externals[next_external[second]] = 2 * index + 1;
+            next_external[second] += 1;
         }
         let mut gadget_vertices = 2 * edges.len();
         let mut gadget_edges: Vec<(usize, usize)> = (0..edges.len())
@@ -718,14 +781,14 @@ impl Factor {
             for _ in 0..(degree[vertex] - required_degree[vertex]) {
                 let internal = gadget_vertices;
                 gadget_vertices += 1;
-                for &external in &externals_of_vertex[vertex] {
+                for &external in &externals[external_start[vertex]..external_start[vertex + 1]] {
                     gadget_edges.push((external, internal));
                 }
             }
         }
         if gadget_vertices == 0 {
             return Some(Factor {
-                adjacency: Vec::new(),
+                adjacency: Adjacency::from_edges(0, &[]),
                 alive: Vec::new(),
                 vertex_count: 0,
                 pair_edge,
@@ -738,11 +801,7 @@ impl Factor {
             return None;
         }
 
-        let mut adjacency: Vec<Vec<(usize, usize)>> = vec![Vec::new(); gadget_vertices];
-        for (edge, &(a, b)) in gadget_edges.iter().enumerate() {
-            adjacency[a].push((b, edge));
-            adjacency[b].push((a, edge));
-        }
+        let adjacency = Adjacency::from_edges(gadget_vertices, &gadget_edges);
 
         // A first selection made on the problem itself: an edge is taken while
         // both its ends still want one, and otherwise each end's external goes

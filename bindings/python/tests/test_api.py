@@ -128,3 +128,52 @@ def test_svg_dimensions(obj):
         obj.to_svg(width=0)
     with pytest.raises(OverflowError):
         obj.to_svg(width=-1)
+
+
+def test_tautomer_keys_and_canonical_tautomers():
+    # 2-pyridone and 2-hydroxypyridine are one compound.
+    assert ox.tautomer_key("O=c1cccc[nH]1") == ox.tautomer_key("Oc1ccccn1")
+    assert ox.canonical_tautomer("O=c1cccc[nH]1") == ox.canonical_tautomer("Oc1ccccn1")
+    assert ox.canonical_tautomer("CC(O)=N") == "O=C(N)C"
+    # Nothing mobile: the key is the canonical SMILES, with no marker.
+    assert ox.tautomer_key("c1ccccc1") == "c1ccccc1"
+    # Keto and enol only merge with carbon endpoints, which the key says.
+    assert ox.tautomer_key("CC(C)=O") != ox.tautomer_key("CC(O)=C")
+    carbon = ox.tautomer_key(["CC(C)=O", "CC(O)=C"], carbon_endpoints=True)
+    assert carbon[0] == carbon[1] and carbon[0].startswith("c/")
+    zwitterion = ox.tautomer_key("[NH3+]CC(=O)[O-]", ionizable_endpoints=True)
+    assert zwitterion == ox.tautomer_key("NCC(=O)O", ionizable_endpoints=True)
+    assert zwitterion.startswith("i/")
+    mol = ox.Molecule("Oc1ccccn1")
+    assert mol.tautomer_key() == ox.tautomer_key("Oc1ccccn1")
+    assert mol.canonical_tautomer() == ox.canonical_tautomer("Oc1ccccn1")
+
+
+def test_batches_match_single_calls_in_order():
+    smiles = ["OCC", "[Na+].[Cl-]", "O=c1cccc[nH]1", "CC(O)=N", "c1ccccc1O"] * 40
+    for function in (ox.canonical_smiles, ox.tautomer_key, ox.canonical_tautomer):
+        expected = [function(s) for s in smiles]
+        assert function(smiles) == expected
+        assert function(tuple(smiles), threads=1) == expected
+        assert function(iter(smiles), threads=3) == expected
+    ethanol, salt = ox.canonical_smiles(["CCO", "[Na+].[Cl-]"])
+    assert ethanol == ox.canonical_smiles("OCC")
+    assert salt == ox.canonical_smiles("[Cl-].[Na+]")
+    assert ox.canonical_smiles([]) == []
+
+
+def test_batch_errors():
+    with pytest.raises(ValueError, match="index 1"):
+        ox.canonical_smiles(["CCO", "C1CC"])
+    with pytest.raises(ValueError):
+        ox.tautomer_key("C1CC")
+    answers = ox.canonical_tautomer(["CCO", "C1CC"], errors="none")
+    assert answers == [ox.canonical_tautomer("CCO"), None]
+    with pytest.raises(ValueError):
+        ox.canonical_smiles(["CCO"], errors="ignore")
+    with pytest.raises(ValueError):
+        ox.canonical_smiles(["CCO"], threads=0)
+    with pytest.raises(TypeError):
+        ox.canonical_smiles(["CCO", 3])
+    with pytest.raises(TypeError):
+        ox.canonical_smiles(42)

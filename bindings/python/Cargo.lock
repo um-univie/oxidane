@@ -901,6 +901,7 @@ version = "0.2.0"
 dependencies = [
  "oxidane",
  "pyo3",
+ "rayon",
 ]
 
 [[package]]

@@ -1,13 +1,18 @@
 //! Migrated from um-univie/molecules-py, commit 0f1eaed5e592d00b131da387600146d733628262.
 use oxidane::atom::Atom;
-use oxidane::graph_algorithms::mol_canonization::{canonize_mol, canonize_mol_inplace};
-use oxidane::io::{CxSMARTSPattern, SDFParseError, ToSMILES, parse_cxsmarts};
+use oxidane::graph_algorithms::mol_canonization::{
+    canonicalize_and_sort_smiles, canonize_mol, canonize_mol_inplace,
+};
+use oxidane::io::{CxSMARTSPattern, SDFParseError, SMILESParseError, ToSMILES, parse_cxsmarts};
 use oxidane::molecule::base::MoleculeCore;
 use oxidane::molecule::draw::Draw;
 use oxidane::molecule::reaction::ReactionSmarts as RustReaction;
+use oxidane::molecule::tautomer::{TautomerRules, normalized_smiles, tautomer_key_from_smiles};
 use oxidane::molecule::{MolecularGraph, Molecule3D};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyString;
+use rayon::prelude::*;
 use std::path::PathBuf;
 
 fn value_error(error: impl std::fmt::Debug) -> PyErr {
@@ -96,6 +101,22 @@ impl PyMolecule {
     }
     fn to_canonical_smiles(&self) -> String {
         canonize_mol(&self.inner).to_smiles()
+    }
+    /// The same string `oxidane.tautomer_key` gives for this molecule's SMILES.
+    #[pyo3(signature = (*, carbon_endpoints=false, ionizable_endpoints=false))]
+    fn tautomer_key(&self, carbon_endpoints: bool, ionizable_endpoints: bool) -> PyResult<String> {
+        let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
+        tautomer_key_from_smiles(&self.inner.to_smiles(), &rules).map_err(value_error)
+    }
+    /// The same string `oxidane.canonical_tautomer` gives for this molecule's SMILES.
+    #[pyo3(signature = (*, carbon_endpoints=false, ionizable_endpoints=false))]
+    fn canonical_tautomer(
+        &self,
+        carbon_endpoints: bool,
+        ionizable_endpoints: bool,
+    ) -> PyResult<String> {
+        let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
+        normalized_smiles(&self.inner.to_smiles(), &rules).map_err(value_error)
     }
 
     /// Invalid queries raise ValueError; an absent pattern returns False.
@@ -329,8 +350,136 @@ impl PyReactionSmarts {
     }
 }
 
+fn tautomer_rules(carbon_endpoints: bool, ionizable_endpoints: bool) -> TautomerRules {
+    TautomerRules {
+        carbon_endpoints,
+        ionizable_endpoints,
+        ..TautomerRules::new()
+    }
+}
+
+/// Applies `compute` to one SMILES or to every SMILES of an iterable.
+///
+/// A single string gives back a string and raises on a bad SMILES. Anything
+/// else is read as an iterable of strings, copied out while the GIL is held,
+/// and computed on rayon's pool without it, so other Python threads keep
+/// running; the answers come back as a list in input order. With
+/// `errors="none"` a SMILES that does not parse gives None in its place rather
+/// than raising.
+fn map_smiles(
+    py: Python<'_>,
+    smiles: &Bound<'_, PyAny>,
+    threads: Option<usize>,
+    errors: &str,
+    compute: impl Fn(&str) -> Result<String, SMILESParseError> + Sync,
+) -> PyResult<Py<PyAny>> {
+    let skip_errors = match errors {
+        "raise" => false,
+        "none" => true,
+        _ => {
+            return Err(PyValueError::new_err(
+                "errors must be \"raise\" or \"none\"",
+            ));
+        }
+    };
+    if let Ok(single) = smiles.cast::<PyString>() {
+        let single = single.to_str()?.to_owned();
+        let answer = py.detach(|| compute(&single)).map_err(|error| {
+            PyValueError::new_err(format!("cannot read SMILES {single:?}: {error:?}"))
+        })?;
+        return Ok(answer.into_pyobject(py)?.into_any().unbind());
+    }
+    let inputs = smiles
+        .try_iter()
+        .map_err(|_| PyTypeError::new_err("smiles must be a string or an iterable of strings"))?
+        .enumerate()
+        .map(|(index, item)| {
+            item?
+                .extract::<String>()
+                .map_err(|_| PyTypeError::new_err(format!("item {index} is not a string")))
+        })
+        .collect::<PyResult<Vec<String>>>()?;
+    let answers = py.detach(|| match threads {
+        Some(0) => Err(PyValueError::new_err("threads must be positive")),
+        Some(1) => Ok(inputs.iter().map(|smiles| compute(smiles)).collect()),
+        Some(count) => rayon::ThreadPoolBuilder::new()
+            .num_threads(count)
+            .build()
+            .map_err(value_error)
+            .map(|pool| pool.install(|| inputs.par_iter().map(|smiles| compute(smiles)).collect())),
+        None => Ok(inputs.par_iter().map(|smiles| compute(smiles)).collect()),
+    })?;
+    let answers: Vec<Result<String, SMILESParseError>> = answers;
+    let mut list = Vec::with_capacity(answers.len());
+    for (index, answer) in answers.into_iter().enumerate() {
+        match answer {
+            Ok(answer) => list.push(Some(answer)),
+            Err(_) if skip_errors => list.push(None),
+            Err(error) => {
+                return Err(PyValueError::new_err(format!(
+                    "cannot read SMILES {:?} at index {index}: {error:?}",
+                    inputs[index]
+                )));
+            }
+        }
+    }
+    Ok(list.into_pyobject(py)?.into_any().unbind())
+}
+
+/// Canonical SMILES; components are canonized separately and sorted.
+#[pyfunction]
+#[pyo3(signature = (smiles, *, threads=None, errors="raise"))]
+fn canonical_smiles(
+    py: Python<'_>,
+    smiles: &Bound<'_, PyAny>,
+    threads: Option<usize>,
+    errors: &str,
+) -> PyResult<Py<PyAny>> {
+    map_smiles(py, smiles, threads, errors, |smiles| {
+        canonicalize_and_sort_smiles(smiles, true)
+    })
+}
+
+/// A string every tautomer of the input shares.
+#[pyfunction]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="raise"))]
+fn tautomer_key(
+    py: Python<'_>,
+    smiles: &Bound<'_, PyAny>,
+    carbon_endpoints: bool,
+    ionizable_endpoints: bool,
+    threads: Option<usize>,
+    errors: &str,
+) -> PyResult<Py<PyAny>> {
+    let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
+    map_smiles(py, smiles, threads, errors, |smiles| {
+        tautomer_key_from_smiles(smiles, &rules)
+    })
+}
+
+/// The canonical SMILES of the one tautomer every tautomer of the input
+/// normalizes to.
+#[pyfunction]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="raise"))]
+fn canonical_tautomer(
+    py: Python<'_>,
+    smiles: &Bound<'_, PyAny>,
+    carbon_endpoints: bool,
+    ionizable_endpoints: bool,
+    threads: Option<usize>,
+    errors: &str,
+) -> PyResult<Py<PyAny>> {
+    let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
+    map_smiles(py, smiles, threads, errors, |smiles| {
+        normalized_smiles(smiles, &rules)
+    })
+}
+
 #[pymodule]
 fn _oxidane(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(canonical_smiles, module)?)?;
+    module.add_function(wrap_pyfunction!(tautomer_key, module)?)?;
+    module.add_function(wrap_pyfunction!(canonical_tautomer, module)?)?;
     module.add_class::<PyMolecule>()?;
     module.add_class::<PyMolecule3D>()?;
     module.add_class::<MolParser>()?;

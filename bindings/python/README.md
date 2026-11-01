@@ -29,6 +29,48 @@ uv run --with maturin maturin develop --uv
 uv run pytest
 ```
 
+## Canonical SMILES and tautomer keys
+
+```python
+import oxidane as ox
+
+ox.canonical_smiles("OCC")             # one canonical SMILES
+ox.tautomer_key("O=c1cccc[nH]1") == ox.tautomer_key("Oc1ccccn1")  # True
+ox.canonical_tautomer("CC(O)=N")       # 'O=C(N)C', the form stored for the class
+
+smiles = [line.split()[0] for line in open("molecules.smi")]
+canonical = ox.canonical_smiles(smiles)                # list, input order
+keys = ox.tautomer_key(smiles, errors="none")          # None where a SMILES does not parse
+tautomers = ox.canonical_tautomer(smiles, threads=8)   # cap the threads used
+```
+
+All three take a single SMILES string, which returns a string, or any iterable
+of strings (list, tuple, generator, pandas Series), which returns a list in
+input order. Lists are processed on every core by default, with the GIL
+released; `threads=n` limits that, and `RAYON_NUM_THREADS` sets the default.
+A SMILES that does not parse raises `ValueError` naming its index, or gives
+`None` with `errors="none"`. Dot-separated components are handled one at a
+time and sorted, so a salt written either way round gives the same string.
+On a 24-core machine, 100,000 PubChem records take about 0.5 s for canonical
+SMILES, 0.7 s for tautomer keys and 1.9 s for canonical tautomers.
+
+- `canonical_smiles` is invariant under atom order.
+- `tautomer_key` is equal for every tautomer of a compound: the canonical SMILES
+  of the skeleton with its mobile hydrogens and bond orders erased, followed
+  by `/`-separated fields saying where they can go. A molecule with nothing
+  mobile keys to its canonical SMILES. Treat the key as an identifier; it is
+  not a structure to read back.
+- `canonical_tautomer` is a real structure: the one tautomer every member of
+  the class normalizes to, as canonical SMILES. It has the same key as the
+  input.
+
+By default only heteroatoms (N, O, S, Se, Te) exchange hydrogens, as in InChI's
+mobile-H layer. `carbon_endpoints=True` also merges keto and enol forms;
+`ionizable_endpoints=True` also merges zwitterions with their neutral forms.
+Keys made that way start with `c/`, `i/` or `ci/`, so they cannot be confused
+with default keys. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
+give the same answers for a molecule already built.
+
 ## Molecules and SMARTS
 
 ```python
@@ -106,6 +148,7 @@ builds do not acquire Python dependencies. A wheel can be built from the root:
 uv run --project bindings/python --with maturin maturin build --manifest-path bindings/python/Cargo.toml
 ```
 
-Tests cover the legacy imports and canonicalization methods, file parsing,
+Tests cover the legacy imports and canonicalization methods, batch canonical
+SMILES and tautomer keys, file parsing,
 SMARTS errors and matching semantics, SVG export, immediate and automatic
 notebook display, and execution through a real Jupyter kernel.

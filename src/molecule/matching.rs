@@ -602,6 +602,14 @@ pub struct DegreeConstrainedInstance {
     /// the pass goes.
     settled_room: Vec<[usize; 2]>,
     room: Vec<[usize; 2]>,
+    /// Consecutive edges joining the same two vertices share a class, numbered
+    /// here. Parallel edges listed apart only miss the shortcut below; the
+    /// normalizer lists each atom's offers to one pool, and each bond's two π
+    /// units, together.
+    class: Vec<usize>,
+    /// Per class, whether this pass has already found taking (`[1]`) or
+    /// leaving (`[0]`) one of its edges out of reach.
+    out_of_reach: Vec<[bool; 2]>,
 }
 
 impl DegreeConstrainedInstance {
@@ -627,7 +635,21 @@ impl DegreeConstrainedInstance {
         for room in settled_room.iter_mut() {
             room[0] -= room[1];
         }
+        let joins = |index: usize| {
+            let (first, second) = edges[index];
+            (first.min(second), first.max(second))
+        };
+        let mut class = vec![0usize; edges.len()];
+        let mut class_count = 0;
+        for index in 0..edges.len() {
+            if index == 0 || joins(index - 1) != joins(index) {
+                class_count += 1;
+            }
+            class[index] = class_count - 1;
+        }
         Some(Self {
+            class,
+            out_of_reach: vec![[false; 2]; class_count],
             settled_alive: factor.alive.clone(),
             settled_matching: factor.matched.clone(),
             edge_count: edges.len(),
@@ -650,6 +672,9 @@ impl DegreeConstrainedInstance {
         self.factor.matched.copy_from_slice(&self.settled_matching);
         self.decided.iter_mut().for_each(|seen| *seen = false);
         self.room.copy_from_slice(&self.settled_room);
+        self.out_of_reach
+            .iter_mut()
+            .for_each(|seen| *seen = [false; 2]);
         for &(index, wanted) in priority {
             if index >= self.edge_count || self.decided[index] {
                 continue;
@@ -660,12 +685,25 @@ impl DegreeConstrainedInstance {
             // decision is feasible and nothing has to be searched for. Most do
             // agree -- the order exists to express a preference, and a
             // preference is usually already met.
+            let class = self.class[index];
+            let side = usize::from(wanted);
             let taken = if self.factor.selects(index) == wanted {
                 self.factor.commit(index, wanted);
                 wanted
-            } else if self.has_room(index, wanted) && self.factor.force(index, wanted) {
+            } else if self.has_room(index, wanted)
+                && !self.out_of_reach[class][side]
+                && self.factor.force(index, wanted)
+            {
                 wanted
             } else {
+                // A parallel edge decided later is this one again under more
+                // constraints: were it to have a solution, swapping the two
+                // edges would give this one a solution now. So the answer
+                // stands for the whole class, and the normalizer's parallel
+                // edges are many -- one per π unit, hydrogen and charge an atom
+                // is offered -- and nearly half its failed searches repeated
+                // one already made.
+                self.out_of_reach[class][side] = true;
                 self.factor.commit(index, !wanted);
                 !wanted
             };

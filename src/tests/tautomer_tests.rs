@@ -101,8 +101,8 @@ fn a_molecule_with_no_group_keeps_its_canonical_smiles() {
         let molecule = MolecularGraph::from_smiles_single(smiles).expect("the SMILES parses");
         let groups = perceive(&molecule, &TautomerRules::new());
         if groups.is_empty() {
-            // Only the version marker's separator, none from a group field.
-            assert_eq!(key(smiles).matches('/').count(), 1, "{smiles}");
+            // No group field, and under the default rules no marker either.
+            assert!(!key(smiles).contains('/'), "{smiles}");
         }
     }
     assert!(
@@ -639,7 +639,7 @@ fn ionizable_endpoints_merge_a_zwitterion_with_its_neutral_form() {
     }
     // The marker says which relation was asked for, so the two cannot be
     // compared against each other by accident.
-    assert!(ionized("NCC(=O)O").starts_with("t6i/"));
+    assert!(ionized("NCC(=O)O").starts_with("i/"));
 }
 
 /// What the wider relation still refuses to merge: anything the formula tells
@@ -837,9 +837,7 @@ fn a_proton_does_not_cross_between_components() {
 fn the_key_writes_the_component_totals_once() {
     // Two carboxyl groups, one proton and one charge between them.
     let monoanion = key("OC(=O)CCC(=O)[O-]");
-    let (skeleton, suffix) = monoanion.split_once('/').expect("a versioned key");
-    assert_eq!(skeleton, "t6");
-    let fields: Vec<&str> = suffix.split('/').collect();
+    let fields: Vec<&str> = monoanion.split('/').collect();
     // The SMILES, a field per group, and the totals.
     assert_eq!(fields.len(), 4, "{monoanion}");
     assert_eq!(fields[1], "0,0");
@@ -1133,38 +1131,35 @@ fn a_geometry_no_shift_can_reach_is_kept() {
     }
 }
 
-/// A key says what made it, and the format it used to have is still reachable.
-///
-/// Perception changed four times in the course of one afternoon's work against
-/// PubChem, and each change moved some molecules between classes. A key already
-/// written into a registry cannot be told from one this build would write
-/// unless it says so, and the failure is silent -- rows stop matching and the
-/// duplicates come back.
+/// A key made under other than the default rules says which, so keys from
+/// different relations cannot be compared by accident; the default rules write
+/// no marker at all.
 #[test]
-fn keys_carry_the_version_and_rules_that_made_them() {
-    use crate::molecule::tautomer::KeyFormat;
-
-    let rules = TautomerRules::new();
-    let legacy = TautomerRules {
-        key_format: KeyFormat::Unversioned,
+fn keys_say_which_rules_made_them() {
+    let both = TautomerRules {
+        carbon_endpoints: true,
+        ionizable_endpoints: true,
         ..TautomerRules::new()
     };
+    assert_eq!(key("c1ccccc1"), "c1ccccc1");
+    for (rules, marker) in [
+        (TautomerRules::with_carbon_endpoints(), "c/"),
+        (TautomerRules::with_ionizable_endpoints(), "i/"),
+        (both, "ci/"),
+    ] {
+        let marked = tautomer_key_from_smiles("CC(=O)N", &rules).expect("the SMILES parses");
+        assert!(marked.starts_with(marker), "{marked}");
+    }
 
-    // The marker, and nothing else, is what the version adds.
-    let versioned = key("CC(=O)N");
-    let bare = tautomer_key_from_smiles("CC(=O)N", &legacy).expect("the SMILES parses");
-    assert_eq!(versioned, format!("t6/{bare}"));
-
-    // Carbon endpoints are a different relation and say so, which stops a key
-    // from one being compared against a key from the other.
-    assert!(carbon_key("CC(C)=O").starts_with("t6c/"));
-    assert!(key("CC(C)=O").starts_with("t6/"));
-
-    // Whatever the format, the property the key exists for still holds.
-    for rules in [&rules, &legacy, &TautomerRules::with_carbon_endpoints()] {
+    // Whatever the rules, the property the key exists for still holds.
+    for rules in [
+        TautomerRules::new(),
+        TautomerRules::with_carbon_endpoints(),
+        TautomerRules::with_ionizable_endpoints(),
+    ] {
         assert_eq!(
-            tautomer_key_from_smiles("O=c1cccc[nH]1", rules).unwrap(),
-            tautomer_key_from_smiles("Oc1ccccn1", rules).unwrap(),
+            tautomer_key_from_smiles("O=c1cccc[nH]1", &rules).unwrap(),
+            tautomer_key_from_smiles("Oc1ccccn1", &rules).unwrap(),
         );
     }
 }

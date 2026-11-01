@@ -105,31 +105,6 @@ use crate::molecule::chirality::ChiralClass;
 use crate::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Whether a key says which rules and which version of them produced it.
-///
-/// A key is a durable thing -- it goes into a registry column or a dataset
-/// split and is compared against keys written months earlier -- and a key that
-/// does not say what made it cannot be told from one that a different version
-/// would have written. The failure is silent: rows simply stop matching, and
-/// the duplicates a registry was built to prevent quietly reappear. So the
-/// default carries a marker, and the marker changes whenever the perception
-/// changes in a way that moves molecules between classes.
-///
-/// The marker also records the *rules*, because they are as much a part of what
-/// a key means as the algorithm is: a key made with carbon endpoints admitted
-/// describes a coarser relation than one made without, and comparing the two
-/// is meaningless.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum KeyFormat {
-    /// Prefixed with the version and the rules that made it.
-    #[default]
-    Versioned,
-    /// The bare key, as written before versioning existed. Here so that keys
-    /// already stored can still be reproduced and compared; new ones should not
-    /// use it.
-    Unversioned,
-}
-
 /// Which structures count as tautomers of each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TautomerRules {
@@ -172,8 +147,6 @@ pub struct TautomerRules {
     /// exponential in this bound, held down in practice only by how few atoms
     /// carry an alternating path at all.
     pub max_intermediate_atoms: usize,
-    /// Whether the keys these rules produce say what produced them.
-    pub key_format: KeyFormat,
 }
 
 impl Default for TautomerRules {
@@ -182,69 +155,26 @@ impl Default for TautomerRules {
             carbon_endpoints: false,
             ionizable_endpoints: false,
             max_intermediate_atoms: 3,
-            key_format: KeyFormat::Versioned,
         }
     }
 }
 
-/// The current version of the perception, as it appears in a key.
-///
-/// Raise this whenever a change moves molecules between classes, so that a key
-/// written by an older build is recognisably not one this build would write.
-/// Every change that has needed it so far was found by running a public corpus
-/// rather than by reasoning: unpaired electrons spending valence, a valence the
-/// table did not list, a symmetric skeleton that could not say which of its
-/// groups held what, and the geometry of a double bond inside a group.
-///
-/// `t2` names an endpoint by the representative of its *orbit* under the
-/// skeleton's automorphisms rather than by its own canonical position. A
-/// symmetric molecule's fields therefore change -- `0,0,2,2` where `t1` wrote
-/// `0,1,2,3` -- while a molecule with no symmetry keeps the key it had, every
-/// atom being its own orbit. What it buys is that the field stops depending on
-/// which of several equivalent atoms the input happened to hand us: a
-/// bis-catechol crown ether wrote `0,1` one way round and `2,3` the other, and
-/// a bis-DOTA conjugate swapped which of four equivalent arms carried the
-/// charge. Both are one compound and now write one key.
-///
-/// `t3` keeps a double bond's geometry, and the bond's order with it, where no
-/// assignment the group admits can move that bond -- see [`settle_geometries`].
-/// `t2` erased every geometry a group touched, so E and Z cinnamamide, fumaric
-/// and maleic acid, and methyl crotonate and isocrotonate each wrote one key
-/// between them. Splitting those classes is what the version says: a molecule
-/// whose stated geometry the shift really can move keeps the key it had.
-/// `t4` gives the unpaired electrons a pool of their own, so a component
-/// holding one is a group like any other. `t3` refused such a component
-/// outright -- with nothing to move the electron between endpoints, erasure
-/// left it where the input put it and `normalize` oscillated -- and the keys of
-/// a radical's tautomers were their plain canonical SMILES, one apiece. The
-/// three structures RDKit relates for `[O]c1nccc(O)n1` wrote three keys under
-/// `t3` and write one under `t4`. A group with no unpaired electron writes the
-/// field it always wrote, the count being appended only where there is one, so
-/// the prefix is the whole of what changed for everything else.
-/// `t5` pools the totals over the component instead of keeping one set per
-/// group, and writes them once at the end of the key: a field per group saying
-/// where its endpoints are, then `H:charge` for all of them together. Glycine's
-/// zwitterion and its neutral form, a succinate monoanion written with the
-/// charge on either carboxyl, and a chelator whose proton sits on one arm or
-/// another are each one compound under it and were two under `t4` -- which
-/// disagreed with both InChI and RDKit, the two things this convention exists
-/// to agree with.
-/// `t6` incorporates the corrected three-coordinate ring-closure stereo
-/// convention and hydrogen serialization. Equivalent bridged-nitrogen inputs
-/// no longer split according to their SMILES writing; old keys must be
-/// regenerated rather than mixed with the corrected identifiers.
-const KEY_VERSION: &str = "t6";
-
 impl TautomerRules {
-    /// What a key made under these rules is prefixed with.
+    /// What a key made under these rules is prefixed with: nothing under the
+    /// default rules, so a molecule with nothing mobile keys to its plain
+    /// canonical SMILES, and otherwise the rules that differ, as `c/`, `i/` or
+    /// `ci/`.
+    ///
+    /// Carbon and ionizable endpoints describe coarser relations than the
+    /// default, and a key from one compared against a key from another means
+    /// nothing; the marker stops that from passing silently.
     fn key_prefix(&self) -> String {
-        match self.key_format {
-            KeyFormat::Unversioned => String::new(),
-            KeyFormat::Versioned => {
-                let carbon = if self.carbon_endpoints { "c" } else { "" };
-                let ionizable = if self.ionizable_endpoints { "i" } else { "" };
-                format!("{KEY_VERSION}{carbon}{ionizable}/")
-            }
+        let carbon = if self.carbon_endpoints { "c" } else { "" };
+        let ionizable = if self.ionizable_endpoints { "i" } else { "" };
+        if carbon.is_empty() && ionizable.is_empty() {
+            String::new()
+        } else {
+            format!("{carbon}{ionizable}/")
         }
     }
 
@@ -1526,10 +1456,14 @@ fn remap(mut groups: TautomericGroups, removed: &[usize]) -> TautomericGroups {
 /// let imidic = MolecularGraph::from_smiles_single("CC(O)=N").unwrap();
 /// assert_eq!(tautomer_key(&amide, &rules), tautomer_key(&imidic, &rules));
 ///
-/// // A molecule with nothing mobile keeps its ordinary canonical SMILES,
-/// // behind the marker saying which rules wrote it.
+/// // A molecule with nothing mobile keeps its ordinary canonical SMILES.
 /// let benzene = MolecularGraph::from_smiles_single("c1ccccc1").unwrap();
-/// assert_eq!(tautomer_key(&benzene, &rules), "t6/c1ccccc1");
+/// assert_eq!(tautomer_key(&benzene, &rules), "c1ccccc1");
+///
+/// // Rules other than the default say so, so that keys from different
+/// // relations are never compared by accident.
+/// let carbon = TautomerRules::with_carbon_endpoints();
+/// assert!(tautomer_key(&amide, &carbon).starts_with("c/"));
 /// ```
 pub fn tautomer_key<M: Molecule + Clone + ToSMILES>(molecule: &M, rules: &TautomerRules) -> String {
     with_canonizer(|canonizer| tautomer_key_with(canonizer, molecule, rules))

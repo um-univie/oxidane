@@ -1805,6 +1805,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_arch = "x86_64")]
     fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
         use crate::molecule::forcefield::lanes::{Avx, Portable};
         use crate::vector::Vector4D;

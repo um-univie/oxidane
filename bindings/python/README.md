@@ -33,26 +33,48 @@ uv run pytest
 
 ```python
 import oxidane as ox
+import pandas
 
 ox.canonical_smiles("OCC")             # one canonical SMILES
 ox.tautomer_key("O=c1cccc[nH]1") == ox.tautomer_key("Oc1ccccn1")  # True
 ox.canonical_tautomer("CC(O)=N")       # 'O=C(N)C', the form stored for the class
 
-smiles = [line.split()[0] for line in open("molecules.smi")]
-canonical = ox.canonical_smiles(smiles)                # list, input order
-keys = ox.tautomer_key(smiles, errors="none")          # None where a SMILES does not parse
-tautomers = ox.canonical_tautomer(smiles, threads=8)   # cap the threads used
+df = pandas.read_csv("data.csv")
+smiles = df["smiles"]                                  # any iterable of strings
+df["canonical"] = ox.canonical_smiles(smiles)          # list, input order
+df["key"] = ox.tautomer_key(smiles)
+df["tautomer"] = ox.canonical_tautomer(smiles, threads=8)   # cap the threads used
+
+# Whole files, streamed: every row gets the three columns appended.
+ox.process_file("molecules.smi", "molecules.tsv")
+ox.process_file("CID-SMILES.gz", "keys.tsv.gz", smiles_column=1, columns=["tautomer_key"])
+ox.process_file("data.csv", "data_out.csv", smiles_column="smiles")  # header row
 ```
 
 All three take a single SMILES string, which returns a string, or any iterable
 of strings (list, tuple, generator, pandas Series), which returns a list in
 input order. Lists are processed on every core by default, with the GIL
 released; `threads=n` limits that, and `RAYON_NUM_THREADS` sets the default.
-A SMILES that does not parse raises `ValueError` naming its index, or gives
-`None` with `errors="none"`. Dot-separated components are handled one at a
+A SMILES that does not parse is given back unchanged and reported on stderr
+with its index; `errors="none"` gives `None` in its place instead, and
+`errors="raise"` raises `ValueError`. Dot-separated components are handled one at a
 time and sorted, so a salt written either way round gives the same string.
 On a 24-core machine, 100,000 PubChem records take about 0.5 s for canonical
 SMILES, 0.7 s for tautomer keys and 1.9 s for canonical tautomers.
+
+`process_file(input, output)` writes each input row followed by one field per
+entry of `columns` (default: `canonical_smiles`, `tautomer_key`,
+`canonical_tautomer`). It reads `chunk_size` rows (100,000) at a time and
+computes each chunk on every core, so memory stays bounded however large the
+file is; about 25,000 rows per second with all three columns on 24 cores. The
+delimiter follows the extension: `,` for `.csv`, tab for `.tsv`, whitespace for
+`.smi` and anything else (written back as tabs); `delimiter=` overrides it.
+CSV quoting is honoured, and a `.gz` suffix on either path compresses that
+side. `smiles_column` is a 0-based index or, with a header row, a column name;
+`header=True` keeps a header with an index too. The same `errors` modes apply,
+reported with the input line number, and `carbon_endpoints`,
+`ionizable_endpoints` and `threads` are passed through. It returns
+`{"rows": ..., "unparsed": ...}`.
 
 - `canonical_smiles` is invariant under atom order.
 - `tautomer_key` is equal for every tautomer of a compound: the canonical SMILES
@@ -149,6 +171,6 @@ uv run --project bindings/python --with maturin maturin build --manifest-path bi
 ```
 
 Tests cover the legacy imports and canonicalization methods, batch canonical
-SMILES and tautomer keys, file parsing,
+SMILES, tautomer keys and file processing, file parsing,
 SMARTS errors and matching semantics, SVG export, immediate and automatic
 notebook display, and execution through a real Jupyter kernel.

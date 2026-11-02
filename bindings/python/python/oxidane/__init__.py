@@ -11,6 +11,7 @@ from ._oxidane import (
     tautomer_key,
 )
 from ._display import Reaction
+from ._files import process_file
 
 Molecule = PyMolecule
 Molecule3D = PyMolecule3D
@@ -18,5 +19,5 @@ __version__ = "0.2.0"
 __all__ = [
     "Molecule", "Molecule3D", "PyMolecule", "PyMolecule3D", "MolParser",
     "Smarts", "Reaction", "ReactionSmarts",
-    "canonical_smiles", "canonical_tautomer", "tautomer_key",
+    "canonical_smiles", "canonical_tautomer", "tautomer_key", "process_file",
 ]

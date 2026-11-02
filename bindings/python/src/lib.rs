@@ -358,14 +358,36 @@ fn tautomer_rules(carbon_endpoints: bool, ionizable_endpoints: bool) -> Tautomer
     }
 }
 
+/// What to do with a SMILES that does not parse.
+#[derive(Clone, Copy, PartialEq)]
+enum OnError {
+    /// Give the input back unchanged and say so on stderr.
+    Keep,
+    /// Give None in its place, silently.
+    Null,
+    Raise,
+}
+
+impl OnError {
+    fn parse(errors: &str) -> PyResult<Self> {
+        match errors {
+            "keep" => Ok(Self::Keep),
+            "none" => Ok(Self::Null),
+            "raise" => Ok(Self::Raise),
+            _ => Err(PyValueError::new_err(
+                "errors must be \"keep\", \"none\" or \"raise\"",
+            )),
+        }
+    }
+}
+
 /// Applies `compute` to one SMILES or to every SMILES of an iterable.
 ///
-/// A single string gives back a string and raises on a bad SMILES. Anything
-/// else is read as an iterable of strings, copied out while the GIL is held,
-/// and computed on rayon's pool without it, so other Python threads keep
-/// running; the answers come back as a list in input order. With
-/// `errors="none"` a SMILES that does not parse gives None in its place rather
-/// than raising.
+/// A single string gives back a string. Anything else is read as an iterable
+/// of strings, copied out while the GIL is held, and computed on rayon's pool
+/// without it, so other Python threads keep running; the answers come back as
+/// a list in input order. A SMILES that does not parse is handled as `errors`
+/// says: kept as it was with a line on stderr, replaced by None, or raised.
 fn map_smiles(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -373,32 +395,22 @@ fn map_smiles(
     errors: &str,
     compute: impl Fn(&str) -> Result<String, SMILESParseError> + Sync,
 ) -> PyResult<Py<PyAny>> {
-    let skip_errors = match errors {
-        "raise" => false,
-        "none" => true,
-        _ => {
-            return Err(PyValueError::new_err(
-                "errors must be \"raise\" or \"none\"",
-            ));
-        }
+    let on_error = OnError::parse(errors)?;
+    let single = smiles.cast::<PyString>().is_ok();
+    let inputs = if single {
+        vec![smiles.extract::<String>()?]
+    } else {
+        smiles
+            .try_iter()
+            .map_err(|_| PyTypeError::new_err("smiles must be a string or an iterable of strings"))?
+            .enumerate()
+            .map(|(index, item)| {
+                item?
+                    .extract::<String>()
+                    .map_err(|_| PyTypeError::new_err(format!("item {index} is not a string")))
+            })
+            .collect::<PyResult<Vec<String>>>()?
     };
-    if let Ok(single) = smiles.cast::<PyString>() {
-        let single = single.to_str()?.to_owned();
-        let answer = py.detach(|| compute(&single)).map_err(|error| {
-            PyValueError::new_err(format!("cannot read SMILES {single:?}: {error:?}"))
-        })?;
-        return Ok(answer.into_pyobject(py)?.into_any().unbind());
-    }
-    let inputs = smiles
-        .try_iter()
-        .map_err(|_| PyTypeError::new_err("smiles must be a string or an iterable of strings"))?
-        .enumerate()
-        .map(|(index, item)| {
-            item?
-                .extract::<String>()
-                .map_err(|_| PyTypeError::new_err(format!("item {index} is not a string")))
-        })
-        .collect::<PyResult<Vec<String>>>()?;
     let answers = py.detach(|| match threads {
         Some(0) => Err(PyValueError::new_err("threads must be positive")),
         Some(1) => Ok(inputs.iter().map(|smiles| compute(smiles)).collect()),
@@ -411,24 +423,45 @@ fn map_smiles(
     })?;
     let answers: Vec<Result<String, SMILESParseError>> = answers;
     let mut list = Vec::with_capacity(answers.len());
-    for (index, answer) in answers.into_iter().enumerate() {
+    let mut report = String::new();
+    for (index, (answer, input)) in answers.into_iter().zip(inputs).enumerate() {
         match answer {
             Ok(answer) => list.push(Some(answer)),
-            Err(_) if skip_errors => list.push(None),
             Err(error) => {
-                return Err(PyValueError::new_err(format!(
-                    "cannot read SMILES {:?} at index {index}: {error:?}",
-                    inputs[index]
-                )));
+                let place = if single {
+                    String::new()
+                } else {
+                    format!(" at index {index}")
+                };
+                let message = format!("cannot read SMILES {input:?}{place}: {error:?}");
+                match on_error {
+                    OnError::Raise => return Err(PyValueError::new_err(message)),
+                    OnError::Null => list.push(None),
+                    OnError::Keep => {
+                        report.push_str("oxidane: ");
+                        report.push_str(&message);
+                        report.push_str(", kept as it was\n");
+                        list.push(Some(input));
+                    }
+                }
             }
         }
     }
-    Ok(list.into_pyobject(py)?.into_any().unbind())
+    if !report.is_empty() {
+        py.import("sys")?
+            .getattr("stderr")?
+            .call_method1("write", (report,))?;
+    }
+    if single {
+        Ok(list.pop().flatten().into_pyobject(py)?.into_any().unbind())
+    } else {
+        Ok(list.into_pyobject(py)?.into_any().unbind())
+    }
 }
 
 /// Canonical SMILES; components are canonized separately and sorted.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, threads=None, errors="raise"))]
+#[pyo3(signature = (smiles, *, threads=None, errors="keep"))]
 fn canonical_smiles(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -442,7 +475,7 @@ fn canonical_smiles(
 
 /// A string every tautomer of the input shares.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="raise"))]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep"))]
 fn tautomer_key(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -460,7 +493,7 @@ fn tautomer_key(
 /// The canonical SMILES of the one tautomer every tautomer of the input
 /// normalizes to.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="raise"))]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep"))]
 fn canonical_tautomer(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,

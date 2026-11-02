@@ -114,6 +114,23 @@ fn chiral_matches(
         (ChiralClass::TH(q), ChiralClass::TH(t))
             if (1..=2).contains(&q) && (3..=4).contains(&written.len()) =>
         {
+            // The query is read with the SMILES reader's convention, so a
+            // string means the same centre whether it is parsed as a query or
+            // as a molecule: a three-coordinate centre written with one ring
+            // closure has its parity inverted, as RDKit does.
+            let closures = pattern
+                .ring_closures
+                .values()
+                .flatten()
+                .filter(|&&written_at| written_at == atom)
+                .count();
+            let q = if crate::molecule::chirality::tetrahedral_ring_closure_inverts(
+                molecule, target, closures,
+            ) {
+                3 - q
+            } else {
+                q
+            };
             tetrahedral_tag_for_order(q, &written, &sorted) == t
         }
         (ChiralClass::AL(q), ChiralClass::AL(t)) if (1..=2).contains(&q) => {

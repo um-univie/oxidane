@@ -855,17 +855,13 @@ mod tests {
         }
     }
 
-    /// The AVX lanes are the portable ones in a wider register: same
-    /// operations, same order, so the same bits. Anything less and the
-    /// embedding would depend on which machine ran it. Includes a
-    /// coincident pair, which is where `0 - x` and a sign flip part ways.
-    #[cfg(target_arch = "x86_64")]
+    /// Every lanes backend does the same operations in the same order, so
+    /// gives the same bits. Anything less and the embedding would depend on
+    /// which machine ran it. Includes a coincident pair, which is where
+    /// `0 - x` and a sign flip part ways.
     #[test]
-    fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
-        use crate::molecule::forcefield::lanes::Avx;
-        let Some(simd) = pulp::x86::V3::try_new() else {
-            return;
-        };
+    fn every_lanes_backend_agrees_to_the_bit() {
+        use crate::molecule::forcefield::lanes::{Lanes, LanesOp, on_every_lanes};
         let mut positions: Vec<Vector3D> = (0..23)
             .map(|index| {
                 let t = index as f64 * 0.77;
@@ -880,25 +876,25 @@ mod tests {
             }
         }
 
-        let portable = nonbonded_energies_in(Portable, &pairs, &positions);
-        let avx = simd.vectorize(|| nonbonded_energies_in(Avx(simd), &pairs, &positions));
-        assert_eq!(portable.0.to_bits(), avx.0.to_bits());
-        assert_eq!(portable.1.to_bits(), avx.1.to_bits());
-
-        let mut portable_gradient = vec![Vector3D::default(); positions.len()];
-        let mut avx_gradient = portable_gradient.clone();
-        let portable =
-            nonbonded_energies_and_gradient_in(Portable, &pairs, &positions, &mut portable_gradient);
-        let avx = simd.vectorize(|| {
-            nonbonded_energies_and_gradient_in(Avx(simd), &pairs, &positions, &mut avx_gradient)
-        });
-        assert_eq!(portable.0.to_bits(), avx.0.to_bits());
-        assert_eq!(portable.1.to_bits(), avx.1.to_bits());
-        for (one, other) in portable_gradient.iter().zip(&avx_gradient) {
-            for (a, b) in [(one.x, other.x), (one.y, other.y), (one.z, other.z)] {
-                assert_eq!(a.to_bits(), b.to_bits());
+        #[derive(Clone)]
+        struct Run<'a>(&'a NonBondedPairs, &'a [Vector3D]);
+        impl LanesOp for Run<'_> {
+            type Output = Vec<u64>;
+            fn run<L: Lanes>(self, simd: L) -> Vec<u64> {
+                let (one, two) = nonbonded_energies_in(simd, self.0, self.1);
+                let mut gradient = vec![Vector3D::default(); self.1.len()];
+                let (three, four) =
+                    nonbonded_energies_and_gradient_in(simd, self.0, self.1, &mut gradient);
+                [one, two, three, four]
+                    .into_iter()
+                    .chain(gradient.iter().flat_map(|g| [g.x, g.y, g.z]))
+                    .map(f64::to_bits)
+                    .collect()
             }
         }
+        let [portable, scalar, native] = on_every_lanes(Run(&pairs, &positions));
+        assert_eq!(portable, scalar);
+        assert_eq!(portable, native);
     }
 
     /// Two atoms in the same place keep a finite energy and gain no

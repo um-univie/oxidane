@@ -361,14 +361,15 @@ impl ForceField {
 
     /// The energy of `positions`, term by term.
     pub fn energies(&self, positions: &[Vector3D]) -> TermEnergies {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(simd) = pulp::x86::V3::try_new() {
-            return simd.vectorize(
-                #[inline(always)]
-                || self.energies_in(lanes::Avx(simd), positions),
-            );
+        struct Run<'a>(&'a ForceField, &'a [Vector3D]);
+        impl lanes::LanesOp for Run<'_> {
+            type Output = TermEnergies;
+            #[inline(always)]
+            fn run<L: lanes::Lanes>(self, simd: L) -> TermEnergies {
+                self.0.energies_in(simd, self.1)
+            }
         }
-        self.energies_in(lanes::Portable, positions)
+        lanes::dispatch(Run(self, positions))
     }
 
     /// [`ForceField::energies`] on the lanes `simd` provides. Inlined
@@ -428,24 +429,24 @@ impl ForceField {
     }
 }
 
-/// Both evaluations pick their instruction set per call: AVX2 through
-/// [`pulp`] where the CPU has it, otherwise whatever the crate was compiled
-/// for. The check is one relaxed atomic load, and the two paths agree to
-/// the bit -- see [`lanes::Lanes`].
+/// Both evaluations pick their instruction set per call through
+/// [`lanes::dispatch`]. The check is a few relaxed atomic loads, and every
+/// path agrees to the bit -- see [`lanes::Lanes`].
 impl Energy for ForceField {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
         self.energies(positions).total()
     }
 
     fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(simd) = pulp::x86::V3::try_new() {
-            return simd.vectorize(
-                #[inline(always)]
-                || self.energy_and_gradient_in(lanes::Avx(simd), positions, gradient),
-            );
+        struct Run<'a>(&'a ForceField, &'a [Vector3D], &'a mut [Vector3D]);
+        impl lanes::LanesOp for Run<'_> {
+            type Output = f64;
+            #[inline(always)]
+            fn run<L: lanes::Lanes>(self, simd: L) -> f64 {
+                self.0.energy_and_gradient_in(simd, self.1, self.2)
+            }
         }
-        self.energy_and_gradient_in(lanes::Portable, positions, gradient)
+        lanes::dispatch(Run(self, positions, gradient))
     }
 }
 

@@ -948,22 +948,22 @@ pub(crate) fn pair_violation<C: Coordinate>(pair: &Pair, positions: &[C]) -> (f6
 /// every pair's gradient added into `gradient`.
 ///
 /// [`pair_violation`] four pairs at a time, in whichever lanes the CPU
-/// offers: AVX2 where [`pulp`] finds it, `wide` otherwise, with the same
-/// bits either way (see `forcefield::lanes`). Every distance-geometry pass
-/// spends most of its time in this loop.
+/// offers -- see [`lanes::dispatch`] -- with the same bits whichever it is.
+/// Every distance-geometry pass spends most of its time in this loop.
 pub(crate) fn pair_violations<C: Coordinate>(
     pairs: &[Pair],
     positions: &[C],
     gradient: Option<&mut [C]>,
 ) -> f64 {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(simd) = pulp::x86::V3::try_new() {
-        return simd.vectorize(
-            #[inline(always)]
-            || pair_violations_in(lanes::Avx(simd), pairs, positions, gradient),
-        );
+    struct Run<'a, C>(&'a [Pair], &'a [C], Option<&'a mut [C]>);
+    impl<C: Coordinate> lanes::LanesOp for Run<'_, C> {
+        type Output = f64;
+        #[inline(always)]
+        fn run<L: Lanes>(self, simd: L) -> f64 {
+            pair_violations_in(simd, self.0, self.1, self.2)
+        }
     }
-    pair_violations_in(lanes::Portable, pairs, positions, gradient)
+    lanes::dispatch(Run(pairs, positions, gradient))
 }
 
 /// [`pair_violations`] on the lanes `simd` provides.
@@ -1805,29 +1805,25 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
-    fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
-        use crate::molecule::forcefield::lanes::{Avx, Portable};
+    fn every_lanes_backend_agrees_to_the_bit() {
+        use crate::molecule::forcefield::lanes::{LanesOp, on_every_lanes};
         use crate::vector::Vector4D;
-        let Some(simd) = pulp::x86::V3::try_new() else {
-            return;
-        };
-        let (pairs, points) = scattered_pairs();
-        let mut portable_gradient = vec![Vector4D::default(); points.len()];
-        let mut avx_gradient = portable_gradient.clone();
-        let portable = pair_violations_in(Portable, &pairs, &points, Some(&mut portable_gradient));
-        let avx = simd
-            .vectorize(|| pair_violations_in(Avx(simd), &pairs, &points, Some(&mut avx_gradient)));
-        assert_eq!(portable.to_bits(), avx.to_bits());
-        for (one, other) in portable_gradient.iter().zip(&avx_gradient) {
-            for (a, b) in [
-                (one.x, other.x),
-                (one.y, other.y),
-                (one.z, other.z),
-                (one.w, other.w),
-            ] {
-                assert_eq!(a.to_bits(), b.to_bits());
+        #[derive(Clone)]
+        struct Run<'a>(&'a [Pair], &'a [Vector4D]);
+        impl LanesOp for Run<'_> {
+            type Output = Vec<u64>;
+            fn run<L: Lanes>(self, simd: L) -> Vec<u64> {
+                let mut gradient = vec![Vector4D::default(); self.1.len()];
+                let energy = pair_violations_in(simd, self.0, self.1, Some(&mut gradient));
+                std::iter::once(energy)
+                    .chain(gradient.iter().flat_map(|g| [g.x, g.y, g.z, g.w]))
+                    .map(f64::to_bits)
+                    .collect()
             }
         }
+        let (pairs, points) = scattered_pairs();
+        let [portable, scalar, native] = on_every_lanes(Run(&pairs, &points));
+        assert_eq!(portable, scalar);
+        assert_eq!(portable, native);
     }
 }

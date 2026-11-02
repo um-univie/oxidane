@@ -418,30 +418,32 @@ impl ForceField {
     }
 }
 
-/// Both evaluations pick their instruction set per call, as MMFF's do: AVX2
-/// through [`pulp`] where the CPU has it, otherwise whatever the crate was
-/// compiled for, with the same bits either way -- see [`lanes::Lanes`].
+/// Both evaluations pick their instruction set per call, as MMFF's do,
+/// through [`lanes::dispatch`], with the same bits whichever it picks -- see
+/// [`lanes::Lanes`].
 impl Energy for ForceField {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(simd) = pulp::x86::V3::try_new() {
-            return simd.vectorize(
-                #[inline(always)]
-                || self.energy_in(lanes::Avx(simd), positions),
-            );
+        struct Run<'a>(&'a ForceField, &'a [Vector3D]);
+        impl lanes::LanesOp for Run<'_> {
+            type Output = f64;
+            #[inline(always)]
+            fn run<L: lanes::Lanes>(self, simd: L) -> f64 {
+                self.0.energy_in(simd, self.1)
+            }
         }
-        self.energy_in(lanes::Portable, positions)
+        lanes::dispatch(Run(self, positions))
     }
 
     fn energy_and_gradient(&self, positions: &[Vector3D], gradient: &mut [Vector3D]) -> f64 {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(simd) = pulp::x86::V3::try_new() {
-            return simd.vectorize(
-                #[inline(always)]
-                || self.energy_and_gradient_in(lanes::Avx(simd), positions, gradient),
-            );
+        struct Run<'a>(&'a ForceField, &'a [Vector3D], &'a mut [Vector3D]);
+        impl lanes::LanesOp for Run<'_> {
+            type Output = f64;
+            #[inline(always)]
+            fn run<L: lanes::Lanes>(self, simd: L) -> f64 {
+                self.0.energy_and_gradient_in(simd, self.1, self.2)
+            }
         }
-        self.energy_and_gradient_in(lanes::Portable, positions, gradient)
+        lanes::dispatch(Run(self, positions, gradient))
     }
 }
 

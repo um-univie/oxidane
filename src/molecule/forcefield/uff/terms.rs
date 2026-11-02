@@ -684,14 +684,26 @@ mod tests {
         assert_eq!(van_der_waals_energies_in(portable, &pairs, &positions), f64::INFINITY);
     }
 
-    /// AVX and portable lanes agree to the bit, overlap included.
-    #[cfg(target_arch = "x86_64")]
+    /// Every lanes backend agrees to the bit, overlap included.
     #[test]
-    fn the_avx_lanes_agree_with_the_portable_ones_to_the_bit() {
-        use crate::molecule::forcefield::lanes::{Avx, Portable};
-        let Some(simd) = pulp::x86::V3::try_new() else {
-            return;
-        };
+    fn every_lanes_backend_agrees_to_the_bit() {
+        use crate::molecule::forcefield::lanes::{Lanes, LanesOp, on_every_lanes};
+        #[derive(Clone)]
+        struct Run<'a>(&'a VanDerWaalsPairs, &'a [Vector3D]);
+        impl LanesOp for Run<'_> {
+            type Output = Vec<u64>;
+            fn run<L: Lanes>(self, simd: L) -> Vec<u64> {
+                let energy = van_der_waals_energies_in(simd, self.0, self.1);
+                let mut gradient = vec![Vector3D::default(); self.1.len()];
+                let with =
+                    van_der_waals_energies_and_gradient_in(simd, self.0, self.1, &mut gradient);
+                [energy, with]
+                    .into_iter()
+                    .chain(gradient.iter().flat_map(|g| [g.x, g.y, g.z]))
+                    .map(f64::to_bits)
+                    .collect()
+            }
+        }
         let (mut positions, _, pairs) = helix_pairs();
         for overlap in [false, true] {
             if !overlap {
@@ -699,27 +711,9 @@ mod tests {
             } else {
                 positions[7] = positions[3];
             }
-            let portable = van_der_waals_energies_in(Portable, &pairs, &positions);
-            let avx = simd.vectorize(|| van_der_waals_energies_in(Avx(simd), &pairs, &positions));
-            assert_eq!(portable.to_bits(), avx.to_bits());
-
-            let mut portable_gradient = vec![Vector3D::default(); positions.len()];
-            let mut avx_gradient = portable_gradient.clone();
-            let portable = van_der_waals_energies_and_gradient_in(
-                Portable,
-                &pairs,
-                &positions,
-                &mut portable_gradient,
-            );
-            let avx = simd.vectorize(|| {
-                van_der_waals_energies_and_gradient_in(Avx(simd), &pairs, &positions, &mut avx_gradient)
-            });
-            assert_eq!(portable.to_bits(), avx.to_bits());
-            for (one, other) in portable_gradient.iter().zip(&avx_gradient) {
-                for (a, b) in [(one.x, other.x), (one.y, other.y), (one.z, other.z)] {
-                    assert_eq!(a.to_bits(), b.to_bits());
-                }
-            }
+            let [portable, scalar, native] = on_every_lanes(Run(&pairs, &positions));
+            assert_eq!(portable, scalar, "overlap: {overlap}");
+            assert_eq!(portable, native, "overlap: {overlap}");
         }
     }
 

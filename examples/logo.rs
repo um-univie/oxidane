@@ -1,11 +1,10 @@
-//! Generates the project logo as SVG -- no image editor, no raster assets.
+//! Generates the project logo as SVG.
 //!
 //! Oxidane is the IUPAC name for water, so the mark is a water molecule: the
 //! "o" of the wordmark is the oxygen, and its two hydrogens rise above the
-//! line. The angle between them is not drawn by hand. `[H]O[H]` is embedded
-//! with `embed_3d` (distance geometry, then MMFF94) and the H-O-H angle is
-//! read off the coordinates, so the picture is output of the library it
-//! labels -- change the embedder and the logo changes with it.
+//! line. Their angle is measured: `[H]O[H]` is embedded with `embed_3d`
+//! (distance geometry, then MMFF94) and the H-O-H angle is read off the
+//! coordinates, so the picture is output of the library it labels.
 //!
 //! ```sh
 //! cargo run --example logo    # writes assets/logo.svg, logo-dark.svg,

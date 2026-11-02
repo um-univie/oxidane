@@ -11,10 +11,11 @@ Python users: the [Python bindings and notebook examples](bindings/python/README
 live in this repository. They support `import oxidane` and the legacy
 `from molecules import PyMolecule, MolParser` API.
 
-A cheminformatics library in Rust. It reads the formats molecules actually
-arrive in, works out what the file left implicit, and answers the questions
-that follow: what is this, does it contain that, are these two the same, what
-do they have in common, and what does it look like in three dimensions.
+A cheminformatics library in pure Rust. It reads SMILES, SMARTS and SDF;
+perceives aromaticity, hydrogens and stereochemistry; gives canonical SMILES
+and tautomer keys; searches substructures and maximum common subgraphs;
+applies reactions; computes fingerprints and descriptors; and builds 3D
+conformers and relaxes them with MMFF94 or UFF.
 
 Oxidane is the IUPAC name for water.
 
@@ -59,13 +60,13 @@ with its stereocentres intact.
 systems, and stereochemistry in every class the SMILES specification has:
 tetrahedral, cis/trans, allene, square-planar, trigonal-bipyramidal and
 octahedral. CIP descriptors (R/S, E/Z) come from a port of RDKit's CIPLabeler,
-rules 1a through 6 with auxiliary descriptors, rather than the
-highest-atomic-number approximation that gets most cases right and the
-interesting ones wrong.
+rules 1a through 6 with auxiliary descriptors.
 
-**Canonizes, including stereochemistry.** Every way of writing a molecule
-gives one canonical SMILES, and two stereoisomers give two -- which is the
-half that is easy to get wrong silently.
+**Canonizes, including stereochemistry and tautomers.** Every way of writing a
+molecule gives one canonical SMILES, and two stereoisomers give two. A
+tautomer key is shared by every tautomer of a compound, so keto and enol forms
+deduplicate to one row, and a canonical tautomer picks one structure to stand
+for them all.
 
 **Matches.** CxSMARTS patterns with the full atom expression language, ring
 and degree constraints, recursion, and chirality as part of the query. The
@@ -78,11 +79,31 @@ the modular product, and McSplit, which finishes on pairs of real drug
 molecules where the clique search does not.
 
 **Transforms.** Reaction SMARTS, applied through the atom map, with hydrogen
-counts re-derived for every atom whose bonding changed.
+counts re-derived for every atom whose bonding changed. Reactions are
+double-pushout rules underneath, so they can also be read from MØD's GML,
+composed, and overlapped into critical pairs.
 
-**Embeds.** Distance geometry from a connection table to 3D coordinates, with
-explicit handedness terms -- a bounds matrix alone cannot tell a stereocentre
-from its mirror image, since every distance is identical in both.
+**Fingerprints and descriptors.** Circular (Morgan/ECFP), atom-pair and
+topological-torsion fingerprints, the 166 MACCS keys, and the minhashed MHFP
+and MAP4, kept as sparse counts and folded to bits on request. Crippen log P
+and molar refractivity, TPSA, hydrogen-bond donors and acceptors, rotatable
+bonds, Bemis-Murcko scaffolds, and for a conformer USR, USRCAT and the moments
+of inertia.
+
+**Embeds.** Distance geometry in the style of ETKDG: bounds smoothing,
+four-dimensional embedding, RDKit's experimental torsion preferences, and
+handedness terms for tetrahedral, cis/trans, allene and square-planar centres,
+since a bounds matrix alone cannot tell a stereocentre from its mirror image.
+Each conformer is then minimised with MMFF94 or UFF.
+
+**Force fields.** MMFF94, with its own atom typing and partial charges, and UFF
+for molecules MMFF94 cannot type. Both give energies and gradients and
+minimise with L-BFGS; the energy terms are vectorised through `pulp` and give
+the same bits on AVX2, NEON and scalar hardware.
+
+**Learns.** Per-atom and per-bond feature matrices, scaffold splits and
+batching for message-passing networks, and behind the `ml` feature an encoder
+with graph, atom and bond heads built on `candle`.
 
 ## Two representations, one set of traits
 
@@ -155,14 +176,22 @@ let embedded = molecule.embed_3d().unwrap();
 
 // Coordinates for every atom, with the stereocentre the SMILES asked for.
 assert_eq!(embedded.positions.len(), embedded.atomic_numbers().len());
+
+// Score or relax a structure with MMFF94, or UFF where MMFF94 has no types.
+use oxidane::molecule::forcefield::Field;
+
+let field = Field::best_for(&embedded).unwrap();
+let mut positions = embedded.positions.clone();
+let energy = field.minimize(&mut positions, 500);
+assert_eq!(field.name(), "MMFF94");
+assert!(energy <= field.energy(&embedded.positions) + 1e-9);
 ```
 
 ## How it was checked
 
-Nearly every claim above was established by differential testing against
-RDKit, and the harnesses are in the repository rather than in someone's shell
-history: a Python script builds a corpus with the expected answer, a Rust
-example in `examples/` runs our side and reports only the disagreements.
+Most of the claims above were checked by differential testing against RDKit.
+A Python script builds a corpus with RDKit's answers, and a Rust example in
+`examples/` runs oxidane on it and reports the disagreements.
 
 - **SDF reading.** RDKit writes a molblock, we read it and write SMILES, and
   both go through RDKit's canonicaliser. Over 1501 molecules the formula and
@@ -180,19 +209,13 @@ example in `examples/` runs our side and reports only the disagreements.
 - **3D embedding.** Read back through RDKit's `AssignStereochemistryFrom3D`.
   That comparison found a sign inversion in our own tetrahedral perception,
   which had been mislabelling every molecule loaded from XYZ or a 3D SDF.
+- **All of PubChem.** `examples/pubchem_sweep` runs every one of PubChem's
+  124.6 million compounds through the reader, canonical SMILES, tautomer keys
+  and the canonical tautomer, and checks that each output keeps the formula,
+  reads back, is unchanged when computed again and is unchanged under a
+  renumbering of the atoms. Every record parses, and every check passes.
 
-331 tests and 98 doctests, all of which assert something -- including every
-example on this page, which is compiled and run as part of the suite.
-
-## What it is not
-
-Not a force field, not a conformer generator with a torsion library, not a
-descriptor suite for QSAR, and not a substitute for RDKit's breadth. There is
-no InChI, no PDB, no fingerprints, and the V3000 molfile format is unsupported.
-
-Where behaviour differs from RDKit it is documented and deliberate: charge code
-4 in a molfile atom block is a doublet radical and is kept rather than dropped,
-and elements with no stable isotope use the IUPAC conventional nuclide.
+Every example on this page is a doctest and runs with the test suite.
 
 ## Related
 

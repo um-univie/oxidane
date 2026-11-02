@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo.svg" alt="oxidane" width="320">
+  </picture>
+</p>
+
 # oxidane
 
 Python users: the [Python bindings and notebook examples](bindings/python/README.md)
@@ -192,6 +199,17 @@ and elements with no stable isotope use the IUPAC conventional nuclide.
 [`chemistry_consts`](https://crates.io/crates/chemistry_consts) holds the
 periodic table this is built on: masses, isotopes, radii, valences and
 electronegativities as plain `const` arrays indexed by atomic number.
+
+## Logo
+
+The mark is a water molecule, since oxidane is water's IUPAC name: the "o" is
+the oxygen and its hydrogens sit at the H-O-H angle `embed_3d` gives `[H]O[H]`
+(103.98 degrees, from MMFF94). Regenerate the SVGs (light, dark, square mark)
+with:
+
+```sh
+cargo run --example logo
+```
 
 ## Licence
 

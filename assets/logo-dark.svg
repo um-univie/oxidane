@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 250 108" width="250" height="108" role="img" aria-label="oxidane">
+  <title>oxidane</title>
+  <desc>The o of oxidane drawn as the oxygen of a water molecule, its hydrogens at the 103.98 degree angle oxidane embeds water with.</desc>
+  <g stroke="#e8ecf4" stroke-width="3.6" stroke-linecap="round">
+    <line x1="24.58" y1="47.07" x2="9.21" y2="35.06"/>
+    <line x1="47.42" y1="47.07" x2="62.79" y2="35.06"/>
+  </g>
+  <circle cx="9.21" cy="35.06" r="4.6" fill="#e8ecf4"/>
+  <circle cx="62.79" cy="35.06" r="4.6" fill="#e8ecf4"/>
+  <circle cx="36.00" cy="56.00" r="10.5" fill="none" stroke="#e0703f" stroke-width="5"/>
+  <text x="50.50" y="67.60" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="40" font-weight="600" fill="#e8ecf4" letter-spacing="-0.5">xidane</text>
+  <text x="23.50" y="94" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="12.5" fill="#9aa4b2" letter-spacing="0.6">cheminformatics in pure Rust</text>
+</svg>

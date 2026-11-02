@@ -128,3 +128,96 @@ def test_svg_dimensions(obj):
         obj.to_svg(width=0)
     with pytest.raises(OverflowError):
         obj.to_svg(width=-1)
+
+
+def test_tautomer_keys_and_canonical_tautomers():
+    # 2-pyridone and 2-hydroxypyridine are one compound.
+    assert ox.tautomer_key("O=c1cccc[nH]1") == ox.tautomer_key("Oc1ccccn1")
+    assert ox.canonical_tautomer("O=c1cccc[nH]1") == ox.canonical_tautomer("Oc1ccccn1")
+    assert ox.canonical_tautomer("CC(O)=N") == "O=C(N)C"
+    # Nothing mobile: the key is the canonical SMILES, with no marker.
+    assert ox.tautomer_key("c1ccccc1") == "c1ccccc1"
+    # Keto and enol only merge with carbon endpoints, which the key says.
+    assert ox.tautomer_key("CC(C)=O") != ox.tautomer_key("CC(O)=C")
+    carbon = ox.tautomer_key(["CC(C)=O", "CC(O)=C"], carbon_endpoints=True)
+    assert carbon[0] == carbon[1] and carbon[0].startswith("c/")
+    zwitterion = ox.tautomer_key("[NH3+]CC(=O)[O-]", ionizable_endpoints=True)
+    assert zwitterion == ox.tautomer_key("NCC(=O)O", ionizable_endpoints=True)
+    assert zwitterion.startswith("i/")
+    mol = ox.Molecule("Oc1ccccn1")
+    assert mol.tautomer_key() == ox.tautomer_key("Oc1ccccn1")
+    assert mol.canonical_tautomer() == ox.canonical_tautomer("Oc1ccccn1")
+
+
+def test_batches_match_single_calls_in_order():
+    smiles = ["OCC", "[Na+].[Cl-]", "O=c1cccc[nH]1", "CC(O)=N", "c1ccccc1O"] * 40
+    for function in (ox.canonical_smiles, ox.tautomer_key, ox.canonical_tautomer):
+        expected = [function(s) for s in smiles]
+        assert function(smiles) == expected
+        assert function(tuple(smiles), threads=1) == expected
+        assert function(iter(smiles), threads=3) == expected
+    ethanol, salt = ox.canonical_smiles(["CCO", "[Na+].[Cl-]"])
+    assert ethanol == ox.canonical_smiles("OCC")
+    assert salt == ox.canonical_smiles("[Cl-].[Na+]")
+    assert ox.canonical_smiles([]) == []
+
+
+def test_batch_errors(capsys):
+    # By default a bad SMILES comes back unchanged and is reported on stderr.
+    ethanol = ox.canonical_smiles("OCC")
+    assert ox.canonical_smiles(["OCC", "C1CC"]) == [ethanol, "C1CC"]
+    assert 'cannot read SMILES "C1CC" at index 1' in capsys.readouterr().err
+    assert ox.tautomer_key("C1CC") == "C1CC"
+    assert 'cannot read SMILES "C1CC"' in capsys.readouterr().err
+    with pytest.raises(ValueError, match="index 1"):
+        ox.canonical_smiles(["CCO", "C1CC"], errors="raise")
+    with pytest.raises(ValueError):
+        ox.tautomer_key("C1CC", errors="raise")
+    answers = ox.canonical_tautomer(["CCO", "C1CC"], errors="none")
+    assert answers == [ox.canonical_tautomer("CCO"), None]
+    assert ox.canonical_smiles("C1CC", errors="none") is None
+    assert capsys.readouterr().err == ""
+    with pytest.raises(ValueError):
+        ox.canonical_smiles(["CCO"], errors="ignore")
+    with pytest.raises(ValueError):
+        ox.canonical_smiles(["CCO"], threads=0)
+    with pytest.raises(TypeError):
+        ox.canonical_smiles(["CCO", 3])
+    with pytest.raises(TypeError):
+        ox.canonical_smiles(42)
+
+
+def test_process_smi_file(tmp_path, capsys):
+    source = tmp_path / "in.smi"
+    source.write_text("Oc1ccccn1 hydroxypyridine\nO=c1cccc[nH]1\tpyridone\n\nC1CC broken\n")
+    counts = ox.process_file(source, tmp_path / "out.tsv")
+    assert counts == {"rows": 3, "unparsed": 1}
+    assert "line 4" in capsys.readouterr().err
+    rows = [line.split("\t") for line in (tmp_path / "out.tsv").read_text().splitlines()]
+    assert rows[0][:2] == ["Oc1ccccn1", "hydroxypyridine"]
+    assert rows[0][2:] == [ox.canonical_smiles("Oc1ccccn1"), ox.tautomer_key("Oc1ccccn1"),
+                           ox.canonical_tautomer("Oc1ccccn1")]
+    assert rows[0][3:] == rows[1][3:]  # one compound, one key and one tautomer
+    assert rows[2] == ["C1CC", "broken", "C1CC", "C1CC", "C1CC"]
+
+
+def test_process_csv_with_header_and_gzip(tmp_path):
+    import csv
+    import gzip
+    source = tmp_path / "in.csv"
+    source.write_text('id,name,smiles\n1,"acetic acid, glacial",CC(=O)O\n2,imidic,CC(O)=N\n')
+    output = tmp_path / "out.csv.gz"
+    counts = ox.process_file(source, output, smiles_column="smiles",
+                             columns=["tautomer_key"], threads=2, chunk_size=1)
+    assert counts == {"rows": 2, "unparsed": 0}
+    with gzip.open(output, "rt", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows[0] == ["id", "name", "smiles", "tautomer_key"]
+    assert rows[1] == ["1", "acetic acid, glacial", "CC(=O)O", ox.tautomer_key("CC(=O)O")]
+    assert rows[2][3] == ox.tautomer_key("CC(=O)N")
+    with pytest.raises(ValueError, match="no column named"):
+        ox.process_file(source, tmp_path / "x.csv", smiles_column="SMILES")
+    with pytest.raises(ValueError, match="unknown columns"):
+        ox.process_file(source, tmp_path / "x.csv", columns=["inchi"])
+    with pytest.raises(ValueError, match="line 1"):
+        ox.process_file(source, tmp_path / "x.csv", errors="raise")  # "id" read as SMILES

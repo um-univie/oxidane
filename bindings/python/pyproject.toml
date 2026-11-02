@@ -9,7 +9,8 @@ description = "Python bindings for the Oxidane cheminformatics library"
 readme = { content-type = "text/markdown", text = """
 # Oxidane Python bindings
 
-Molecules, SMARTS queries, reaction transformations, and SVG display in Jupyter.
+Molecules, SMARTS queries, reaction transformations, SVG display in Jupyter, and
+multithreaded canonical SMILES, tautomer keys and canonical tautomers.
 The bindings live in `bindings/python` inside the Oxidane Rust repository and
 build against that checkout. Legacy `from molecules import PyMolecule, MolParser`
 imports remain supported alongside `from oxidane import Molecule`.

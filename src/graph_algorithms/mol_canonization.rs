@@ -14,15 +14,14 @@ thread_local! {
 /// nauty `userautomproc` callback: records each automorphism generator.
 fn collect_automorphism_generator(
     _count: u32,
-    permutation: &mut [u32],
-    _orbits: &mut [u32],
+    permutation: &[u32],
+    _orbits: &[u32],
     _number_of_orbits: u32,
     _stabilized_vertex: u32,
-    number_of_vertices: u32,
+    _number_of_vertices: u32,
 ) {
-    let n = number_of_vertices as usize;
     AUTOMORPHISM_GENERATORS.with(|generators| {
-        generators.borrow_mut().push(permutation[..n].to_vec());
+        generators.borrow_mut().push(permutation.to_vec());
     });
 }
 // use canonizer::{

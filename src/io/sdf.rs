@@ -38,7 +38,7 @@ pub struct SdfParseOptions {
     /// see exactly the atoms the file listed.
     pub hydrogens: bool,
     /// Whether to work out the chirality the block records geometrically — see
-    /// [`assign_stereochemistry`].
+    /// `assign_stereochemistry`.
     ///
     /// On by default. Without it every molecule read from an SDF is achiral,
     /// whatever the file drew: on a corpus of 1501 stereoisomers not one

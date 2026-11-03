@@ -13,7 +13,7 @@
 //! energy evaluations and one gradient per accepted step, accepting the
 //! proposed full step 32% of the time. Where the full step is usually
 //! taken -- short limited-memory runs -- the first probe asks for the
-//! gradient too; see [`backtracking_line_search`].
+//! gradient too; see `backtracking_line_search`.
 //!
 //! That ratio looks like waste and is not. Two standard ways of cutting it
 //! were measured and both cost more than they saved:

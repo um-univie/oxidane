@@ -1,23 +1,23 @@
 //! Distance-geometry ("ETKDG-lite") 3D coordinate embedding.
 //!
 //! Stage 1: bounds matrix -> triangle-inequality smoothing -> classical 4D MDS
-//! -> for a molecule with stereochemistry, [`fourd`]'s four-dimensional
+//! -> for a molecule with stereochemistry, `fourd`'s four-dimensional
 //! resolution of it -> gradient refinement against a bounds-violation
 //! energy. Produces geometrically valid structures (correct bond
 //! lengths/angles).
 //!
-//! Stage 2: [`chirality`] adds tetrahedral (`TH`), cis/trans double-bond, and
-//! allene (`AL`) consistency terms plus a repair fallback; [`bounds`] adds
+//! Stage 2: `chirality` adds tetrahedral (`TH`), cis/trans double-bond, and
+//! allene (`AL`) consistency terms plus a repair fallback; `bounds` adds
 //! trans/adjacent angle bounds for square-planar (`SP`) centres (which,
 //! unlike the others, has no separate handedness once the trans-pairing is
-//! fixed, so needs no extra energy term); [`planarity`] adds a ring/local-
+//! fixed, so needs no extra energy term); `planarity` adds a ring/local-
 //! centre out-of-plane restraint applied as a touch-up on each trial.
 //! With relaxation enabled, each trial is then minimized with MMFF94 or
 //! UFF -- with the chirality terms still on as a barrier, see
-//! [`StereoRestrained`] -- and ranked by that energy, prioritising
+//! `StereoRestrained` -- and ranked by that energy, prioritising
 //! stereochemical correctness.
 //! Disconnected components (salts) are embedded and relaxed independently,
-//! then packed side by side (see [`run`]).
+//! then packed side by side (see `run`).
 //!
 //! `TH` and `SP` were cross-checked against RDKit's
 //! `AssignStereochemistryFrom3D` (`tests/embed_oracle.py`) and, in `TH`'s
@@ -29,11 +29,11 @@
 //! `AL`'s absolute handedness could *not* be cross-checked the same way -
 //! RDKit doesn't perceive allene stereo from 3D coordinates in the version
 //! used here - so it is verified only to be internally self-consistent (see
-//! [`chirality::AllenCenter`]'s doc comment).
+//! `chirality::AllenCenter`'s doc comment).
 //!
-//! A UFF/MMFF-lite refinement pass ([`forcefield`]) adds harmonic-in-cosine
+//! A UFF/MMFF-lite refinement pass (`forcefield`) adds harmonic-in-cosine
 //! angle-bend and periodic-torsion restraints, applied in the same
-//! touch-up-only style as `planarity` (see [`embed_connected`]), and limited
+//! touch-up-only style as `planarity` (see `embed_connected`), and limited
 //! to those two terms: bond-stretch and van-der-Waals-style
 //! non-bonded repulsion are already covered by the bounds-violation energy
 //! itself (a tight flat bottom for 1-2 pairs, a VDW-radius-based lower bound
@@ -104,7 +104,7 @@ pub struct EmbedConfig {
     /// field has parameters for the molecule; anything it cannot type is
     /// returned unrelaxed rather than refused. Turning it off also gives
     /// the distance-geometry structure on its own, which is what
-    /// [`crate::tests`] asserts the bounds against -- relaxation exists to
+    /// `crate::tests` asserts the bounds against -- relaxation exists to
     /// overrule those bounds where they are approximate.
     pub relax: bool,
     /// Whether to finish by turning each rotatable bond to its other

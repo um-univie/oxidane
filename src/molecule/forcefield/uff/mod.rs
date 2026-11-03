@@ -35,7 +35,7 @@
 //!
 //! * **Electrostatics.** Off by default in UFF as RDKit implements it too;
 //!   this crate computes partial charges separately in
-//!   [`crate::molecule::charges`].
+//!   [`crate::molecule::forcefield::mmff::partial_charges`].
 //!
 //! # Where this differs from RDKit's UFF
 //!
@@ -199,7 +199,7 @@ impl ForceField {
     /// # Errors
     ///
     /// [`UntypedAtom`] if any atom's element is outside the typing rules in
-    /// [`typing`].
+    /// `typing`.
     pub fn new<M: MoleculeCore + ?Sized>(molecule: &M) -> Result<Self, UntypedAtom> {
         let types = typing::type_atoms(molecule)?;
         let count = molecule.len();
@@ -419,8 +419,8 @@ impl ForceField {
 }
 
 /// Both evaluations pick their instruction set per call, as MMFF's do,
-/// through [`lanes::dispatch`], with the same bits whichever it picks -- see
-/// [`lanes::Lanes`].
+/// through `lanes::dispatch`, with the same bits whichever it picks -- see
+/// `lanes::Lanes`.
 impl Energy for ForceField {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
         struct Run<'a>(&'a ForceField, &'a [Vector3D]);

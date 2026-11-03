@@ -74,7 +74,7 @@
 //! Every MMFF type distinction that counts connections counts hydrogens
 //! among them, and hydrogens are atoms in this crate rather than a count on
 //! their heavy neighbour. A molecule typed without
-//! [`MoleculeCore::add_hydrogens`](crate::molecule::base::MoleculeCore::add_hydrogens)
+//! [`MoleculeCore::add_hydrogens`]
 //! is a different molecule as far as these rules are concerned -- an amine
 //! nitrogen with its hydrogens left implicit reads as a two-connection
 //! nitrogen, and types as one.

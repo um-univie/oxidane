@@ -512,7 +512,7 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     /// `pattern atom -> molecule atom`.
     ///
     /// SMARTS matching is subgraph monomorphism; see
-    /// [`crate::graph_algorithms::monomorphism`] for why that is not what
+    /// `crate::graph_algorithms::monomorphism` for why that is not what
     /// petgraph's `subgraph_isomorphisms_iter` provides.
     pub fn find_all_matches(&self) -> Vec<HashMap<usize, usize>> {
         let mut matches = Vec::new();

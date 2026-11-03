@@ -562,8 +562,9 @@ impl RingFinder {
 
         // The family is built over the π system's own bonds, not the
         // molecule's. A saturated ring is not part of any aromatic circuit, so
-        // it has no business deciding which cycles are smallest -- and it does
-        // decide, because the family keeps a smallest cycle through each bond.
+        // it should not decide which cycles are smallest -- yet over the
+        // molecule's bonds it does, because the family keeps a smallest cycle
+        // through each bond.
         // `C1C=CC2=C3CC(=C21)C=C3` has a perfectly alternating six-ring,
         // 3=4 4-9 9=8 8-6 6=7 7-3, six π electrons and no double bond leaving
         // it; every one of its bonds also lies on a five-ring through one of
@@ -610,8 +611,7 @@ impl RingFinder {
         self.build_ring_adjacency();
         // Cap zero asks for the model with no subset size in it at all: each
         // ring on its own, and each fused system entire. Nothing in between,
-        // so nothing arbitrary -- and measurably different, which is the point
-        // of being able to run it.
+        // so nothing arbitrary, and measurably different.
         let limit = fused_ring_limit();
         let cap = match limit {
             0 => usize::MAX,

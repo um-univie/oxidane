@@ -46,7 +46,7 @@ STEREO_CORPUS = [
 
 # Square-planar centres have their own trans-pairing angle check, not the
 # R/S/E-Z comparison `check_molecule` does - see `check_square_planar`.
-# Allene (AL) centres are implemented but deliberately NOT included here:
+# Allene (AL) centres are implemented but NOT included here:
 # RDKit 2025.09.1's `AssignStereochemistryFrom3D` /
 # `AssignAtomChiralTagsFromStructure` do not perceive allene stereo from
 # either 3D coordinates or `/`,`\`-decorated cumulated-diene SMILES

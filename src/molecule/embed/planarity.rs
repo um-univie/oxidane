@@ -17,10 +17,10 @@
 //!   covered by any such ring (e.g. a standalone amide/ketone carbon) -
 //!   there's no ring-wide consistency to lose for an isolated centre.
 //!
-//! Both gradients are exact, plane included. They used to treat the plane
-//! as fixed -- a frozen reference, recomputed at every evaluation but not
-//! differentiated through -- which is fine for the plain gradient descent
-//! that was written for, and wrong for the quasi-Newton minimiser that runs
+//! Both gradients are exact, plane included. Treating the plane as fixed --
+//! a frozen reference, recomputed at every evaluation but not differentiated
+//! through -- is fine for plain gradient descent, and wrong for the
+//! quasi-Newton minimiser that runs
 //! it now: the line search reads its slope off the gradient and its
 //! sufficient-decrease test off the energy, and BFGS builds its curvature
 //! from gradient differences, so a gradient that is not the energy's

@@ -634,13 +634,13 @@ mod tests {
             let field = crate::molecule::forcefield::Field::best_for(&few).unwrap();
             let (fewer, more) =
                 (field.energy(&few.positions), field.energy(&many.positions));
-            // Not exact any more, and deliberately so: trials are ranked
+            // Not exact: trials are ranked
             // before the torsion search runs, so twenty trials can hand the
             // search a different starting conformer than two did and it can
             // finish a hair higher -- 0.005 kcal/mol on ibuprofen, which is
             // one relaxation path against another rather than a worse
-            // structure. Ranking before *relaxation*, the bug this test is
-            // here for, costs whole kcal/mol and still fails it.
+            // structure. Ranking before *relaxation*, which this test guards
+            // against, costs whole kcal/mol and still fails it.
             assert!(
                 more <= fewer + 0.05,
                 "{smiles}: more trials increased the relaxed energy, {fewer:.6} -> {more:.6}"
@@ -667,7 +667,7 @@ mod tests {
     /// scaled to a 1.76 A floor under an H-H contact, and large flexible
     /// molecules duly came out sitting exactly on it -- satisfying their own
     /// bounds while carrying contacts RDKit's ETKDG keeps at 1.92 A or more.
-    /// Check the distance-geometry stage: MMFF relaxation can intentionally
+    /// Check the distance-geometry stage: MMFF relaxation can
     /// shorten an O-H...O hydrogen-bond contact below this uniform floor.
     #[test]
     fn atoms_four_bonds_apart_keep_their_distance() {
@@ -987,7 +987,7 @@ mod tests {
     /// RDKit and does not run here.
     ///
     /// The thresholds are the measured rates plus a little room, not
-    /// targets: the fixture is deliberately rich in crowded and strained
+    /// targets: the fixture is rich in crowded and strained
     /// bonds, so its rates are far above a drug-like corpus's and are
     /// supposed to be. If these move, find out why before moving them.
     #[test]

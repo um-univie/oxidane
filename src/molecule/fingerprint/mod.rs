@@ -75,8 +75,8 @@ pub const fn mix64(mut value: u64) -> u64 {
 /// Each word is folded in by [`mix64`], and the result is whatever the state
 /// has become. Changing any of that invalidates every fingerprint anyone has
 /// stored, so it is versioned by the crate's own version and must not be
-/// changed casually. It is not a general-purpose hash and makes no claim to
-/// resist an adversary; what it promises is that the same molecule gives the
+/// changed casually. It is not a general-purpose hash and does not resist an
+/// adversary; it guarantees that the same molecule gives the
 /// same number on another machine, in another build, next year.
 ///
 /// Width is not part of what is hashed -- writing `1u8` and writing `1u32` are

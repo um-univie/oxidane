@@ -23,10 +23,9 @@
 //!                                          "c1ccccc1O" -> MolecularGraph
 //! ```
 //!
-//! The encoder reads the graph and the decoder writes a string. That asymmetry
-//! is deliberate -- see [`crate::ml::nn::decoder`] for why the return trip goes
-//! through SMILES -- and it has one consequence worth stating plainly: **the
-//! round trip is not guaranteed to close.** A decoder can emit something that
+//! The encoder reads the graph and the decoder writes a string (see
+//! [`crate::ml::nn::decoder`] for why the return trip goes through SMILES), so
+//! **the round trip is not guaranteed to close.** A decoder can emit something that
 //! does not parse, or that parses into a different molecule. The measure of
 //! this model is therefore not its loss but the share of molecules that come
 //! back identical, which [`MoleculeAutoencoder::decode`] is there to count.

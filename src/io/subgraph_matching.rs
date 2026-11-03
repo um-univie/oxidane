@@ -388,8 +388,8 @@ fn compute_aromaticity_info(molecule: &MolecularGraph) -> AromaticityInfo {
 /// Hydrogens are atoms in this crate and the parser makes every one of them
 /// explicit, so SMARTS `H` -- total hydrogens, implicit and explicit together
 /// -- is a neighbour count. Inferring extra ones from a valence shortfall would
-/// be wrong here rather than merely redundant: `[Si]1C=CN=[Si]1` says its
-/// silicons carry no hydrogen, and the shortfall is the point.
+/// be wrong here: `[Si]1C=CN=[Si]1` says its silicons carry no hydrogen,
+/// whatever their valence leaves over.
 fn total_hydrogens(molecule: &MolecularGraph, atom: usize) -> usize {
     molecule.number_of_bonded_element(atom, 1)
 }
@@ -512,7 +512,7 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
     /// `pattern atom -> molecule atom`.
     ///
     /// SMARTS matching is subgraph monomorphism; see
-    /// [`crate::graph_algorithms::monomorphism`] for why that is not what
+    /// `crate::graph_algorithms::monomorphism` for why that is not what
     /// petgraph's `subgraph_isomorphisms_iter` provides.
     pub fn find_all_matches(&self) -> Vec<HashMap<usize, usize>> {
         let mut matches = Vec::new();
@@ -643,8 +643,7 @@ impl<'a> PetgraphSMARTSMatcher<'a> {
             // SMARTS `h` and `H` ask different questions of a toolkit that
             // keeps some hydrogens implicit. This one does not -- the parser
             // makes every hydrogen an atom -- so both are the same neighbour
-            // count, and answering them the same way is the honest reading
-            // rather than a shortcut.
+            // count and are answered the same way.
             AtomExpression::ImplicitHydrogens(h_count)
             | AtomExpression::TotalHydrogens(h_count) => {
                 total_hydrogens(self.molecule, molecule_atom) == (*h_count as usize)

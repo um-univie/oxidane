@@ -13,7 +13,7 @@ use tinyvec::ArrayVec;
 pub const BOND_CAPACITY: usize = 10;
 
 /// Atomic number standing for the SMILES wildcard atom `*` — an atom whose
-/// element is deliberately left unspecified, as used for attachment points,
+/// element is left unspecified, as used for attachment points,
 /// polymer end caps and Markush-style fragments.
 ///
 /// Zero is not a real element, which is exactly the point: it is the

@@ -408,7 +408,7 @@ pub struct CountsLine {
 ///             This includes information about which atoms are connected and the type of bond.
 /// * `properties` - A vector of strings containing additional properties or attributes of the molecule.
 ///                  These can include various molecular properties or custom data fields.
-///                  Only the lines we do not interpret land here; see the
+///                  Only lines that are not interpreted land here; see the
 ///                  `charges`, `radicals` and `isotopes` fields.
 #[derive(Debug, Default)]
 pub struct MOLFile {
@@ -416,7 +416,7 @@ pub struct MOLFile {
     pub counts_line: String,
     pub atoms: Vec<AtomV2000>,
     pub bonds: Vec<Bond>,
-    /// Property lines we do not interpret, kept verbatim.
+    /// Property lines that are not interpreted, kept verbatim.
     pub properties: Vec<String>,
     /// Charges from `M  CHG`, as (atom index, charge). `None` when the file
     /// carried no such line.

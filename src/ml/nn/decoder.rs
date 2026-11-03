@@ -16,7 +16,7 @@
 //!
 //! # How the vector reaches the decoder
 //!
-//! Twice, deliberately. It sets the recurrent network's initial state, and it
+//! Twice. It sets the recurrent network's initial state, and it
 //! is also concatenated onto every step's input. The first alone is the
 //! textbook arrangement and it fails in a specific way on this problem: the
 //! recurrence can carry the sequence by itself, the latent's contribution
@@ -41,7 +41,7 @@ pub struct DecoderConfig {
     pub hidden: usize,
     /// How many tokens [`SmilesDecoder::generate`] will emit before giving up
     /// on an end marker. A string that hits the cap is truncated and will not
-    /// parse, which is the honest outcome -- the model did not finish.
+    /// parse, since the model did not finish.
     pub max_length: usize,
     /// Applied to the state before the output projection.
     pub dropout: f32,

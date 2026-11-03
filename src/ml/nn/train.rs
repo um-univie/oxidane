@@ -68,11 +68,9 @@ impl Default for Schedule {
     ///
     /// The likely reason is that the decay is spread over the epoch budget
     /// while early stopping ends the run well before it, so the rate is below
-    /// the flat one for most of the epochs that actually happen and the low-rate
-    /// finish never arrives. A schedule fitted to where the run really stops
-    /// may well win; this one does not, and defaulting to it on the strength of
-    /// what it does elsewhere would be taking someone else's measurement for
-    /// this one.
+    /// the flat one for most of the epochs that run and the low-rate finish
+    /// never arrives. A schedule fitted to where the run stops may do better;
+    /// this one does not, so it is not the default.
     fn default() -> Self {
         Schedule::Constant
     }
@@ -341,8 +339,7 @@ impl<'a> Trainer<'a> {
     /// validation loss, not the ones from the last epoch run. Those are not
     /// the same thing: training continues for `patience` epochs after the best
     /// one to find out whether it was the best, and every one of those is a
-    /// step away from it. Keeping the final weights instead reports a model
-    /// that early stopping deliberately declined to keep.
+    /// step away from it.
     ///
     /// A split with no validation set trains for the full number of epochs and
     /// keeps the last, since there is nothing to choose between them with.

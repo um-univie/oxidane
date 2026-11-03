@@ -1478,10 +1478,7 @@ impl ChiralClassifier for Molecule3D {
             // the SMILES parser's `@@` -> `TH(2)` mapping
             // (`crate::io::smiles::assign_proper_chirality`); cross-checked
             // against RDKit's `AssignStereochemistryFrom3D` via
-            // `tests/embed_oracle.py`. Previously inverted (returned
-            // `TH(1)` here) - found while adding the `embed` module's own
-            // independent chirality-consistency term, which had to avoid
-            // matching this function's sign to embed molecules correctly.
+            // `tests/embed_oracle.py`.
             ChiralClass::TH(1) // Anti-clockwise (@)
         } else {
             ChiralClass::TH(2) // Clockwise (@@)

@@ -9,7 +9,7 @@
 //! Rings satisfying 4n+2 are aromatic; because a ring's answer can depend on
 //! a fused neighbour's, the sweep repeats until it stops learning anything.
 //!
-//! The distinction matters. MMFF's rules deliberately exclude structures
+//! The distinction matters. MMFF's rules exclude structures
 //! this crate's own perception calls aromatic -- most visibly the exocyclic
 //! double bond case, where MMFF wants tropone and its relatives typed as
 //! ordinary conjugated systems -- and typing against the wrong aromaticity
@@ -76,7 +76,7 @@ impl Perception {
                 let target = bond.target();
                 let order = match bond.bond_order() {
                     // A run of aromatic bonds with no Kekule structure is
-                    // left as it was found -- there is no honest single or
+                    // left as it was found -- there is no correct single or
                     // double answer for it, and typing will fail loudly on
                     // the aromatic order rather than quietly on a guess.
                     BondOrder::Aromatic if !kekulization.is_atom_deficient(atom) => {

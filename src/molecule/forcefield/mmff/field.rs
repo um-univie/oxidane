@@ -430,8 +430,8 @@ impl ForceField {
 }
 
 /// Both evaluations pick their instruction set per call through
-/// [`lanes::dispatch`]. The check is a few relaxed atomic loads, and every
-/// path agrees to the bit -- see [`lanes::Lanes`].
+/// `lanes::dispatch`. The check is a few relaxed atomic loads, and every
+/// path agrees to the bit -- see `lanes::Lanes`.
 impl Energy for ForceField {
     fn energy(&self, positions: &[Vector3D]) -> f64 {
         self.energies(positions).total()

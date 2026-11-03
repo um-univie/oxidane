@@ -1236,9 +1236,9 @@ fn stereo_bonds(smiles: &str) -> Vec<(usize, usize, usize)> {
 
 /// A double bond's geometry is read against its highest-ranked substituents,
 /// so cis and trans come out as such however the SMILES leans its bonds, and
-/// the single bonds beside it carry nothing. The stored class used to be read
-/// straight into the column -- onto every bond touching either end, and
-/// relative to whichever neighbour the string happened to list first.
+/// the single bonds beside it carry nothing. Reading the stored class straight
+/// into the column would put it on every bond touching either end, relative to
+/// whichever neighbour the string happened to list first.
 #[test]
 fn only_the_double_bond_carries_its_geometry() {
     const CIS: usize = 1;

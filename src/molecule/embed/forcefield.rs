@@ -62,7 +62,7 @@ const V_NEARFREE: f64 = 0.05;
 ///
 /// They are published in kcal/mol and run from 0.1 to 100, with a median
 /// rule totalling 5.0. Everything else here is in the arbitrary units
-/// [`V_CONJUGATED`] and friends are stated in -- deliberately uncalibrated,
+/// [`V_CONJUGATED`] and friends are stated in -- uncalibrated,
 /// chosen to sit alongside the bounds and stereo terms without dominating
 /// them. Dropped in unscaled the preferences did dominate: a peptide, whose
 /// amide rules carry some of the largest constants in the set, went from an
@@ -77,10 +77,9 @@ const EXPERIMENTAL_TORSION_SCALE: f64 = V_CONJUGATED / 5.0;
 /// A stereo double bond's substituents are restrained with a *one*-fold
 /// cosine, not the two-fold one a generic conjugated bond gets. Two-fold has
 /// minima at both 0 and 180 degrees, so it is happy to flatten a bond into
-/// either -- which is why it is side-agnostic and why it used to be skipped
-/// here entirely. One-fold has a single minimum, placed by
+/// either, so it is side-agnostic. One-fold has a single minimum, placed by
 /// the sign of its single cosine term at whichever of the two the stereo tag
-/// actually calls for, so it flattens *and* holds the assigned side rather
+/// calls for, so it flattens *and* holds the assigned side rather
 /// than competing with it.
 const STEREO_PLANARITY_FOLD: usize = 1;
 
@@ -196,17 +195,17 @@ pub(super) fn collect_angle_bends<T: MoleculeCore>(
 /// [`collect_stereo_planarity_torsions`] instead of this module's generic
 /// term.
 ///
-/// The generic term really is wrong for these bonds, and was once skipped
-/// on that basis: being two-fold it is side-agnostic, so on a `F/C=C/F`
-/// fixture it pulled the dihedral toward a near-90-degree saddle between
-/// its two minima while `chirality::CisTransBond` pulled toward one side.
-/// What that reasoning missed is that `CisTransBond` cannot flatten the
-/// bond on its own -- it is a hinge on a scalar with units of length^4, and
+/// The generic term is wrong for these bonds: being two-fold it is
+/// side-agnostic, so on a `F/C=C/F` fixture it pulls the dihedral toward a
+/// near-90-degree saddle between its two minima while
+/// `chirality::CisTransBond` pulls toward one side. Skipping the bond is not
+/// enough either, because `CisTransBond` cannot flatten the bond on its own
+/// -- it is a hinge on a scalar with units of length^4, and
 /// stops pulling once that scalar clears a fixed margin, which happens
 /// while the substituents are still about 105 degrees out of plane.
-/// Measured before this: 109 degrees for `C/C=C/C(=O)O`, 113 for
+/// Without a torsion term: 109 degrees for `C/C=C/C(=O)O`, 113 for
 /// `F/C=C/F`, 135 for `C/C=C/C`, all of which should be 180. A one-fold
-/// term aimed at the side the tag actually asks for both flattens the bond
+/// term aimed at the side the tag asks for both flattens the bond
 /// and agrees with `CisTransBond` about which side, rather than splitting
 /// the difference with it.
 fn is_explicit_cis_trans_bond<T: MoleculeCore>(mol: &T, b: usize, c: usize) -> bool {
@@ -700,9 +699,9 @@ pub(super) fn collect_torsions<T: MoleculeCore>(mol: &T, small_rings: bool) -> V
             // 90, which is right. A bond between two sp3 centres wants to
             // be *staggered*, and that is three-fold with a **positive**
             // sign -- zero at 60, 180 and 300, `2V` at the eclipsed 0, 120
-            // and 240. It used to be negative here, which put the minima
-            // exactly on the eclipsed positions and made the term a
-            // preference for the arrangement it is supposed to forbid: 42%
+            // and 240. A negative sign would put the minima exactly on the
+            // eclipsed positions and make the term a preference for the
+            // arrangement it is supposed to forbid: 42%
             // of the rotatable torsions in a distance-geometry structure
             // came out eclipsed against RDKit's 18%, and raising the
             // barrier made it worse rather than better -- at ten times the
@@ -805,10 +804,9 @@ fn dihedral_angle(positions: &[Vector3D], i: usize, b: usize, c: usize, j: usize
 /// One torsion restraint's energy and `dE/d(phi)`, from the dihedral's
 /// cosine and sine.
 ///
-/// The preferences run to six folds, so this is where the round trip through
-/// `atan2` and then six `cos` and six `sin` calls used to be. Walking the
-/// multiple-angle recurrence gives every fold's cosine and sine in two
-/// multiplications each.
+/// The preferences run to six folds. Instead of `atan2` followed by six `cos`
+/// and six `sin` calls, walking the multiple-angle recurrence gives every
+/// fold's cosine and sine in two multiplications each.
 fn torsion_terms_from(cosine: f64, sine: f64, t: &Torsion) -> (f64, f64) {
     let (mut energy, mut derivative) = (0.0, 0.0);
     let (mut previous, mut current) = ((1.0, 0.0), (cosine, sine));
@@ -1136,7 +1134,7 @@ mod tests {
     /// [`torsion_energy_and_grad`] used to compute directly, so this is the
     /// implementation it replaced acting as its oracle.
     ///
-    /// Geometries are deliberately scrambled and asymmetric: a sign error in
+    /// Geometries are scrambled and asymmetric: a sign error in
     /// one component of one atom's derivative survives any arrangement with
     /// a symmetry that could cancel it.
     #[test]
@@ -1225,9 +1223,8 @@ mod ring_rule_tests {
 
     /// The macrocycle rules reach a macrocycle's own ring bonds.
     ///
-    /// They are written entirely in `r{9-}`, so for as long as ring
-    /// perception stopped at eight atoms they parsed and matched nothing --
-    /// which is what this asserts is no longer true.
+    /// They are written entirely in `r{9-}`, so they match only if ring
+    /// perception goes past eight atoms.
     #[test]
     fn a_macrocycle_gets_torsion_terms_on_its_ring_bonds() {
         let molecule = {

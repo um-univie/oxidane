@@ -6,8 +6,8 @@
 //! reference implementation and can therefore run over everything rather than
 //! over a sample:
 //!
-//! * the SMILES parses at all (counted, not a failure -- PubChem holds things
-//!   this crate does not claim to read),
+//! * the SMILES parses at all (counted, not a failure -- PubChem holds some
+//!   records this crate does not read),
 //! * `normalize` returns an answer. It always should: the input molecule is
 //!   itself a feasible point of the constraint system, so an empty feasible set
 //!   means the model disagrees with the molecule,
@@ -28,11 +28,9 @@
 //! The corpus is mapped rather than read: the records are found by looking for
 //! newlines in the mapped bytes, the file is cut into one span per worker at
 //! record boundaries, and each worker walks its own span. There is no shared
-//! reader and no barrier between batches, which matters for a reason beyond
-//! throughput -- under the old chunked reader a single slow record left
-//! twenty-three workers idle and the run silent, and finding which record it
-//! was took an hour of bisection. Each worker now publishes the record it is
-//! on, and a reporter prints anything that has been in flight too long.
+//! reader and no barrier between batches, so one slow record holds up only its
+//! own worker. Each worker publishes the record it is on, and a reporter
+//! prints anything that has been in flight too long.
 //!
 //! The default atom limit is zero (unlimited); positive limits count heavy
 //! atoms per component and log every skipped record.

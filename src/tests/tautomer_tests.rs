@@ -458,11 +458,9 @@ fn a_molecule_and_its_normalization_share_a_key() {
     }
 }
 
-/// Bonds a proton shift cannot reach must come through untouched. Both of these
-/// were wrong once, and both were wrong in the same expensive way: the group
-/// erased a bond order it had no business erasing, and the solver spent the
-/// freed valence on a hydrogen out of the pool -- same formula, same totals,
-/// different compound.
+/// Bonds a proton shift cannot reach must come through untouched. If the group
+/// erased such a bond order, the solver could spend the freed valence on a
+/// hydrogen out of the pool -- same formula, same totals, different compound.
 #[test]
 fn bonds_a_shift_cannot_reach_survive() {
     // A nitrile is not an imine: `C#N` must not come back as `=C=N`.
@@ -741,9 +739,9 @@ fn a_labelled_hydrogen_does_not_move() {
 /// Everything `normalize` promises rests on the input being a feasible point of
 /// its own constraint system, and that needs the input to be a molecule.
 /// PubChem deposits `[B]=[SH-](=P)=PF`, whose sulfur spends seven; RDKit
-/// declines to read it at all. Saying "no feasible assignment" there blamed the
-/// solver for the structure, and it blunted the invariant the corpus sweep
-/// leans on -- that an answerless molecule is a bug.
+/// declines to read it at all. It is reported as invalid input rather than as
+/// "no feasible assignment", which keeps the invariant the corpus sweep leans
+/// on -- that an answerless molecule is a bug.
 #[test]
 fn a_structure_with_no_possible_valence_is_refused() {
     use crate::molecule::tautomer::{NormalizationError, impossible_valence, try_normalize};
@@ -1216,10 +1214,9 @@ fn ring_closure_double_bonds_keep_their_geometry() {
         // an oversight. The marks now survive, but the writer and the parser
         // read a mark on a ring-closure digit with opposite conventions, so
         // the string alternates between two spellings of the same geometry --
-        // `C1CCCC/C=C\\1` and `C1CCCC\\C=C\\1` -- with a period of two. It was
-        // no better before: the marks were dropped one per pass until none
-        // were left, so the form was stable only once it was wrong. Geometry
-        // is the part worth pinning until the conventions are reconciled.
+        // `C1CCCC/C=C\\1` and `C1CCCC\\C=C\\1` -- with a period of two.
+        // Geometry is the part worth pinning until the conventions are
+        // reconciled.
     }
 
     // The two geometries must stay distinct, not merely both be marked. The

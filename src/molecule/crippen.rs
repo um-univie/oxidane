@@ -16,8 +16,8 @@
 //! The classes are tried in a fixed order and the first that fits wins, so the
 //! order is part of the definition rather than an implementation detail: a
 //! carbon bonded to a heteroatom is `C3` because `C1` was tried first and did
-//! not fit, and a carboxylate oxygen is `O12` only because `O12` is deliberately
-//! tried before `O7`. That order is Wildman and Crippen's, as published and as
+//! not fit, and a carboxylate oxygen is `O12` only because `O12` is tried
+//! before `O7`. That order is Wildman and Crippen's, as published and as
 //! distributed with RDKit, and the contributions here are theirs to four
 //! significant figures.
 //!
@@ -776,7 +776,7 @@ impl<'a, M: MoleculeCore + ?Sized> View<'a, M> {
             return O6;
         }
 
-        // O12 before O7, deliberately: a carboxylate oxygen would otherwise be
+        // O12 before O7: a carboxylate oxygen would otherwise be
         // called an alkoxide.
         if charge == -1
             && self.neighbours(atom).any(|neighbour| {

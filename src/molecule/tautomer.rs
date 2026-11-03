@@ -73,11 +73,10 @@
 //! * a sulfonyl, sulfinyl or phosphoryl oxygen's bond, identified by degrees
 //!   alone. Asking whether it is *double* would make a sulfonic acid's three
 //!   oxygens answer differently depending on which carried the hydrogen.
-//! * nothing else. A triple bond used to be frozen too, on the grounds that
-//!   erasing `C#N` let the solver spend the nitrogen's second π unit elsewhere
-//!   and make the shortfall up with a hydrogen. That was a symptom of the
-//!   *order* the bonds were offered their π units in, not a reason to read
-//!   their orders -- see [`normalize`].
+//! * nothing else. A triple bond is not frozen: erasing `C#N` could let the
+//!   solver spend the nitrogen's second π unit elsewhere and make the
+//!   shortfall up with a hydrogen, but that comes from the *order* the bonds
+//!   are offered their π units in and is handled there -- see [`normalize`].
 //!
 //! # What is proved, and what is convention
 //!
@@ -1603,11 +1602,11 @@ type Totals = (u32, i32, u32);
 /// `position` maps an atom of the skeleton to its canonical position; pass the
 /// identity where the groups are already in canonical order.
 ///
-/// This used to be skipped unless two groups carried *different* totals, on the
-/// argument that groups whose totals agree are interchangeable and a lone group
-/// has its endpoint set fixed by the skeleton. The second half of that is
-/// false: a field names the endpoints by *position*, and an automorphism can
-/// carry a lone group's endpoints onto a symmetric image of themselves. A
+/// This runs even when no two groups carry *different* totals. Groups whose
+/// totals agree are interchangeable, but a lone group's endpoint set is not
+/// fixed by the skeleton: a field names the endpoints by *position*, and an
+/// automorphism can carry a lone group's endpoints onto a symmetric image of
+/// themselves. A
 /// bis-catechol crown ether is the case -- two equivalent rings, one group, and
 /// the same skeleton either way -- and its field came out `0,1:0:0` from one
 /// writing and `2,3:0:0` from the other.
@@ -1853,12 +1852,12 @@ impl std::error::Error for NormalizationError {}
 /// representative exists. That is a statement about molecules, and it needs the
 /// input to be one. An atom spending more than any valence its element has is
 /// not a tautomer of anything -- there is no assignment to find, because there
-/// was none to begin with -- and reporting the search as having failed would
-/// blame the solver for the structure.
+/// was none to begin with -- so it is reported as an input error, not as a
+/// failed search.
 ///
 /// PubChem deposits such records: `[B]=[SH-](=P)=PF` has a sulfur spending
 /// seven, and RDKit refuses to read it at all ("Explicit valence for atom # 1
-/// S, 7, is greater than permitted"). This crate's reader is deliberately more
+/// S, 7, is greater than permitted"). This crate's reader is more
 /// forgiving, so the question is asked here instead, once, before a model is
 /// built on a premise the molecule does not meet.
 ///
@@ -1907,7 +1906,7 @@ pub fn impossible_valence<M: Molecule + ?Sized>(
             return false;
         }
         let Some(mut valencies) = atomic_number.valencies() else {
-            // No table, no claim: this is not the place to decide what a
+            // No valence table: accept, rather than decide here what a
             // manganese atom may do.
             return false;
         };
@@ -2218,8 +2217,8 @@ fn a_symmetry_moves_a_tag<M: Molecule + Clone + ToSMILES>(
 /// skeleton because a chirality tag survives erasure. A mobile hydrogen does
 /// not: erasure is what takes it out. So this has to be asked of the molecule
 /// the placement *built*, against the symmetries the skeleton had -- the two
-/// live at different points of the pass, and asking the skeleton about a
-/// hydrogen it no longer has is how this was missed the first time.
+/// live at different points of the pass, and the skeleton no longer has the
+/// hydrogen in question.
 ///
 /// A porphyrazine carrying three nitroxide radicals and one hydroxylamine is
 /// the case. Its four arms are one orbit of the skeleton, so which of them ends
@@ -3429,9 +3428,9 @@ fn valences_are_consistent<M: Molecule + Clone + ToSMILES>(
         let charge = molecule.get_atom_charge(atom);
         // The question is whether `used` is a valence this element has, not
         // whether it is the one its σ count alone would suggest: asking with
-        // the bond *count* said a hexavalent sulfur was wrong, because four σ
-        // bonds already satisfy the valence-4 entry, and the correct neutral
-        // sulfonamide was thrown away in favour of a charge-separated one.
+        // the bond *count* would call a hexavalent sulfur wrong, because four
+        // σ bonds already satisfy the valence-4 entry, and throw away the
+        // correct neutral sulfonamide in favour of a charge-separated one.
         valence_for(molecule.atomic_numbers()[atom], charge, spends as usize)
             .is_some_and(|valence| valence == spends)
     })

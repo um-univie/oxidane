@@ -104,9 +104,8 @@ impl Energy for Field {
 /// Why an atom could not be given a force-field type.
 ///
 /// Typing is where a force field is most often quietly wrong, because a
-/// mistyped atom still produces a number. Refusing to type an atom at all is
-/// the honest half of that: a molecule this error names is one the field has
-/// no business scoring.
+/// mistyped atom still produces a number. An atom this error names is one
+/// the field has no parameters for, so the molecule is not scored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UntypedAtom {
     pub atom: usize,

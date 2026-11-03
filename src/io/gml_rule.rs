@@ -305,7 +305,7 @@ fn read_section(
 }
 
 impl ExactRule {
-    /// Reads a rule written in MØD's GML — see the [module docs](self).
+    /// Reads a rule written in MØD's GML.
     ///
     /// Node ids are renumbered from 1 in the order they first appear, since
     /// a SMARTS map index of 0 means "unmapped".
@@ -417,7 +417,7 @@ impl ExactRule {
 }
 
 impl ReactionSmarts {
-    /// Reads a rule written in MØD's GML — see the [module docs](self).
+    /// Reads a rule written in MØD's GML.
     pub fn from_gml(gml: &str) -> Result<Self, GmlRuleError> {
         Ok(ExactRule::from_gml(gml)?.to_reaction()?)
     }
@@ -427,7 +427,7 @@ impl ReactionSmarts {
     ///
     /// GML labels are exact, so every reactant atom has to name its element,
     /// and every reactant bond its order — see
-    /// [`ExactRule`](crate::molecule::rule_algebra::ExactRule). A charge the
+    /// [`ExactRule`]. A charge the
     /// reactant side does not state is written as neutral, which is the one
     /// place the GML rule asks for more than the SMARTS did.
     pub fn to_gml(&self, rule_id: &str) -> Result<String, GmlRuleError> {

@@ -41,7 +41,7 @@ const DEFAULT_UPPER: f64 = 100.0;
 /// | 1.0 | 358, -1.70 | 268, -2.27 |
 ///
 /// Nine molecules for nothing at a share of one, net one for nothing at a
-/// half. The asymmetry is the point: the probe rewards a bound for
+/// half. The asymmetry comes from the probe: it rewards a bound for
 /// admitting the truth, but a window admits *everything* between its ends,
 /// and the freedom costs more in bad starts than the missing truth costs in
 /// bias. The centre was worth correcting and the width is not.

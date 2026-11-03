@@ -277,15 +277,15 @@ mod aromatization_tests {
         let smiles =
             "COCCOC(=O)C1=C(C)N=C2SC(=CC3=CC=C(C4=CC(Cl)=CC=C4)O3)C(=O)N2C1C1=CC=C(C(C)C)C=C1";
         let molecule = diff_smiles(smiles);
-        // The thiazolone is not aromatic, and used to be perceived as such. The
-        // ring carries five π electrons, not six: the imine carbon and the
+        // The thiazolone is not aromatic. The ring carries five π electrons,
+        // not six: the imine carbon and the
         // carbonyl carbon give nothing, the sulfur and the amide nitrogen give
         // two each, and the arylidene carbon gives one.
         //
-        // The imine is what changed. Its `C=N` leaves the five-ring but also
-        // lies on the fused six-ring, and the exocyclic test used to accept any
-        // cycle at all, so the carbon was counted as if the bond stayed in --
-        // six electrons, and an aromatic ring. That six-ring runs through a
+        // The imine is the hard part. Its `C=N` leaves the five-ring but also
+        // lies on the fused six-ring, and an exocyclic test that accepts any
+        // cycle at all counts the carbon as if the bond stayed in -- six
+        // electrons, and an aromatic ring. That six-ring runs through a
         // saturated carbon and carries no π system for the bond to belong to;
         // see `molecule::pi_system`. RDKit calls this ring aromatic, by the
         // same route, and is wrong.
@@ -784,10 +784,9 @@ mod subgraph_isomorphism_tests {
 
     /// A pattern of one atom is a perfectly good substructure query.
     ///
-    /// Both sides' connected components used to be filtered to those with more
-    /// than one atom, so a single-atom pattern had nothing left to match with
-    /// and always reported nothing — and a single-atom component of the
-    /// *target*, a counter-ion say, was invisible to every pattern.
+    /// Single-atom components count on both sides: a single-atom pattern has
+    /// something to match, and a single-atom component of the *target*, a
+    /// counter-ion say, is visible to every pattern.
     #[test]
     fn single_atom_patterns_match() {
         let ethanol = MolecularGraph::from_smiles_single("CCO").unwrap();
@@ -885,8 +884,8 @@ mod subgraph_isomorphism_tests {
 
     /// Benzene written in Kekulé form still has alternating single and double
     /// bonds *if aromaticity perception is turned off*; with the default it is
-    /// perceived as aromatic and neither pattern matches, which is the point
-    /// of [`SmilesParseOptions`].
+    /// perceived as aromatic and neither pattern matches; [`SmilesParseOptions`]
+    /// chooses between the two.
     #[test]
     fn ethane_in_kekule_benzene() {
         use crate::io::SmilesParseOptions;
@@ -926,7 +925,7 @@ mod wildcard_atom_tests {
     use crate::atom::WILDCARD_ATOMIC_NUMBER;
     use crate::io::SMILESParseError;
 
-    /// `*` is an atom whose element is deliberately unspecified — attachment
+    /// `*` is an atom whose element is unspecified — attachment
     /// points, polymer end caps, Markush fragments. It must survive a
     /// round-trip unchanged.
     ///
@@ -991,9 +990,9 @@ mod wildcard_atom_tests {
     }
 
     /// A wildcard is a vertex of the canonical graph like any other non-
-    /// hydrogen atom. It used to be counted out of the graph while its bonds
-    /// were counted in, so canonizing anything with a `*` indexed past the
-    /// adjacency matrix and panicked -- `C*C` included.
+    /// hydrogen atom. Counting it out of the graph while counting its bonds in
+    /// would index past the adjacency matrix and panic on anything with a `*`,
+    /// `C*C` included.
     #[test]
     fn wildcard_molecules_canonize_the_same_however_written() {
         use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
@@ -1186,11 +1185,9 @@ mod charge_valency_tests {
     /// A formal charge changes how many bonds an atom forms, and which way
     /// depends on the element's group.
     ///
-    /// The model used to be `charge.abs()` — a charge always *costs* a bond —
-    /// which is right for anions and backwards for every cation, so ammonium
-    /// came out divalent. It was wrong in two places at once, since
-    /// `Atom::actual_valency` folded the same `|charge|` in again, and each
-    /// attempt to correct one alone threw the other out by a bond. Every case
+    /// `charge.abs()` -- a charge always *costs* a bond -- is right for anions
+    /// and backwards for every cation, so ammonium would come out divalent;
+    /// `Atom::actual_valency` and this model have to agree on it. Every case
     /// here matches RDKit, in structure and in unpaired-electron count.
     #[test]
     fn charged_species_round_trip() {
@@ -1382,10 +1379,7 @@ mod cis_trans_tests {
     }
 
     /// Canonization settles, rather than alternating between two spellings of
-    /// the same geometry.
-    ///
-    /// It used to do neither: the marks were dropped one per pass until none
-    /// were left, so the form was stable only once it had become wrong.
+    /// the same geometry, and without dropping the marks one per pass.
     #[test]
     fn canonization_of_geometry_settles() {
         for smiles in [

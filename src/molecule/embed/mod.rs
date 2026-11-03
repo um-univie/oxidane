@@ -1,23 +1,23 @@
 //! Distance-geometry ("ETKDG-lite") 3D coordinate embedding.
 //!
 //! Stage 1: bounds matrix -> triangle-inequality smoothing -> classical 4D MDS
-//! -> for a molecule with stereochemistry, [`fourd`]'s four-dimensional
+//! -> for a molecule with stereochemistry, `fourd`'s four-dimensional
 //! resolution of it -> gradient refinement against a bounds-violation
 //! energy. Produces geometrically valid structures (correct bond
 //! lengths/angles).
 //!
-//! Stage 2: [`chirality`] adds tetrahedral (`TH`), cis/trans double-bond, and
-//! allene (`AL`) consistency terms plus a repair fallback; [`bounds`] adds
+//! Stage 2: `chirality` adds tetrahedral (`TH`), cis/trans double-bond, and
+//! allene (`AL`) consistency terms plus a repair fallback; `bounds` adds
 //! trans/adjacent angle bounds for square-planar (`SP`) centres (which,
 //! unlike the others, has no separate handedness once the trans-pairing is
-//! fixed, so needs no extra energy term); [`planarity`] adds a ring/local-
+//! fixed, so needs no extra energy term); `planarity` adds a ring/local-
 //! centre out-of-plane restraint applied as a touch-up on each trial.
 //! With relaxation enabled, each trial is then minimized with MMFF94 or
 //! UFF -- with the chirality terms still on as a barrier, see
-//! [`StereoRestrained`] -- and ranked by that energy, prioritising
+//! `StereoRestrained` -- and ranked by that energy, prioritising
 //! stereochemical correctness.
 //! Disconnected components (salts) are embedded and relaxed independently,
-//! then packed side by side (see [`run`]).
+//! then packed side by side (see `run`).
 //!
 //! `TH` and `SP` were cross-checked against RDKit's
 //! `AssignStereochemistryFrom3D` (`tests/embed_oracle.py`) and, in `TH`'s
@@ -28,14 +28,13 @@
 //! too, see that function's doc comment.
 //! `AL`'s absolute handedness could *not* be cross-checked the same way -
 //! RDKit doesn't perceive allene stereo from 3D coordinates in the version
-//! used here - so it's a considered best effort, verified only to be
-//! internally self-consistent (see [`chirality::AllenCenter`]'s doc
-//! comment).
+//! used here - so it is verified only to be internally self-consistent (see
+//! `chirality::AllenCenter`'s doc comment).
 //!
-//! A UFF/MMFF-lite refinement pass ([`forcefield`]) adds harmonic-in-cosine
+//! A UFF/MMFF-lite refinement pass (`forcefield`) adds harmonic-in-cosine
 //! angle-bend and periodic-torsion restraints, applied in the same
-//! touch-up-only style as `planarity` (see [`embed_connected`]) - deliberately
-//! scoped to just those two terms: bond-stretch and van-der-Waals-style
+//! touch-up-only style as `planarity` (see `embed_connected`), and limited
+//! to those two terms: bond-stretch and van-der-Waals-style
 //! non-bonded repulsion are already covered by the bounds-violation energy
 //! itself (a tight flat bottom for 1-2 pairs, a VDW-radius-based lower bound
 //! for every other pair), so adding them again would be redundant. The
@@ -105,7 +104,7 @@ pub struct EmbedConfig {
     /// field has parameters for the molecule; anything it cannot type is
     /// returned unrelaxed rather than refused. Turning it off also gives
     /// the distance-geometry structure on its own, which is what
-    /// [`crate::tests`] asserts the bounds against -- relaxation exists to
+    /// `crate::tests` asserts the bounds against -- relaxation exists to
     /// overrule those bounds where they are approximate.
     pub relax: bool,
     /// Whether to finish by turning each rotatable bond to its other
@@ -173,9 +172,8 @@ impl EmbedConfig {
     /// RDKit's ETKDGv3 plus an MMFF94 minimisation -- the same job -- this
     /// preset runs at 0.86x their total time, 0.84x over the curated corpus
     /// and 1.03x over 1634 molecules stratified by size, where the default
-    /// is 5.5x. It used to be 1.5x and 7.7x; what closed it was not the
-    /// pipeline but the minimiser's bookkeeping -- see the `DenseHessian`
-    /// and `wide_dot` in [`crate::molecule::minimize`]. What is left is at
+    /// is 5.5x. Most of the speed comes from the minimiser's bookkeeping --
+    /// see the `DenseHessian` and `wide_dot` in [`crate::molecule::minimize`]. What is left is at
     /// the ends of the size range, and `NEXT.md` has the curve.
     ///
     /// It is also the configuration whose trials are shaped by every
@@ -463,8 +461,7 @@ pub(super) fn minimize_to_convergence<E: crate::molecule::minimize::Energy + ?Si
 
 /// What the trial refinement gets on top of `EmbedConfig::max_iterations`.
 ///
-/// It is the budget the separate touch-up pass used to have; the same
-/// total, now spent in one refinement with every restraint active. Three
+/// The budget is spent in one refinement with every restraint active. Three
 /// hundred more changes nothing measurable, and three hundred fewer gives
 /// back most of what the change bought.
 const EXTRA_REFINEMENT_ITERATIONS: usize = 300;
@@ -728,8 +725,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
         // them over in the fourth dimension, where the inversion costs
         // nothing, before flattening back to three -- see [`fourd`]. A
         // molecule with no stereochemistry skips it and keeps the plain
-        // three-dimensional path, which is what `w` used to be discarded
-        // for.
+        // three-dimensional path.
         if !stereo.is_empty() {
             fourd::resolve_chirality(
                 &mut positions,
@@ -753,7 +749,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
         // leaves a geometry that satisfies every distance and sits wherever
         // the torsion terms would not have put it, and the second stage
         // then has to argue it out of there. Both halves matter: all the
-        // terms for only 300 iterations is +0.54, and the old split given a
+        // terms for only 300 iterations is +0.54, and a separate
         // 900-iteration touch-up is +0.47.
         //
         // But it costs about 40% of an embedding, because every iteration

@@ -1758,9 +1758,8 @@ fn seeding_makes_a_model_a_function_of_its_seed() {
 fn seeding_does_not_depend_on_the_order_a_hash_map_yields() {
     // VarMap holds its variables in a hash map, so walking them in its order
     // and drawing from one stream would assign different numbers to different
-    // weights on every run -- the bug this is meant to remove, hiding inside
-    // the fix for it. Building the same model repeatedly is what would expose
-    // it, since each build gets a fresh map.
+    // weights on every run. Building the same model repeatedly exposes that,
+    // since each build gets a fresh map.
     let device = Device::Cpu;
     let build = || {
         let varmap = VarMap::new();
@@ -1910,7 +1909,7 @@ fn masking_none_of_the_atoms_is_a_zero_loss_rather_than_a_crash() {
 
 #[test]
 fn the_masked_objective_can_be_learned() {
-    // Not a strong claim -- five molecules -- but it separates "the gradient
+    // Five molecules only, but it separates "the gradient
     // reaches the encoder" from "the loss happens to be finite".
     let device = Device::Cpu;
     let varmap = VarMap::new();

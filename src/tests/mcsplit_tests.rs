@@ -104,7 +104,7 @@ fn ring_vs_chain_induced_variant_drops_an_atom() {
     // hexane's atom0-atom5 pair isn't, which is exactly the inconsistency
     // the induced constraint forbids. It has to drop to 5 atoms / 4 bonds
     // instead — the documented induced-vs-edge-maximizing difference
-    // between the module's two search variants, not a bug.
+    // between the module's two search variants.
     let cyclohexane = parse("C1CCCCC1");
     let hexane = parse("CCCCCC");
 

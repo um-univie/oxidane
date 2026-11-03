@@ -23,7 +23,7 @@
 //! remaining bidomains — that is far tighter than a flat candidate count.
 //! That tighter bound, not any implementation trick, is what makes it
 //! asymptotically better suited to exactly the symmetric/large-scaffold
-//! cases [`super::mces`] struggles with (see [`search`] for the generic
+//! cases [`super::mces`] struggles with (see `search` for the generic
 //! algorithm and the concrete before/after timings recorded in this crate's
 //! test suite).
 //!
@@ -31,7 +31,7 @@
 //!
 //! - [`find_maximum_common_edge_subgraph`] runs the search on the two
 //!   molecules' **line graphs** (vertex = bond, edge = shared atom — see
-//!   [`line_graph`]) rather than on the atoms directly. A line-graph vertex
+//!   `line_graph`) rather than on the atoms directly. A line-graph vertex
 //!   *is* a bond, so maximizing matched line-graph vertices directly
 //!   maximizes matched bonds: this is genuinely the same maximum-common-
 //!   *edge*-subgraph guarantee [`super::mces`] provides (same objective,
@@ -85,7 +85,7 @@
 //! would report false mismatches purely from how the input was written.
 //! CIP descriptors are order-independent, so they are what gets compared.
 //!
-//! ## The caveat that comes with CIP
+//! ## CIP depends on the whole molecule
 //!
 //! CIP priority is a property of the **whole molecule**. If two molecules'
 //! shared core has genuinely identical handedness, but a substituent
@@ -135,8 +135,7 @@
 //! - **Local-parity stereo matching**, as described above — the
 //!   context-independent alternative to CIP labels.
 //! - **[`super::mces`] has not been given the same treatment**; it still
-//!   compares chirality by type only. Deliberate: keeping the two modules'
-//!   stereo semantics separate means the fallback stays byte-for-byte the
+//!   compares chirality by type only, so the fallback keeps exactly the
 //!   behaviour it was validated with.
 //! - **[`Molecule3D`] gets no CIP descriptors** (see [`CipConfigs`]), so
 //!   3-D molecules silently fall back to stereocentre-vs-not matching.
@@ -151,7 +150,7 @@
 //!   pushed at very large synthetic graphs, converting to an explicit stack
 //!   (as `mces`'s `CliqueIterator` already does, for the same reason) is a
 //!   mechanical follow-up, not a redesign.
-//! - **Line-graph construction is `O(bonds²)`** ([`line_graph`]'s adjacency
+//! - **Line-graph construction is `O(bonds²)`** (`line_graph`'s adjacency
 //!   pass compares every bond pair) — fine at molecular scale, would need
 //!   revisiting for anything much bigger.
 
@@ -203,7 +202,7 @@ impl CipConfigs for MolecularGraph {
     /// nothing about.
     ///
     /// Canonization is expensive — far more so than the rest of building a
-    /// [`Graph`] — and these geometries are rare, so the molecule is scanned
+    /// `Graph` — and these geometries are rare, so the molecule is scanned
     /// first and canonized only if it actually contains one.
     fn higher_order_stereo(&self) -> Vec<HigherStereo> {
         let Some(classes) = self.chiral_classes() else {

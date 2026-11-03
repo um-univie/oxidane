@@ -804,7 +804,7 @@ mod tests {
 
     /// The lanes have to agree with the scalar term they replace, remainder
     /// included, or the force field has quietly become a different one.
-    /// Ten pairs is not a multiple of the lane width on purpose.
+    /// Ten pairs is not a multiple of the lane width, so the remainder runs.
     #[test]
     fn the_vectorised_pairs_agree_with_the_scalar_ones() {
         let positions: Vec<Vector3D> = (0..6)

@@ -28,14 +28,13 @@
 //! too, see that function's doc comment.
 //! `AL`'s absolute handedness could *not* be cross-checked the same way -
 //! RDKit doesn't perceive allene stereo from 3D coordinates in the version
-//! used here - so it's a considered best effort, verified only to be
-//! internally self-consistent (see [`chirality::AllenCenter`]'s doc
-//! comment).
+//! used here - so it is verified only to be internally self-consistent (see
+//! [`chirality::AllenCenter`]'s doc comment).
 //!
 //! A UFF/MMFF-lite refinement pass ([`forcefield`]) adds harmonic-in-cosine
 //! angle-bend and periodic-torsion restraints, applied in the same
-//! touch-up-only style as `planarity` (see [`embed_connected`]) - deliberately
-//! scoped to just those two terms: bond-stretch and van-der-Waals-style
+//! touch-up-only style as `planarity` (see [`embed_connected`]), and limited
+//! to those two terms: bond-stretch and van-der-Waals-style
 //! non-bonded repulsion are already covered by the bounds-violation energy
 //! itself (a tight flat bottom for 1-2 pairs, a VDW-radius-based lower bound
 //! for every other pair), so adding them again would be redundant. The
@@ -173,9 +172,8 @@ impl EmbedConfig {
     /// RDKit's ETKDGv3 plus an MMFF94 minimisation -- the same job -- this
     /// preset runs at 0.86x their total time, 0.84x over the curated corpus
     /// and 1.03x over 1634 molecules stratified by size, where the default
-    /// is 5.5x. It used to be 1.5x and 7.7x; what closed it was not the
-    /// pipeline but the minimiser's bookkeeping -- see the `DenseHessian`
-    /// and `wide_dot` in [`crate::molecule::minimize`]. What is left is at
+    /// is 5.5x. Most of the speed comes from the minimiser's bookkeeping --
+    /// see the `DenseHessian` and `wide_dot` in [`crate::molecule::minimize`]. What is left is at
     /// the ends of the size range, and `NEXT.md` has the curve.
     ///
     /// It is also the configuration whose trials are shaped by every
@@ -463,8 +461,7 @@ pub(super) fn minimize_to_convergence<E: crate::molecule::minimize::Energy + ?Si
 
 /// What the trial refinement gets on top of `EmbedConfig::max_iterations`.
 ///
-/// It is the budget the separate touch-up pass used to have; the same
-/// total, now spent in one refinement with every restraint active. Three
+/// The budget is spent in one refinement with every restraint active. Three
 /// hundred more changes nothing measurable, and three hundred fewer gives
 /// back most of what the change bought.
 const EXTRA_REFINEMENT_ITERATIONS: usize = 300;
@@ -728,8 +725,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
         // them over in the fourth dimension, where the inversion costs
         // nothing, before flattening back to three -- see [`fourd`]. A
         // molecule with no stereochemistry skips it and keeps the plain
-        // three-dimensional path, which is what `w` used to be discarded
-        // for.
+        // three-dimensional path.
         if !stereo.is_empty() {
             fourd::resolve_chirality(
                 &mut positions,
@@ -753,7 +749,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
         // leaves a geometry that satisfies every distance and sits wherever
         // the torsion terms would not have put it, and the second stage
         // then has to argue it out of there. Both halves matter: all the
-        // terms for only 300 iterations is +0.54, and the old split given a
+        // terms for only 300 iterations is +0.54, and a separate
         // 900-iteration touch-up is +0.47.
         //
         // But it costs about 40% of an embedding, because every iteration

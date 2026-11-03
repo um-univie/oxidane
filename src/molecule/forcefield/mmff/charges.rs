@@ -3,10 +3,9 @@
 //! MMFF builds a charge in two steps. First every atom gets a *formal*
 //! charge, which is not the one written in the SMILES: a carboxylate's is
 //! shared as -1/2 over both oxygens, a nitrate's as -1/3 over three, an
-//! imidazolium's +1 over both its nitrogens. That sharing is the point --
-//! the two oxygens of a carboxylate are the same oxygen as far as the
-//! molecule is concerned, and a model that charges one of them and not the
-//! other is wrong in a way no amount of parameter fitting repairs.
+//! imidazolium's +1 over both its nitrogens, because the two oxygens of a
+//! carboxylate are equivalent and a model that charges one of them and not
+//! the other is wrong in a way parameter fitting cannot repair.
 //!
 //! Then each bond moves a little charge, by a *bond charge increment* fitted
 //! for that pair of types, or by the difference of the two types' partial

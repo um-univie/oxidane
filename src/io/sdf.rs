@@ -116,9 +116,8 @@ fn assign_stereochemistry(molecule: &mut Molecule3D, wedges: &[(usize, usize, u8
         let sign = match stereo {
             1 => 1.0,  // wedge, towards the reader
             6 => -1.0, // hash, away from the reader
-            // 4 on a single bond and 3 on a double one both mean "either",
-            // which is a statement that the configuration is deliberately
-            // unspecified rather than one we should try to recover.
+            // 4 on a single bond and 3 on a double one both mean "either":
+            // the configuration is unspecified and is not recovered.
             _ => continue,
         };
         if let Some(class) = wedge_chirality(molecule, centre, neighbour, sign) {
@@ -491,9 +490,9 @@ impl Molecule3D {
                 atomic_numbers,
                 atom_bonds: bonds,
                 // One entry per atom, not the empty vector `Default` gives:
-                // the accessors index this directly, so an SDF-derived
-                // molecule used to panic the moment anything asked whether an
-                // atom was a radical.
+                // the accessors index this directly, so an empty vector would
+                // panic the moment anything asked whether an atom was a
+                // radical.
                 radical_states,
                 // `None` rather than a vector of zeroes when nothing was
                 // written, matching what the SMILES side stores: zero is not a

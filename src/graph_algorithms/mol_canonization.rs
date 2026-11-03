@@ -1323,10 +1323,9 @@ pub fn reorder_molecule<T: Molecule + ToSMILES>(mol: &mut T, labeling: &[usize])
             } else if let ChiralClass::AL(reference) = old_class {
                 // Same idea as the tetrahedral branch, one atom further out:
                 // carry the old carrier order through the relabeling and ask
-                // whether re-sorting it is an odd permutation. Falling back on
-                // the centre's own neighbour order — which is what this used
-                // to do — compares two atoms where four are needed, so it
-                // could not encode the winding at all.
+                // whether re-sorting it is an odd permutation. The centre's
+                // own neighbour order compares two atoms where four are
+                // needed, so it cannot encode the winding.
                 match (
                     allene_carriers_old.get(&old_idx),
                     index_sorted_allene_carriers(mol, new_idx),
@@ -1986,11 +1985,9 @@ mod tests {
     /// line, each with ~85 RDKit-verified-equivalent SMILES writings. Every
     /// writing on a line must canonicalize identically to the line's first.
     ///
-    /// The checked-in corpus is 1000 molecules (4MB, ~85k comparisons). It is
-    /// deliberately a sample: the full 100k-molecule corpus this was developed
-    /// against is 425MB, which is four times what GitHub will accept in a
-    /// single file and forty times what crates.io will take for a whole
-    /// package. Drop a larger file in at the same path to run against it.
+    /// The checked-in corpus is 1000 molecules (4MB, ~85k comparisons), a
+    /// sample of the full 100k-molecule corpus (425MB, too large for GitHub or
+    /// crates.io). Drop a larger file in at the same path to run against it.
     ///
     /// `#[ignore]`d even at 1000 molecules, since it is a benchmark rather
     /// than a regression test; run it with `./test.sh` or

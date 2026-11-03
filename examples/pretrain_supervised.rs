@@ -5,7 +5,7 @@
 //!     --data pcba.csv --out encoder.safetensors --epochs 10
 //! ```
 //!
-//! This is the transfer that the evidence actually supports. Self-supervised
+//! This is the transfer that helps in practice. Self-supervised
 //! masking on unlabelled structures did not help here and mostly hurt, which
 //! is what the systematic reproductions of it report as well; what does carry
 //! across is having been trained to predict *something* measured, on enough

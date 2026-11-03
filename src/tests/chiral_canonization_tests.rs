@@ -9,7 +9,7 @@
 //! * **Discrimination** — stereoisomers (enantiomers / diastereomers) are
 //!   different molecules and must produce *different* canonical strings.
 //!
-//! Invariance assertions deliberately do not pin the exact canonical string
+//! Invariance assertions do not pin the exact canonical string
 //! (that would bake in whatever the canonizer currently emits); they only
 //! require agreement across writings, which is the property that matters.
 //!

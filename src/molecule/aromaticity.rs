@@ -286,14 +286,14 @@ thread_local! {
 
 /// The atoms one molecule's long-path search may look at before it gives up.
 ///
-/// The number has to be set against what the corpus really spends, because a
+/// The number has to be set against what the corpus spends, because a
 /// search that stops early is a search whose answer depends on the order the
 /// atoms were written in -- and an aromaticity that depends on the writing is a
 /// canonical form that does too. PubChem's heaviest search that finishes is a
 /// fullerene-fused polycyclic at 1,077,445,319 steps; eight compounds sat
 /// between 3.1 and 10.8 hundred million, and every one of them changed its
 /// tautomer key when the budget was 20 million. So the bound is twice the
-/// worst, and what it is really there for is the case with no finish at all: a
+/// worst, and its main job is the case with no finish at all: a
 /// 270-atom macrocycle of fused thiophenes (CID 122232324) whose paths do not
 /// run out in a day, and which now takes 67 seconds and an answer.
 const LONG_PATH_BUDGET: u64 = 2_000_000_000;
@@ -329,9 +329,8 @@ const LONG_PATH_BUDGET: u64 = 2_000_000_000;
 /// pyrroles with it. At 24 what still moves is two vat dyes whose conjugated
 /// circuit is longer than any ring anyone would draw. The 200,000 records
 /// spend at most 37,058 steps of the long-path budget, against its
-/// 2,000,000,000 -- so with a constant depth the budget can no longer be
-/// reached, which is the point: it was the budget, not the search, that made
-/// perception depend on the atom numbering.
+/// 2,000,000,000 -- so with a constant depth the budget is never reached,
+/// and perception does not depend on the atom numbering.
 const AROMATIC_PATH_DEPTH: usize = 24;
 
 /// Spends one step of the long-path budget, and says whether there was one.

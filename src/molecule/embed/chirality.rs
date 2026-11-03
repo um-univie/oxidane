@@ -128,12 +128,11 @@ pub(super) struct StereoCenter {
 /// A healthy tetrahedral centre at equilibrium bond lengths makes a
 /// tetrahedron of about 11 -- the neighbours are 2.4 to 2.5 A apart -- so
 /// four is comfortably inside the flat region and still far enough from
-/// zero to catch a centre on its way through coplanarity. It replaces a
-/// margin of one, which was the same fraction of the three-vector measure
-/// this used to use (that measure is smaller by the barycentric weight of
-/// the neighbour it ignores, about a quarter). A fixed constant is a
-/// deliberate "lite" simplification instead of a per-centre value derived
-/// from actual bond-length bounds.
+/// zero to catch a centre on its way through coplanarity. It is the same
+/// fraction as a margin of one on the three-vector measure (smaller by the
+/// barycentric weight of the neighbour it ignores, about a quarter). A
+/// fixed constant is a simplification of a per-centre value derived from
+/// bond-length bounds.
 const CHIRALITY_MARGIN: f64 = 4.0;
 
 /// Collects every atom whose stored [`ChiralClass`] is `TH(1)` or `TH(2)`
@@ -466,9 +465,9 @@ fn repair_cis_trans_mismatches(positions: &mut [Vector3D], bonds: &[CisTransBond
 /// `V = v0.(v1 x v2)` is defined here to be positive for `AL(2)` and
 /// negative for `AL(1)` - internally self-consistent (embedding an `AL(1)`
 /// and an `AL(2)` tag on the same skeleton reliably produces mirror-image
-/// geometry, see the unit tests) and a considered best effort at matching
-/// OpenSMILES's extended-tetrahedral definition, but *not* independently
-/// confirmed correct the way `TH`/`SP`/cis-trans were.
+/// geometry, see the unit tests) and follows OpenSMILES's
+/// extended-tetrahedral definition, but is *not* independently confirmed
+/// the way `TH`/`SP`/cis-trans were.
 pub(super) struct AllenCenter {
     pub sub_l: usize,
     pub l: usize,
@@ -613,12 +612,10 @@ mod tests {
     /// The four-point volume and the three-vector triple product it
     /// replaced differ by `-lambda3`, the barycentric weight of the
     /// neighbour the triple product leaves out -- which is why the target
-    /// signs are negated against the old ones, and why the margin went from
-    /// one to four.
+    /// signs are negated against the triple product's, and why the margin is
+    /// four rather than one.
     ///
-    /// Written out because the relation is the whole argument for the sign
-    /// convention, and a test is the only thing that keeps an argument in a
-    /// comment honest.
+    /// The relation is what the sign convention rests on, so it is tested.
     #[test]
     fn the_four_point_volume_is_the_triple_product_scaled_and_flipped() {
         let mut mol = MolecularGraph::from_smiles_single("[C@](F)(Cl)(Br)I").unwrap();

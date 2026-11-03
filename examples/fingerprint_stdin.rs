@@ -65,7 +65,7 @@ fn main() {
             if kind == "crippen" {
                 // The classes come out in atom order; sorting them makes the
                 // digest a property of the compound. The two sums go in as
-                // well, since they are what anyone actually reads.
+                // well, since they are the numbers people read.
                 let mut labels: Vec<&str> = crippen_types(&molecule)
                     .into_iter()
                     .map(|kind| kind.label())

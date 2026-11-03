@@ -4,7 +4,7 @@
 //! position and gradient differences stand in for the inverse Hessian, via
 //! the usual two-loop recursion, and that path scales the identity it starts
 //! from by `(s . y) / (y . y)` so that a full step is the natural first thing
-//! to try. The dense path beside it deliberately does not -- see below.
+//! to try. The dense path beside it does not -- see below.
 //!
 //! The line search is Numerical Recipes' `lnsrch`, which is RDKit's too:
 //! Armijo's sufficient-decrease test alone, with a quadratic model for the
@@ -176,9 +176,8 @@ impl Coordinate for Vector4D {
 /// correction pairs instead of 8 recovers none of it.
 ///
 /// So the number stays where the quality is, and the large-molecule
-/// slowness stays with it. A caller who wants the other trade has no knob
-/// for it today; that is the honest place to put one if the case ever
-/// comes up.
+/// slowness stays with it. There is no knob for the other trade; this
+/// constant is where one would go.
 const DENSE_HESSIAN_MAX_DIMENSION: usize = 900;
 
 /// The shortest run that gets a dense inverse Hessian.
@@ -404,9 +403,7 @@ impl DenseHessian {
         // per element that misses cache on every one of them. Writing both
         // triangles in row order is 8% of an embedding cheaper than being
         // clever about it. The cost is that the two triangles are now
-        // computed rather than copied, so they agree only to rounding, and
-        // a trajectory that used to be bit-reproducible against the mirror
-        // version is not.
+        // computed rather than copied, so they agree only to rounding.
         for (row, cells) in inverse.chunks_exact_mut(dimension).enumerate() {
             let step_row = inverse_curvature * step_flat[row];
             let product_row = inverse_product * product[row];
@@ -721,7 +718,7 @@ fn backtracking_line_search<C: Coordinate, E: Energy<C> + ?Sized>(
                 }
             }
         };
-        // Keep the interpolation honest: never more than half the current
+        // Bound the interpolation: never more than half the current
         // step, never less than a tenth of it.
         if !(next.is_finite()) || next > 0.5 * length {
             next = 0.5 * length;

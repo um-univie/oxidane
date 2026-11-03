@@ -257,7 +257,7 @@ fn layer_coverage(graph: &HeavyGraph, radius: usize) -> Vec<u64> {
 ///
 /// Six numbers -- how many heavy neighbours it has, how much of its valence
 /// goes to them, which element it is, its charge, how many hydrogens it
-/// carries, and whether it is in a ring. Isotope is deliberately absent, since
+/// carries, and whether it is in a ring. Isotope is absent, since
 /// two samples of the same compound should fingerprint alike; a caller who
 /// wants labelled atoms distinguished can build an invariant that says so.
 pub fn standard_invariants<M: MoleculeCore + ?Sized>(molecule: &M) -> Vec<u32> {
@@ -303,9 +303,9 @@ pub fn standard_invariants<M: MoleculeCore + ?Sized>(molecule: &M) -> Vec<u32> {
 /// series where [`standard_invariants`] does not, at the cost of telling two
 /// different molecules apart less often.
 ///
-/// The definitions are structural and deliberately simple, and they are ours:
-/// they are not read off any other toolkit's SMARTS and will not agree with one
-/// bit for bit.
+/// The definitions are structural and simple, and specific to this crate: they
+/// are not taken from another toolkit's SMARTS and will not agree with one bit
+/// for bit.
 pub fn feature_invariants<M: MoleculeCore + ?Sized>(molecule: &M) -> Vec<u32> {
     let atom_count = molecule.len();
 

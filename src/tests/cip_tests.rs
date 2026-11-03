@@ -2,13 +2,13 @@
 //!
 //! Every expected descriptor here came from `rdkit.Chem.rdCIPLabeler`, the
 //! implementation validated against Hanson's reference suite — *not* the
-//! legacy `AssignStereochemistry`, which is admittedly approximate and
+//! legacy `AssignStereochemistry`, which is approximate and
 //! disagrees with it. The second block of [`CASES`] is RDKit's own CIP
 //! regression suite (`Code/GraphMol/CIPLabeler/catch_tests.cpp`), which is
 //! where the pseudo-asymmetric centres, bridged cages and ring-closure
 //! duplicates that a partial rule set gets wrong actually live.
 //!
-//! # Deliberate deviations (not in [`CASES`])
+//! # Deviations from RDKit (not in [`CASES`])
 //!
 //! - **A three-coordinate atom whose hydrogen is written inside the
 //!   brackets**, e.g. `C[P@@H]C1CCCCC1`.
@@ -288,8 +288,7 @@ fn descriptors_are_invariant_under_atom_renumbering() {
 /// inside the brackets or as an explicit atom — the two SMILES denote the same
 /// molecule.
 ///
-/// This is the one place the port deliberately departs from RDKit, and the
-/// deviation was chosen on exactly this ground: for a *three*-coordinate
+/// This is one place the port departs from RDKit, for this reason: for a *three*-coordinate
 /// centre RDKit orders the bracketed hydrogen last rather than immediately
 /// after the preceding atom, so it labels the two spellings *S* and *R*.
 /// OpenSMILES does not cover the case, so neither reading is more conformant;
@@ -346,7 +345,7 @@ fn three_coordinate_centres_with_a_lone_pair_are_labelled() {
 /// A wildcard atom ranks below hydrogen, so at a centre carrying both, the
 /// hydrogen is *not* the lowest-priority substituent.
 ///
-/// This is the second deliberate deviation from RDKit, and unlike the
+/// This is the second deviation from RDKit, and unlike the
 /// three-coordinate one it is not a matter of convention. RDKit's
 /// `Tetrahedral::label` builds its priority-ordered carrier list by skipping
 /// the hydrogen and then appending it in the last slot unconditionally — which

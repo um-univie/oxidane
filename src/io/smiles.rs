@@ -161,9 +161,8 @@ pub struct SMILESParser<'a> {
     /// values are atom indices; a value `v < 0` is the ring-bond placeholder with
     /// id `-v - 1`, resolved to the partner atom via `write_ring_partner`.
     /// Indexed by atom, not keyed by it: atom indices are dense and assigned
-    /// in order, so the hash map this used to be paid for hashing and
-    /// rehashing on every bond in the string to store what a `Vec` addresses
-    /// directly.
+    /// in order, so a `Vec` addresses them directly without hashing on every
+    /// bond in the string.
     write_order: Vec<Vec<i64>>,
     /// Atoms that have an incoming "from" bond (i.e. are not a fragment root),
     /// whose first `write_order` entry is therefore the from-atom.
@@ -179,9 +178,9 @@ impl<'a> SMILESParser<'a> {
     /// Empties the parser for the next fragment or the next string, keeping
     /// every buffer's allocation.
     ///
-    /// Replacing the whole parser instead — which is what the fragment loop
-    /// used to do at each `.` — drops the atom, bond and ring tables and
-    /// reallocates them from nothing for the next fragment.
+    /// Replacing the whole parser at each `.` instead would drop the atom,
+    /// bond and ring tables and reallocate them from nothing for the next
+    /// fragment.
     fn reset(&mut self) {
         self.atoms.clear();
         self.bonds.clear();
@@ -245,7 +244,7 @@ impl<'a> SMILESParser<'a> {
 
             if let Some(model) = options.aromaticity {
                 // Reading is where a string that is not a molecule gets turned
-                // away. Perception is tolerant by design, so ask for the Kekulé
+                // away. Perception is tolerant, so ask for the Kekulé
                 // structure here, where the answer can be refused; the call
                 // perception makes later finds the bonds already localized and
                 // returns at once.
@@ -363,7 +362,7 @@ impl<'a> SMILESParser<'a> {
             pointer += 1;
             match byte {
                 b'A'..=b'Z' => parser.handle_atom(Some(byte))?,
-                // The wildcard atom: an atom whose element is deliberately
+                // The wildcard atom: an atom whose element is left
                 // unspecified, used for attachment points and polymer end
                 // caps. It is a real atom in the graph, carried as atomic
                 // number 0.
@@ -501,11 +500,9 @@ impl<'a> SMILESParser<'a> {
                 // other data (a name, an identifier) and is not structure.
                 b' ' | b'\t' | b'\n' | b'\r' => break,
 
-                // Anything else is not SMILES. Stopping quietly here — which
-                // is what this used to do — turned a typo into silent data
-                // loss: `*C(F)(Cl)Br` returned `Ok` with an empty molecule
-                // because parsing broke on the first character, and `C&CC`
-                // returned a lone carbon.
+                // Anything else is not SMILES. Stopping quietly here would
+                // turn a typo into silent data loss: `C&CC` would return a
+                // lone carbon.
                 unexpected => {
                     return Err(SMILESParseError::UnexpectedCharacter(
                         unexpected as char,
@@ -525,7 +522,7 @@ impl<'a> SMILESParser<'a> {
         // involved: the centre counts the pending closure among its neighbours
         // when it records its tag, so the tag ends up stored against an
         // ordering the finished molecule does not have, and re-expressing it
-        // finds a neighbour that is not there. `C[C@H]1C` used to panic.
+        // finds a neighbour that is not there (`C[C@H]1C` would panic).
         if parser
             .ring_bonds
             .iter()
@@ -584,10 +581,10 @@ impl<'a> SMILESParser<'a> {
                         }
                         // Four neighbours is tetrahedral however they are
                         // bonded. A sulfoximine's sulfur carries `=O` and `=N`
-                        // and is still a stereocentre -- a configurationally
-                        // stable one, which is the point of the class -- and so
-                        // is the phosphorus of a phosphorothioate. Requiring
-                        // four single bonds rejected both.
+                        // and is still a configurationally stable
+                        // stereocentre, and so is the phosphorus of a
+                        // phosphorothioate. Requiring four single bonds would
+                        // reject both.
                         (_, 4) => {
                             if *chiral_class == ChiralClass::Clockwise {
                                 ChiralClass::TH(2)
@@ -983,8 +980,8 @@ impl<'a> SMILESParser<'a> {
     ) -> Result<(), SMILESParseError> {
         // Everything below reads forward without a bounds check, using the
         // closing bracket as the sentinel it is guaranteed to stop at. An
-        // unterminated bracket has no such sentinel, so it walked off the end
-        // of the string instead: `[H][` used to panic.
+        // unterminated bracket has no such sentinel and would walk off the
+        // end of the string (`[H][`).
         if !bytes[*position..].contains(&b']') {
             return Err(SMILESParseError::EOL);
         }
@@ -992,9 +989,8 @@ impl<'a> SMILESParser<'a> {
         self.handle_atom(None)?;
         // Brackets mean the atom states its own hydrogen count, so whatever
         // valence is left over is unpaired electrons rather than more
-        // hydrogens. This used to be set only when the brackets also carried
-        // an atom map, so `[CH3:1]` came out as the methyl radical it is while
-        // `[CH3]` silently gained a fourth hydrogen and became methane.
+        // hydrogens: `[CH3]` is the methyl radical, with or without an atom
+        // map, not methane.
         self.current_atom_is_complex = true;
 
         if bytes[*position].is_ascii_digit() {
@@ -2249,9 +2245,9 @@ pub trait ToSMILES: Molecule {
         // the hydrogens it has. The count is not a property of the element
         // alone: it is what the element's valence leaves over once the bonds
         // the atom already carries are taken off, so `P` is phosphine and
-        // `P(C)(C)C` is trimethylphosphine, and the old test -- which asked
-        // only whether the hydrogen count was within the element's lowest
-        // valence -- wrote `[PH2](C)(C)C` as `P(C)(C)C` and lost two.
+        // `P(C)(C)C` is trimethylphosphine. Checking only whether the
+        // hydrogen count is within the element's lowest valence would write
+        // `[PH2](C)(C)C` as `P(C)(C)C` and lose two.
         //
         // Two readers have to agree, not one. This crate fills a bare atom to
         // the element's *lowest* valence; every other toolkit fills it to the

@@ -453,7 +453,7 @@ impl MolecularGraph {
     /// The subgraph induced on `atoms`: those atoms, in the order given, and
     /// only the bonds that run between them.
     ///
-    /// Unlike [`MolecularGraph::split`] this makes no claim that the cut is
+    /// Unlike [`MolecularGraph::split`] this does not require the cut to be
     /// clean -- a bond to an atom left out is simply dropped, and the atom it
     /// left behind keeps whatever valence that gives it. The caller is saying
     /// which atoms it wants to reason about, not that the rest were never

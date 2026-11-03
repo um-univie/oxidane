@@ -27,7 +27,7 @@ pub fn shuffled(order: &mut [usize], seed: u64) {
 
 /// A Fisher--Yates shuffle over a seeded SplitMix64 stream.
 ///
-/// Deliberately not [`rand`]: a split and an epoch order are both part of a
+/// Not [`rand`]: a split and an epoch order are both part of a
 /// published result, and the stream a general-purpose generator produces is
 /// free to change between versions. This one cannot.
 pub(crate) fn shuffle(order: &mut [usize], seed: u64) {

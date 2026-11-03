@@ -14,7 +14,7 @@ mod tests {
         assert!(!mol.is_chiral());
     }
 
-    /// `determine_tetrahedral_chirality` previously returned `TH(1)`/`TH(2)`
+    /// Guards against `determine_tetrahedral_chirality` returning `TH(1)`/`TH(2)`
     /// inverted relative to this crate's documented `ChiralClass::TH`
     /// convention (and RDKit) - found while building the `embed` module's
     /// distance-geometry embedder, which needed to read 3D geometry back
@@ -112,8 +112,7 @@ mod tests {
         assert_eq!(trans_classes[0], ChiralClass::CisTransCounterclockwise);
         assert_eq!(trans_classes[1], ChiralClass::CisTransClockwise);
 
-        // And the two are actually distinguishable, which the old assertions
-        // never established.
+        // And the two are distinguishable.
         assert_ne!(cis_classes[1], trans_classes[1]);
 
         // Cross-checked against RDKit's `AssignStereochemistryFrom3D`, which
@@ -194,7 +193,7 @@ mod tests {
         }
     }
 
-    /// The cases the old parity rules got wrong, checked against the
+    /// Parity cases that are easy to get wrong, checked against the
     /// OpenSMILES definitions directly. TB1 is the a-e axis with b, c, d
     /// anticlockwise seen from a: exchanging two equatorial neighbours or the
     /// two axial ones reverses that, a three-cycle of the equatorials does

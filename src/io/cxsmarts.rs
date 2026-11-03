@@ -1235,9 +1235,9 @@ impl CxSMARTSParser {
     /// Reads a bond symbol and holds it until the thing it connects to — the
     /// next atom, or a ring-closure digit — has been parsed.
     ///
-    /// Attaching it immediately as `(current - 1, current)` was wrong wherever
-    /// the two atoms are not consecutive: after a branch closes, and for every
-    /// ring closure.
+    /// It cannot be attached immediately as `(current - 1, current)`, because
+    /// the two atoms are not consecutive after a branch closes or at a ring
+    /// closure.
     fn parse_bond(&mut self) -> Result<(), CxSMARTSError> {
         if self.previous_atom.is_none() {
             return Err(CxSMARTSError::InvalidBond(

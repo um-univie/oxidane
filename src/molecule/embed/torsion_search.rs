@@ -78,12 +78,9 @@ const TURNS: &[f64] = &[120.0, -120.0, 180.0];
 /// molecules, 36% die on the rigid energy for one evaluation each, so the
 /// three relaxation gates are 99.7% of the cost and the rigid screens 0.3%.
 ///
-/// Twenty-five used to lose cocaine's turn entirely and cost the peptide six
-/// kcal/mol. Re-measured 2026-10-02 that is no longer so -- cocaine, the
-/// peptide and the cyclic peptide are identical at 20, 25 and 40 -- because
-/// the torsion sign, the staggered barrier, the combined refinement and the
-/// relaxation tolerance have all moved underneath that measurement. The
-/// budget still matters, just not to those three:
+/// Cocaine, the peptide and the cyclic peptide are identical at 20, 25 and
+/// 40 (measured 2026-10-02). The budget still matters, just not to those
+/// three:
 ///
 /// | iterations | curated 72, default | PubChem 287, default |
 /// |---|---|---|
@@ -576,7 +573,7 @@ enum Operation {
 /// time, and doubling again was not tried because the trend is already
 /// flattening. The whole purchase is close to the going rate near the knee
 /// of the budget curve -- about half what the fourth and fifth trials buy,
-/// for about the same cost -- so it is small on purpose.
+/// for about the same cost -- so it is kept small.
 const SHAKE_ATTEMPTS: usize = 12;
 
 /// How many moves one attempt makes at once. Two is the case the measurement
@@ -594,7 +591,7 @@ const SHAKE_MOVES: [usize; 2] = [2, 3];
 /// what lets that hydroxyl reach an acceptor; turning either bond by itself
 /// gains nothing, so no number of passes finds it.
 ///
-/// Deliberately small and deliberately last. The budget work in `NEXT.md`
+/// Small, and run last. The budget work in `NEXT.md`
 /// measured search time as the worst buy on the whole dial past three
 /// trials, so this gets a fixed two dozen attempts after the descent has
 /// converged rather than a role in the descent itself, and every attempt
@@ -915,7 +912,7 @@ fn hydrogen_rotor(molecule: &Molecule3D, first: usize, second: usize) -> Option<
 /// Acyclic single bonds with something to swing at both ends, each with the
 /// smaller of the two sides it separates.
 ///
-/// Deliberately not [`crate::molecule::descriptors`]' rotatable-bond count:
+/// Not [`crate::molecule::descriptors`]' rotatable-bond count:
 /// that one answers a medicinal-chemistry question and excludes amides,
 /// symmetric tops and the rest, because a `CF3` "rotation" is a relabelling
 /// and an amide is not really single. Here the question is whether turning
@@ -987,7 +984,7 @@ fn torsion_moves(molecule: &Molecule3D) -> Vec<Move> {
 /// at 56.21. Both are real minima and the ring torsions either side agree to
 /// a degree; only the hydrogen differs.
 ///
-/// Reflecting the hydrogen rather than the nitrogen is deliberate: the
+/// The hydrogen is reflected rather than the nitrogen because the
 /// nitrogen is in the ring, and moving it would take the ring with it, while
 /// the hydrogen is a leaf and the reflection preserves its bond length and
 /// both of its bond angles exactly (see [`Operation::Invert`]).
@@ -1202,7 +1199,7 @@ fn far_side(molecule: &Molecule3D, first: usize, second: usize) -> Vec<usize> {
 /// close: both of its ring bonds keep their lengths, and the angle between
 /// them is preserved, because the rotation is a rigid motion of the corner
 /// about a line through the two atoms it stays bonded to. Everything else
-/// about the ring changes, which is the point. This is the "corner flip" of
+/// about the ring changes. This is the "corner flip" of
 /// the macrocycle conformer-search literature, and it is the cheapest move
 /// that crosses between ring conformations.
 ///

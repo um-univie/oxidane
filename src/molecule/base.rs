@@ -879,7 +879,7 @@ pub trait MoleculeCore {
         // H-phosphonate, whose phosphorus is four bonds into a valence of five
         // and genuinely one hydrogen short.
         //
-        // What this costs is worth stating. Where two writings of one compound
+        // The cost: where two writings of one compound
         // leave an atom with different bond orders -- which happens wherever
         // perception refuses a ring one way and not the other -- the rule turns
         // that difference into a hydrogen, and `normalize`'s answer stops

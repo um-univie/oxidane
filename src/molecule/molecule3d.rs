@@ -343,7 +343,7 @@ impl Molecule3D {
                     let Some(angle) =
                         position_vector1.angle_between_points(position_vector2, position_vector3)
                     else {
-                        // This should never happen
+                        // No angle when two of the points coincide.
                         return;
                     };
 

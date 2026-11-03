@@ -33,8 +33,7 @@ use crate::molecule::molecular_graph::MolecularGraph;
 ///
 /// The scaffold is every ring atom, every atom on a path between two rings,
 /// and every atom held to one of those by a bond that is not single. Empty for
-/// a molecule with no rings, which is the honest answer rather than a
-/// degenerate one: an acyclic molecule has no skeleton to share.
+/// a molecule with no rings: an acyclic molecule has no skeleton to share.
 ///
 /// # What the last clause is for
 ///

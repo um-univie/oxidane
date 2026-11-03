@@ -1216,7 +1216,7 @@ impl From<(f64, f64, f64)> for Vector3D {
 /// nothing to satisfy while `w` is free, and the structure is then squeezed
 /// back down to three dimensions with the handedness already correct.
 ///
-/// Deliberately not a general-purpose vector type. It has what the
+/// Not a general-purpose vector type. It has what the
 /// minimiser needs and the projection back to three dimensions, and nothing
 /// else -- everything else in this crate is three-dimensional.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]

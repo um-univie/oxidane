@@ -36,7 +36,7 @@ pub enum HigherStereo {
 /// CIP says nothing about — its [`HigherStereo`].
 ///
 /// The CIP part is essential because [`AtomLabel`] alone collapses both
-/// handednesses to `ChiralType::TH`. It is deliberately *not* the raw
+/// handednesses to `ChiralType::TH`. It is *not* the raw
 /// `ChiralClass` @/@@ parity: that is defined relative to the order the
 /// atom's neighbours happen to be listed in, so the same molecule written
 /// two ways yields different tags (`N[C@@H](C)C(=O)O` gives `TH(2)` and

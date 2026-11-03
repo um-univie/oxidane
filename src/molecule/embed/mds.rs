@@ -130,7 +130,7 @@ fn gershgorin_shift(m: &Array2<f64>) -> f64 {
 
 /// Top-`k` eigenpairs of symmetric `m`, returned as `(eigenvalue, eigenvector)`
 /// sorted descending by eigenvalue. Uses shifted power iteration with
-/// deflation; precision is loose by design since this only seeds gradient
+/// deflation; precision is loose since this only seeds gradient
 /// refinement, not a final answer.
 fn top_k_eigenpairs(m: &Array2<f64>, k: usize) -> Vec<(f64, Vec<f64>)> {
     let n = m.nrows();

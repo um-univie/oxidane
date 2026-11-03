@@ -54,9 +54,9 @@ fn the_default_bond_is_single_or_aromatic() {
 /// Branches bond to the atom the branch hangs off, and ring-closure digits
 /// create the bond that closes the ring.
 ///
-/// Bonds used to be attached as `(current - 1, current)`, which is wrong for
-/// both: after `)` the next atom is not adjacent to the last one parsed, and
-/// a ring's two ends are never adjacent in the string.
+/// Attaching bonds as `(current - 1, current)` is wrong for both: after `)`
+/// the next atom is not adjacent to the last one parsed, and a ring's two ends
+/// are never adjacent in the string.
 #[test]
 fn branches_and_ring_closures_bond_correctly() {
     let branched = parse_cxsmarts("CC(C)C").unwrap();
@@ -129,8 +129,8 @@ fn wildcards_match_the_right_things() {
 
 /// The reported mapping must say which *molecule* atoms were matched.
 ///
-/// It used to be built as `index -> index`, the identity, so every match
-/// pointed back at the pattern's own atom indices and told the caller nothing.
+/// The identity `index -> index` would point every match back at the
+/// pattern's own atom indices and tell the caller nothing.
 #[test]
 fn reported_matches_name_real_molecule_atoms() {
     // Ethanol: atoms 0 and 1 are carbons, 2 is the oxygen, 3.. are hydrogens.

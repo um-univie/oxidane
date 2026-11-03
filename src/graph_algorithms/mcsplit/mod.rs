@@ -85,7 +85,7 @@
 //! would report false mismatches purely from how the input was written.
 //! CIP descriptors are order-independent, so they are what gets compared.
 //!
-//! ## The caveat that comes with CIP
+//! ## CIP depends on the whole molecule
 //!
 //! CIP priority is a property of the **whole molecule**. If two molecules'
 //! shared core has genuinely identical handedness, but a substituent
@@ -135,8 +135,7 @@
 //! - **Local-parity stereo matching**, as described above — the
 //!   context-independent alternative to CIP labels.
 //! - **[`super::mces`] has not been given the same treatment**; it still
-//!   compares chirality by type only. Deliberate: keeping the two modules'
-//!   stereo semantics separate means the fallback stays byte-for-byte the
+//!   compares chirality by type only, so the fallback keeps exactly the
 //!   behaviour it was validated with.
 //! - **[`Molecule3D`] gets no CIP descriptors** (see [`CipConfigs`]), so
 //!   3-D molecules silently fall back to stereocentre-vs-not matching.

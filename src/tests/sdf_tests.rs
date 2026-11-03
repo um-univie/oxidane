@@ -152,10 +152,9 @@ mod property_block {
 
     /// The first property line is the one that ends the bond block.
     ///
-    /// It used to be dropped: the state machine moved into its Properties state
-    /// on the line it failed to read as a bond, and only recorded lines from
-    /// the next one on. Since `M  CHG` is usually the first property line of a
-    /// real file, exactly the line that mattered most was the one lost.
+    /// The state machine enters its Properties state on the line it fails to
+    /// read as a bond, and must record that line too: `M  CHG` is usually the
+    /// first property line of a real file.
     #[test]
     fn the_first_property_line_is_kept() {
         let molecule = parse(&sdf(
@@ -275,7 +274,7 @@ mod property_block {
         assert_eq!(molecule.isotopes(), None);
     }
 
-    /// Lines we do not interpret still come through untouched.
+    /// Lines that are not interpreted still come through untouched.
     #[test]
     fn unknown_property_lines_are_kept_verbatim() {
         let content = sdf(

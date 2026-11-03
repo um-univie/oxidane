@@ -7,8 +7,8 @@
 //! ```
 //!
 //! Reads one SMILES per line and ignores anything after the first whitespace or
-//! tab, so a labelled file can be fed in as-is and its labels quietly dropped
-//! -- which is the point: this never sees a measurement.
+//! tab, so a labelled file can be fed in as-is. Labels are ignored:
+//! pretraining uses no measurements.
 
 use std::io::BufRead;
 

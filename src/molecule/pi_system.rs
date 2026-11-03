@@ -52,7 +52,7 @@ pub fn pi_demand<M: MoleculeCore + ?Sized>(molecule: &M, atom: usize) -> Option<
     let valence = effective_valency(atomic_number, charge)?;
     let sigma = molecule.get_atom_bonds(atom)?.len() as i8;
 
-    // Unpaired electrons are deliberately *not* subtracted here. The recorded
+    // Unpaired electrons are *not* subtracted here. The recorded
     // radical count is itself derived from the input's bond orders -- an
     // aromatic bond counts 1.5 towards valence, so `[cH]` in a five-ring adds
     // to a full carbon valence and its unpaired electron disappears, while the

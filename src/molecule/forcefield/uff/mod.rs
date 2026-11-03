@@ -42,7 +42,7 @@
 //! RDKit is the oracle for this crate's MMFF94 checks, and almost all of
 //! UFF matches it to the digit: the terms, the parameters, the combination
 //! rules and the angle form's switch on the centre's geometry are all the
-//! same reading of the paper. Two differences are deliberate:
+//! same reading of the paper. There are two differences:
 //!
 //! * **Atom typing.** RDKit suffixes `R` onto any sp2 carbon, nitrogen,
 //!   oxygen or sulfur that has a conjugated bond, which types a carbonyl

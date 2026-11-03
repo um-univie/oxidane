@@ -63,11 +63,9 @@ use candle_nn::VarMap;
 ///
 /// Not every variable is drawn. A one-dimensional `weight` is a layer norm's
 /// gain, and is set to one with its bias at zero; a learned `eps` is set to
-/// zero. Those are the values every library starts them at, and drawing them
-/// like a linear layer's weights instead started each GINE layer norm with
-/// gains of a few hundredths, half of them negative, which shrank every
-/// round's output to noise -- seeded GINE runs scored about a third worse for
-/// it.
+/// zero, the standard initial values. Drawing them like a linear layer's
+/// weights would start each GINE layer norm with gains of a few hundredths,
+/// half of them negative, shrinking every round's output to noise.
 ///
 /// # Why the names are sorted
 ///

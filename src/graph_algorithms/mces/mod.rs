@@ -133,6 +133,21 @@ fn to_line_graph<T: Molecule>(mol: &T) -> types::LineGraph {
 fn run_search(mut graphs: Vec<types::LineGraph>) -> AlgorithmState {
     let mut state = AlgorithmState::default();
     driver::find_maximum_common_subgraph(&mut graphs, &mut state);
+    // The clique search raises `state.maximum` itself, as soon as it has a
+    // bound worth pruning against, without going through the bookkeeping that
+    // clears the results recorded under the old bound. So a subgraph recorded
+    // while the bound was lower outlives the discovery of a bigger one, and
+    // what comes back here is every *maximal* common subgraph, not the
+    // *maximum* ones. Keep the largest; they are what every caller asked for.
+    let largest = state
+        .all_maximum_graphs
+        .iter()
+        .map(|resolved| resolved.bond_pairs.len())
+        .max()
+        .unwrap_or(0);
+    state
+        .all_maximum_graphs
+        .retain(|resolved| resolved.bond_pairs.len() == largest);
     state
 }
 
@@ -163,7 +178,10 @@ pub fn find_maximum_common_edge_subgraph<T: Molecule>(
     mol_b: &T,
 ) -> Option<MaximumCommonEdgeSubgraph> {
     let mut state = run_search(vec![to_line_graph(mol_a), to_line_graph(mol_b)]);
-    state.all_maximum_graphs.pop().map(|resolved| to_public(mol_a, resolved))
+    state
+        .all_maximum_graphs
+        .pop()
+        .map(|resolved| to_public(mol_a, resolved))
 }
 
 /// Like [`find_maximum_common_edge_subgraph`], but returns every common

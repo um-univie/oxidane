@@ -1,3 +1,4 @@
+pub use crate::molecule::draw::{Draw, DrawOptions};
 pub use crate::{
     atom::Atom,
     graph_algorithms::mces::{

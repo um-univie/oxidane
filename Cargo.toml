@@ -49,6 +49,8 @@ rustfft = "6.4.1"
 # pubchem_sweep maps the corpus rather than reading it.
 memmap2 = "0.9"
 memchr = "2"
+# The local publication runner (examples/publication.rs) speaks JSON lines.
+serde_json = "1"
 
 
 [profile.release]

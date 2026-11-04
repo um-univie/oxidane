@@ -1,10 +1,18 @@
 //! Trial-distance sampling and classical (Torgerson) MDS embedding into 4D.
 //!
-//! The 4th dimension gives refinement (see `refine.rs`) room to resolve
-//! stereocenters "through" each other before being annealed flat - the
-//! standard ETKDG trick. Since no `Vector4D` type exists in this crate, the
-//! (x, y, z) components are carried as `Vector3D` and `w` as a parallel
-//! `Vec<f64>`.
+//! The 4th dimension gives [`super::fourd`] room to resolve stereocentres
+//! "through" each other before it anneals them flat -- the standard ETKDG
+//! trick, and the reason this embeds into four dimensions rather than
+//! three. The (x, y, z) components come back as `Vector3D` and `w` as a
+//! parallel `Vec<f64>`, which is the shape `fourd` wants to zip them into
+//! [`crate::vector::Vector4D`] from.
+
+/// Distance intervals narrower than this (Å) are sampled at their lower bound.
+const MIN_SAMPLING_INTERVAL: f64 = 1e-9;
+/// Norm below which a random starting vector cannot be safely normalized.
+const MIN_INITIAL_VECTOR_NORM: f64 = 1e-12;
+/// Norm below which power iteration treats a matrix product as zero.
+const MIN_POWER_VECTOR_NORM: f64 = 1e-14;
 
 use super::bounds;
 use crate::vector::Vector3D;
@@ -24,8 +32,12 @@ pub(super) fn sample_trial_distances(bounds_matrix: &Array2<f64>, rng: &mut StdR
         for j in (i + 1)..n {
             let lower = bounds::get_lower(bounds_matrix, i, j);
             let upper = bounds::get_upper(bounds_matrix, i, j);
-            let (lo, hi) = if lower <= upper { (lower, upper) } else { (upper, lower) };
-            let d = if hi - lo < 1e-9 {
+            let (lo, hi) = if lower <= upper {
+                (lower, upper)
+            } else {
+                (upper, lower)
+            };
+            let d = if hi - lo < MIN_SAMPLING_INTERVAL {
                 lo
             } else {
                 rng.random_range(lo..=hi)
@@ -68,9 +80,7 @@ pub(super) fn classical_mds_4d(trial: &Array2<f64>) -> (Vec<Vector3D>, Vec<f64>)
 fn double_centered_gram(trial: &Array2<f64>) -> Array2<f64> {
     let n = trial.nrows();
     let d2 = trial.mapv(|d| d * d);
-    let row_mean: Vec<f64> = (0..n)
-        .map(|i| d2.row(i).sum() / n.max(1) as f64)
-        .collect();
+    let row_mean: Vec<f64> = (0..n).map(|i| d2.row(i).sum() / n.max(1) as f64).collect();
     let grand_mean: f64 = row_mean.iter().sum::<f64>() / n.max(1) as f64;
 
     let mut gram = Array2::<f64>::zeros((n, n));
@@ -107,7 +117,7 @@ fn norm(a: &[f64]) -> f64 {
 fn random_unit_vec(n: usize, rng: &mut StdRng) -> Vec<f64> {
     let mut v: Vec<f64> = (0..n).map(|_| rng.random_range(-1.0..1.0)).collect();
     let len = norm(&v);
-    if len < 1e-12 {
+    if len < MIN_INITIAL_VECTOR_NORM {
         v[0] = 1.0;
         return v;
     }
@@ -157,7 +167,7 @@ fn top_k_eigenpairs(m: &Array2<f64>, k: usize) -> Vec<(f64, Vec<f64>)> {
                 }
             }
             let y_norm = norm(&y);
-            if y_norm < 1e-14 {
+            if y_norm < MIN_POWER_VECTOR_NORM {
                 break;
             }
             for x in y.iter_mut() {

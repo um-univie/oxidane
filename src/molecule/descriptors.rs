@@ -1,83 +1,50 @@
+//! Molecular physicochemical descriptors and QSAR property estimation.
+//!
+//! This module provides the [`MolecularDescriptors`] trait, which is blanket-implemented
+//! for all types implementing [`MoleculeCore`]. It computes standard medicinal chemistry
+//! properties used in virtual screening and molecular characterization. Definitions
+//! matter: donors and acceptors both follow RDKit's typed N/O/S rules, so a thiol
+//! is a donor and an amide nitrogen is not an acceptor. The available descriptors
+//! include:
+//!
+//! - **Lipinski's Rule of Five**: Molecular weight ([`MolecularDescriptors::molecular_weight`]),
+//!   Wildman-Crippen LogP ([`MolecularDescriptors::crippen_log_p`]), hydrogen bond donors
+//!   ([`MolecularDescriptors::number_of_hydrogen_bond_donors`]), and acceptors
+//!   ([`MolecularDescriptors::number_of_hydrogen_bond_acceptors`]).
+//! - **Veber Oral Bioavailability Criteria**: Rotatable bond count ([`MolecularDescriptors::rotatable_bond_count`])
+//!   and Topological Polar Surface Area ([`MolecularDescriptors::topological_polar_surface_area`]).
+//! - **Molecular Complexity**: Fraction of sp3 saturated carbons ([`MolecularDescriptors::fraction_saturated_carbons`])
+//!   and cyclomatic ring count ([`MolecularDescriptors::ring_count`]).
+//! - **Partial Charges**: Gasteiger-Marsili iterative charge equilibration ([`MolecularDescriptors::gasteiger_charges`]).
+//!
+//! # Examples
+//!
+//! Evaluating drug-likeness for Ibuprofen (a classic nonsteroidal anti-inflammatory drug):
+//!
+//! ```rust
+//! use oxidane::prelude::*;
+//!
+//! let ibuprofen = MolecularGraph::from_smiles_single("CC(C)Cc1ccc(cc1)C(C)C(=O)O").unwrap();
+//!
+//! // Selected properties and donor/acceptor counts:
+//! assert!((ibuprofen.molecular_weight() - 206.28).abs() < 0.1);
+//! assert!(ibuprofen.crippen_log_p() < 5.0);
+//! assert_eq!(ibuprofen.number_of_hydrogen_bond_donors(), 1);
+//! assert_eq!(ibuprofen.number_of_hydrogen_bond_acceptors(), 1);
+//!
+//! // Veber criteria:
+//! assert!(ibuprofen.rotatable_bond_count() <= 10);
+//! assert!(ibuprofen.topological_polar_surface_area() <= 140.0);
+//!
+//! // Complexity: fraction of carbons that are sp3 hybridized (6 of 13)
+//! assert!((ibuprofen.fraction_saturated_carbons() - 0.46).abs() < 0.02);
+//! ```
+
 use super::traits::MoleculeCore;
 use crate::molecule::bond::BondOrder;
 use chemistry_consts::ElementProperties;
 
-/// What the polar part of a nitrogen or an oxygen contributes to the surface,
-/// in square angstroms.
-///
-/// Ertl's table, which was fitted once against computed surfaces and has been
-/// used as a lookup ever since. The key is everything about the atom that the
-/// fit distinguished: its charge, whether it is aromatic, how many hydrogens it
-/// carries, and what its bonds are.
-mod polar_surface {
-    /// Nitrogen, aliphatic. Keyed by `(hydrogens, singles, doubles, triples,
-    /// charge, in three-membered ring)`.
-    pub(super) const NITROGEN: &[((u8, u8, u8, u8, i8, bool), f64)] = &[
-        ((0, 3, 0, 0, 0, false), 3.24),
-        ((0, 3, 0, 0, 0, true), 3.01),
-        ((0, 1, 1, 0, 0, false), 12.36),
-        ((0, 0, 0, 1, 0, false), 23.79),
-        ((0, 1, 2, 0, 0, false), 11.68),
-        ((0, 0, 1, 1, 0, false), 13.60),
-        ((1, 2, 0, 0, 0, false), 12.03),
-        ((1, 2, 0, 0, 0, true), 21.94),
-        ((1, 0, 1, 0, 0, false), 23.85),
-        ((2, 1, 0, 0, 0, false), 26.02),
-        ((0, 4, 0, 0, 1, false), 0.00),
-        ((0, 2, 1, 0, 1, false), 3.01),
-        ((0, 1, 0, 1, 1, false), 4.36),
-        ((1, 3, 0, 0, 1, false), 4.44),
-        ((1, 1, 1, 0, 1, false), 13.97),
-        ((2, 2, 0, 0, 1, false), 16.61),
-        ((2, 0, 1, 0, 1, false), 25.59),
-        ((3, 1, 0, 0, 1, false), 27.64),
-    ];
-
-    /// Nitrogen, aromatic. Keyed by `(hydrogens, aromatic bonds, single bonds,
-    /// double bonds, charge)`.
-    pub(super) const AROMATIC_NITROGEN: &[((u8, u8, u8, u8, i8), f64)] = &[
-        ((0, 2, 0, 0, 0), 12.89),
-        ((0, 3, 0, 0, 0), 4.41),
-        ((0, 2, 1, 0, 0), 4.93),
-        ((0, 2, 0, 1, 0), 8.39),
-        ((1, 2, 0, 0, 0), 15.79),
-        ((0, 3, 0, 0, 1), 4.10),
-        ((0, 2, 1, 0, 1), 3.88),
-        ((1, 2, 0, 0, 1), 14.14),
-    ];
-
-    /// Oxygen. Keyed by `(hydrogens, singles, doubles, charge, aromatic,
-    /// in three-membered ring)`.
-    pub(super) const OXYGEN: &[((u8, u8, u8, i8, bool, bool), f64)] = &[
-        ((0, 2, 0, 0, false, false), 9.23),
-        ((0, 2, 0, 0, false, true), 12.53),
-        ((0, 0, 1, 0, false, false), 17.07),
-        ((1, 1, 0, 0, false, false), 20.23),
-        ((0, 1, 0, -1, false, false), 23.06),
-        ((0, 0, 0, 0, true, false), 13.14),
-    ];
-
-    /// Sulfur, counted only when asked for. Keyed as nitrogen is, without the
-    /// ring flag.
-    pub(super) const SULFUR: &[((u8, u8, u8, i8, bool), f64)] = &[
-        ((0, 2, 0, 0, false), 25.30),
-        ((0, 0, 1, 0, false), 32.09),
-        ((0, 2, 1, 0, false), 19.21),
-        ((0, 2, 2, 0, false), 8.38),
-        ((1, 1, 0, 0, false), 38.80),
-        ((0, 0, 0, 0, true), 28.24),
-        ((0, 0, 1, 0, true), 21.70),
-    ];
-
-    /// Phosphorus, counted only when asked for.
-    pub(super) const PHOSPHORUS: &[((u8, u8, u8, i8), f64)] = &[
-        ((0, 3, 0, 0), 13.59),
-        ((0, 1, 1, 0), 34.14),
-        ((0, 3, 1, 0), 9.81),
-        ((1, 2, 1, 0), 23.47),
-    ];
-}
-
+use chemistry_consts::polar_surface;
 
 pub trait MolecularDescriptors: MoleculeCore {
     /// Calculates molecular weight in g/mol using standard atomic weights for
@@ -94,12 +61,16 @@ pub trait MolecularDescriptors: MoleculeCore {
     /// assert!((molecule.molecular_weight() - 46.07).abs() < 0.05);
     /// ```
     fn molecular_weight(&self) -> f64 {
-        self.atomic_numbers().iter().enumerate().map(|(index, &element)| {
-            match self.get_isotope(index) {
-                Some(mass_number) => crate::atom::isotope_mass(element, mass_number).unwrap_or(f64::NAN),
+        self.atomic_numbers()
+            .iter()
+            .enumerate()
+            .map(|(index, &element)| match self.get_isotope(index) {
+                Some(mass_number) => {
+                    crate::atom::isotope_mass(element, mass_number).unwrap_or(f64::NAN)
+                }
                 None => element.standard_atomic_weight().unwrap_or(0.0),
-            }
-        }).sum()
+            })
+            .sum()
     }
     /// Isotope-aware monoisotopic mass; see [`MoleculeCore::monoisotopic_mass`]
     /// for the policy for unlabelled atoms and unavailable isotope masses.
@@ -146,63 +117,72 @@ pub trait MolecularDescriptors: MoleculeCore {
         // Inspect heavy neighbours explicitly: this crate stores hydrogens as
         // atoms, which must not make an acid OH look like an alcohol OH.
         let mut cyclic = None;
-        (0..self.len()).filter(|&atom| {
-            let element = self.get_atomic_number(atom);
-            if !matches!(element, 7 | 8 | 16) {
-                return false;
-            }
-            let charge = self.get_atom_charge(atom);
-            let hydrogens = self.number_of_bonded_element(atom, 1);
-            let aromatic = self.is_atom_aromatic(atom);
-            let valence = self.actual_valency(atom);
-            let bonds = &self.atom_bonds()[atom];
-            if aromatic {
-                return charge == 0 && match element {
-                    7 => hydrogens == 0 && bonds.len() == 2,
-                    8 | 16 => true,
-                    _ => false,
-                };
-            }
-            if element == 8 || element == 16 {
-                if charge == -1 {
-                    return true;
-                }
-                if valence != 2 {
+        (0..self.len())
+            .filter(|&atom| {
+                let element = self.get_atomic_number(atom);
+                if !matches!(element, 7 | 8 | 16) {
                     return false;
                 }
-                if hydrogens == 0 {
-                    return true;
+                let charge = self.get_atom_charge(atom);
+                let hydrogens = self.number_of_bonded_element(atom, 1);
+                let aromatic = self.is_atom_aromatic(atom);
+                let valence = self.actual_valency(atom);
+                let bonds = &self.atom_bonds()[atom];
+                if aromatic {
+                    return charge == 0
+                        && match element {
+                            7 => hydrogens == 0 && bonds.len() == 2,
+                            8 | 16 => true,
+                            _ => false,
+                        };
                 }
-                return hydrogens == 1 && bonds.iter().any(|bond| {
-                    let neighbour = bond.target();
-                    self.get_atomic_number(neighbour) != 1 &&
-                        !self.atom_bonds()[neighbour].iter().any(|other| {
-                            other.bond_order() == BondOrder::Double &&
-                                matches!(self.get_atomic_number(other.target()), 7 | 8 | 15 | 16)
-                        })
-                });
-            }
-            if valence != 3 {
-                return false;
-            }
-            // An amide, sulfonamide, amidine, etc. nitrogen has its lone pair
-            // delocalized toward a non-ring double bond to N/O/P/S.
-            !bonds.iter().any(|bond| {
-                if bond.bond_order() != BondOrder::Single {
-                    return false;
-                }
-                let neighbour = bond.target();
-                self.atom_bonds()[neighbour].iter().any(|other| {
-                    let target = other.target();
-                    if other.bond_order() != BondOrder::Double ||
-                        !matches!(self.get_atomic_number(target), 7 | 8 | 15 | 16) {
+                if element == 8 || element == 16 {
+                    if charge == -1 {
+                        return true;
+                    }
+                    if valence != 2 {
                         return false;
                     }
-                    let ring_bonds = cyclic.get_or_insert_with(|| self.find_cyclic_bonds_and_atoms().1);
-                    !ring_bonds.contains(&(neighbour.min(target), neighbour.max(target)))
+                    if hydrogens == 0 {
+                        return true;
+                    }
+                    return hydrogens == 1
+                        && bonds.iter().any(|bond| {
+                            let neighbour = bond.target();
+                            self.get_atomic_number(neighbour) != 1
+                                && !self.atom_bonds()[neighbour].iter().any(|other| {
+                                    other.bond_order() == BondOrder::Double
+                                        && matches!(
+                                            self.get_atomic_number(other.target()),
+                                            7 | 8 | 15 | 16
+                                        )
+                                })
+                        });
+                }
+                if valence != 3 {
+                    return false;
+                }
+                // An amide, sulfonamide, amidine, etc. nitrogen has its lone pair
+                // delocalized toward a non-ring double bond to N/O/P/S.
+                !bonds.iter().any(|bond| {
+                    if bond.bond_order() != BondOrder::Single {
+                        return false;
+                    }
+                    let neighbour = bond.target();
+                    self.atom_bonds()[neighbour].iter().any(|other| {
+                        let target = other.target();
+                        if other.bond_order() != BondOrder::Double
+                            || !matches!(self.get_atomic_number(target), 7 | 8 | 15 | 16)
+                        {
+                            return false;
+                        }
+                        let ring_bonds =
+                            cyclic.get_or_insert_with(|| self.find_cyclic_bonds_and_atoms().1);
+                        !ring_bonds.contains(&(neighbour.min(target), neighbour.max(target)))
+                    })
                 })
             })
-        }).count()
+            .count()
     }
 
     /// How many atoms are not hydrogen.
@@ -304,8 +284,8 @@ pub trait MolecularDescriptors: MoleculeCore {
     /// * an amide, ester or thioester bond, which is a single bond in the
     ///   drawing and a partial double bond in the molecule.
     ///
-    /// This is the strict count, the one a rule-of-five threshold is quoted
-    /// against.
+    /// This is a strict rotatable-bond definition. Rotatable bonds are not one
+    /// of the original Rule-of-Five criteria; state the definition when comparing counts.
     fn rotatable_bond_count(&self) -> usize {
         let atom_count = self.len();
         // Once for the molecule, not once for every bond it has.
@@ -417,10 +397,8 @@ pub trait MolecularDescriptors: MoleculeCore {
                 .iter()
                 .any(|bond| {
                     bond.bond_order() == BondOrder::Single
-                        && !cyclic_bonds.contains(&(
-                            atom.min(bond.target()),
-                            atom.max(bond.target()),
-                        ))
+                        && !cyclic_bonds
+                            .contains(&(atom.min(bond.target()), atom.max(bond.target())))
                         && predicate(bond.target())
                 })
         };
@@ -499,43 +477,25 @@ pub trait MolecularDescriptors: MoleculeCore {
             7 => polar_surface::NITROGEN
                 .iter()
                 .find(|&&(key, _)| {
-                    key == (
-                        hydrogens,
-                        singles,
-                        doubles,
-                        triples,
-                        charge,
-                        small_ring,
-                    )
+                    key == (hydrogens, singles, doubles, triples, charge, small_ring)
                 })
                 .map(|&(_, value)| value)
                 .unwrap_or_else(|| nitrogen_fallback(heavy_connections, hydrogens)),
             8 => polar_surface::OXYGEN
                 .iter()
                 .find(|&&(key, _)| {
-                    key == (
-                        hydrogens,
-                        singles,
-                        doubles,
-                        charge,
-                        aromatic,
-                        small_ring,
-                    )
+                    key == (hydrogens, singles, doubles, charge, aromatic, small_ring)
                 })
                 .map(|&(_, value)| value)
                 .unwrap_or_else(|| oxygen_fallback(heavy_connections, hydrogens)),
             16 => polar_surface::SULFUR
                 .iter()
-                .find(|&&(key, _)| {
-                    key == (hydrogens, singles, doubles, charge, aromatic)
-                })
+                .find(|&&(key, _)| key == (hydrogens, singles, doubles, charge, aromatic))
                 .map(|&(_, value)| value)
                 .unwrap_or(0.0),
             15 => polar_surface::PHOSPHORUS
                 .iter()
-                .find(|&&(key, _)| {
-                    key == (hydrogens, singles, doubles, charge)
-                })
+                .find(|&&(key, _)| key == (hydrogens, singles, doubles, charge))
                 .map(|&(_, value)| value)
                 .unwrap_or(0.0),
             _ => 0.0,
@@ -589,6 +549,15 @@ pub trait MolecularDescriptors: MoleculeCore {
     /// The Wildman-Crippen molar refractivity on its own.
     fn crippen_molar_refractivity(&self) -> f64 {
         self.crippen_descriptors().1
+    }
+
+    /// Gasteiger-Marsili partial charges, one per atom. See
+    /// [`crate::molecule::charges::gasteiger_charges`] -- this is topology
+    /// only, unlike the geometry-dependent
+    /// [`crate::molecule::charges::qeq_charges`], which needs positions and
+    /// so isn't a method here.
+    fn gasteiger_charges(&self) -> Vec<f64> {
+        crate::molecule::charges::gasteiger_charges(self)
     }
 }
 

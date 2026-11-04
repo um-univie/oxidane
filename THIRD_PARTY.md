@@ -19,7 +19,8 @@ The following pieces derive from [RDKit](https://github.com/rdkit/rdkit):
   torsion-angle preferences of `torsionPreferences_v2.in`
   (`Code/GraphMol/ForceFieldHelpers/CrystalFF`), the rule set ETKDGv2 and
   ETKDGv3 use.
-- **`src/molecule/forcefield/uff/params.rs`** — the UFF parameter table of
+- **UFF reference parameters**, now supplied by `chemistry_consts::uff`
+  through `src/molecule/forcefield/uff/params.rs` — the UFF parameter table of
   `Code/ForceField/UFF/Params.cpp`. The term forms and parameter combination
   rules in `src/molecule/forcefield/uff/terms.rs` follow the same directory's
   implementation, which is also the oracle its energies are checked against.
@@ -27,7 +28,8 @@ The following pieces derive from [RDKit](https://github.com/rdkit/rdkit):
   charge model of `Code/GraphMol/ForceFieldHelpers/MMFF/AtomTyper.cpp`, the
   MMFF aromaticity model of `setMMFFAromaticity` in
   `Code/GraphMol/Aromaticity.cpp`, the parameter tables of
-  `Code/ForceField/MMFF/Params.cpp`, and the term forms, parameter-assignment
+  `Code/ForceField/MMFF/Params.cpp` (now supplied by `chemistry_consts::mmff`),
+  and the term forms, parameter-assignment
   rules and empirical fallbacks of `Code/ForceField/MMFF/` and the same
   `AtomTyper.cpp`. The rules are followed decision for decision, in the order
   the decisions are made; `tests/mmff_oracle.py` checks every atom's type and

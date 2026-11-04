@@ -1,3 +1,7 @@
+/// Squared vector length (or product of projected lengths) below which
+/// a torsion axis or plane is degenerate. Coordinates retain their input units.
+const MIN_DIHEDRAL_NORM_SQUARED: f64 = 1e-16;
+
 use rand::Rng;
 use std::fmt;
 use std::fmt::Display;
@@ -126,11 +130,7 @@ impl<'a> IntoIterator for &'a Vector3D {
 }
 
 impl Default for Vector3D {
-    /// Creates a default `Vector3D` being the zero vector
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
+    /// Creates a default `Vector3D` representing the zero vector.
     ///
     /// # Examples
     ///
@@ -199,7 +199,7 @@ pub(crate) fn dihedral_cosine_sine(
 ) -> Option<(f64, f64)> {
     let axis = c - b;
     let axis_sq = axis.dot(&axis);
-    if axis_sq < 1e-16 {
+    if axis_sq < MIN_DIHEDRAL_NORM_SQUARED {
         return None;
     }
     let axis_hat = axis * (1.0 / axis_sq.sqrt());
@@ -214,7 +214,7 @@ pub(crate) fn dihedral_cosine_sine(
     let x = perpendicular_in.dot(&perpendicular_out);
     let y = axis_hat.cross(&perpendicular_in).dot(&perpendicular_out);
     let radius = (x * x + y * y).sqrt();
-    if radius < 1e-16 {
+    if radius < MIN_DIHEDRAL_NORM_SQUARED {
         return None;
     }
     Some((x / radius, y / radius))
@@ -254,7 +254,10 @@ pub(crate) fn dihedral_and_gradient(
     let normal_out = axis.cross(&trailing);
     let (in_sq, out_sq) = (normal_in.dot(&normal_in), normal_out.dot(&normal_out));
     let axis_sq = axis.dot(&axis);
-    if in_sq < 1e-16 || out_sq < 1e-16 || axis_sq < 1e-16 {
+    if in_sq < MIN_DIHEDRAL_NORM_SQUARED
+        || out_sq < MIN_DIHEDRAL_NORM_SQUARED
+        || axis_sq < MIN_DIHEDRAL_NORM_SQUARED
+    {
         return None;
     }
     let axis_length = axis_sq.sqrt();
@@ -339,10 +342,6 @@ impl Vector3D {
     }
     /// Creates a `Vector3D` from an array of 3 elements, representing the x, y, and z components.
     ///
-    /// # Panics
-    ///
-    /// This function does not panic.
-    ///
     /// # Examples
     ///
     /// ```
@@ -360,10 +359,6 @@ impl Vector3D {
         }
     }
     /// Creates a `Vector3D` from x, y, and z components.
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
     ///
     /// # Examples
     ///
@@ -394,12 +389,8 @@ impl Vector3D {
     pub fn z(&self) -> f64 {
         self.z
     }
-    /// Calculates the difference between two `Vector3D` objects, this is equivalent to the vector
+    /// Calculates the difference between two `Vector3D` objects, equivalent to the vector
     /// pointing from `other` to `self`.
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
     ///
     /// # Examples
     ///
@@ -419,11 +410,7 @@ impl Vector3D {
         let dz = self.z - other.z;
         Self::new(dx, dy, dz)
     }
-    /// Calculates the length of a vector.
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
+    /// Calculates the Euclidean length of the vector.
     ///
     /// # Examples
     ///
@@ -508,10 +495,6 @@ impl Vector3D {
 
     /// Calculates the dot product of two vectors.
     ///
-    /// # Panics
-    ///
-    /// This function does not panic.
-    ///
     /// # Examples
     ///
     /// ```
@@ -525,11 +508,7 @@ impl Vector3D {
     pub fn dot(&self, other: &Self) -> f64 {
         self.x * other.x + self.y * other.y + self.z * other.z
     }
-    /// Calculates the distance between to vectors
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
+    /// Calculates the Euclidean distance between two vectors.
     ///
     /// # Examples
     ///
@@ -583,11 +562,7 @@ impl Vector3D {
         let (sin_phi, cos_phi) = phi.sin_cos();
         Vector3D::new(radius * cos_phi, radius * sin_phi, z)
     }
-    /// Calculates the cross product of two vectors and returns a new vector
-    ///
-    /// # Panics
-    ///
-    /// This function does not panic.
+    /// Calculates the cross product of two vectors and returns a new vector.
     ///
     /// # Examples
     ///
@@ -627,12 +602,9 @@ impl Vector3D {
             Some(angle_cosine.acos())
         }
     }
-    /// Calculates a normal vector for a given input vector
+    /// Returns a normalized unit vector in the same direction, or the zero vector if self has zero length.
     ///
-    /// # Panics
-    /// This function does not panic as the case of a zero length vector is handeled.
-    ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use oxidane::vector::Vector3D;
@@ -1250,21 +1222,36 @@ impl Vector4D {
 impl Add for Vector4D {
     type Output = Vector4D;
     fn add(self, other: Vector4D) -> Vector4D {
-        Vector4D::new(self.x + other.x, self.y + other.y, self.z + other.z, self.w + other.w)
+        Vector4D::new(
+            self.x + other.x,
+            self.y + other.y,
+            self.z + other.z,
+            self.w + other.w,
+        )
     }
 }
 
 impl Sub for Vector4D {
     type Output = Vector4D;
     fn sub(self, other: Vector4D) -> Vector4D {
-        Vector4D::new(self.x - other.x, self.y - other.y, self.z - other.z, self.w - other.w)
+        Vector4D::new(
+            self.x - other.x,
+            self.y - other.y,
+            self.z - other.z,
+            self.w - other.w,
+        )
     }
 }
 
 impl Mul<f64> for Vector4D {
     type Output = Vector4D;
     fn mul(self, scalar: f64) -> Vector4D {
-        Vector4D::new(self.x * scalar, self.y * scalar, self.z * scalar, self.w * scalar)
+        Vector4D::new(
+            self.x * scalar,
+            self.y * scalar,
+            self.z * scalar,
+            self.w * scalar,
+        )
     }
 }
 

@@ -92,6 +92,9 @@ const GRADIENT_TOLERANCE: f64 = 1e-6;
 /// convention, and the one RDKit's UFF follows.
 const NONBONDED_MIN_SEPARATION: usize = 3;
 
+/// Dimensionless squared-sine floor when forming a UFF angle coefficient.
+const MIN_EQUILIBRIUM_SINE_SQUARED: f64 = 1e-8;
+
 /// A force field built for one molecule's topology.
 ///
 /// Construction does the work that depends only on connectivity -- typing,
@@ -105,10 +108,13 @@ pub struct ForceField {
     nonbonded: VanDerWaalsPairs,
 }
 
-/// UFF's bond order for the resonance in an amide's C-N bond, from the
-/// paper. The general bond-order correction then shortens the bond from
-/// the 1.41 A of a plain single C-N to the 1.35 A an amide's is.
-const AMIDE_BOND_ORDER: f64 = 1.41;
+use chemistry_consts::uff::{
+    AMIDE_BOND_ORDER, CARBONYL_INVERSION_BARRIER as CARBONYL_BARRIER, CONJUGATED_TORSION_PREFACTOR,
+    HEAVY_CHALCOGEN_TORSION_BARRIER, MIXED_TORSION_BARRIER, OXYGEN_TORSION_BARRIER,
+    PROPENE_TORSION_BARRIER, PYRAMIDAL_INVERSION_ANGLES,
+    PYRAMIDAL_INVERSION_BARRIER as PYRAMIDAL_BARRIER, TORSION_BOND_ORDER_SCALE,
+    TRIGONAL_INVERSION_BARRIER as TRIGONAL_BARRIER,
+};
 
 /// The bond order UFF reads on the bond from `atom` to `bond.target()`: the
 /// written order, except across an amide's C-N, where the paper prescribes
@@ -241,7 +247,7 @@ impl ForceField {
                         terms::angle_force_constant(theta0, r12, r23, types[i], types[j]);
                     let fold = angle_fold(hybridization(molecule, k));
                     let (sin0, cos0) = theta0.sin_cos();
-                    let c2 = 1.0 / (4.0 * (sin0 * sin0).max(1e-8));
+                    let c2 = 1.0 / (4.0 * (sin0 * sin0).max(MIN_EQUILIBRIUM_SINE_SQUARED));
                     angles.push(Angle {
                         i,
                         k,
@@ -497,7 +503,12 @@ impl ForceField {
         for inversion in &self.inversions {
             energy += terms::inversion_energy_and_gradient(positions, inversion, gradient);
         }
-        energy += terms::van_der_waals_energies_and_gradient_in(simd, &self.nonbonded, positions, gradient);
+        energy += terms::van_der_waals_energies_and_gradient_in(
+            simd,
+            &self.nonbonded,
+            positions,
+            gradient,
+        );
         energy
     }
 }
@@ -558,12 +569,6 @@ pub(crate) fn inversion_parameters<M: MoleculeCore + ?Sized>(
     // UFF quotes one barrier for inverting the centre; it is shared out
     // among the three ways of choosing which bond leaves the plane.
     const PERMUTATIONS: f64 = 3.0;
-    /// A carbonyl carbon is far stiffer against pyramidalisation than a
-    /// plain trigonal one -- UFF's own 50 against 6 kcal/mol.
-    const CARBONYL_BARRIER: f64 = 50.0;
-    const TRIGONAL_BARRIER: f64 = 6.0;
-    const PYRAMIDAL_BARRIER: f64 = 22.0;
-
     let atomic_number = molecule.get_atomic_number(atom);
     match atomic_number {
         // Carbon, nitrogen and oxygen.
@@ -591,12 +596,10 @@ pub(crate) fn inversion_parameters<M: MoleculeCore + ?Sized>(
         }
         // Phosphorus, arsenic, antimony and bismuth.
         15 | 33 | 51 | 83 => {
-            let omega0: f64 = match atomic_number {
-                15 => 84.4339,
-                33 => 86.9735,
-                51 => 87.7047,
-                _ => 90.0,
-            };
+            let omega0 = PYRAMIDAL_INVERSION_ANGLES
+                .iter()
+                .find(|&&(z, _)| z == atomic_number)?
+                .1;
             let (c1, c2) = (-4.0 * omega0.to_radians().cos(), 1.0);
             let c0 = -(c1 * omega0.to_radians().cos() + c2 * (2.0 * omega0).to_radians().cos());
             // The coefficient sum is the energy at the flat geometry, so
@@ -629,8 +632,9 @@ fn torsion_parameters(
 
     // Conjugation between two sp2 centres, UFF's equation 17.
     let conjugated = |order: f64| {
-        5.0 * (types[b].sp2_torsion_contribution * types[c].sp2_torsion_contribution).sqrt()
-            * (1.0 + 4.18 * order.ln())
+        CONJUGATED_TORSION_PREFACTOR
+            * (types[b].sp2_torsion_contribution * types[c].sp2_torsion_contribution).sqrt()
+            * (1.0 + TORSION_BOND_ORDER_SCALE * order.ln())
     };
 
     Some(match (shape_b, shape_c) {
@@ -639,7 +643,13 @@ fn torsion_parameters(
             // disulfide -- has a two-fold preference of its own rather than
             // the three-fold one of an ordinary sp3-sp3 bond.
             if order == 1.0 && is_group_six(z_b) && is_group_six(z_c) {
-                let barrier = |z: u8| -> f64 { if z == 8 { 2.0 } else { 6.8 } };
+                let barrier = |z: u8| -> f64 {
+                    if z == 8 {
+                        OXYGEN_TORSION_BARRIER
+                    } else {
+                        HEAVY_CHALCOGEN_TORSION_BARRIER
+                    }
+                };
                 ((barrier(z_b) * barrier(z_c)).sqrt(), 2, -1.0)
             } else {
                 (
@@ -661,9 +671,9 @@ fn torsion_parameters(
             } else if order == 1.0 && outer_sp2 {
                 // Propene-like: the torsion ends on another sp2 centre, so
                 // the bond has a three-fold preference instead.
-                (2.0, 3, -1.0)
+                (PROPENE_TORSION_BARRIER, 3, -1.0)
             } else {
-                (1.0, 6, 1.0)
+                (MIXED_TORSION_BARRIER, 6, 1.0)
             }
         }
         _ => return None,

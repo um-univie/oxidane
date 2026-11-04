@@ -164,11 +164,11 @@ impl MoleculeAutoencoder {
         vb: VarBuilder,
     ) -> Result<Self> {
         let encoder = Encoder::new(config.kind, config.encoder, vb.pp("encoder"))?;
-        let width = encoder.width();
+        let pooled = encoder.width() * config.pooling.width_factor();
         Ok(Self {
-            mean: linear(width, config.latent, vb.pp("mean"))?,
+            mean: linear(pooled, config.latent, vb.pp("mean"))?,
             log_variance: if config.variational {
-                Some(linear(width, config.latent, vb.pp("log_variance"))?)
+                Some(linear(pooled, config.latent, vb.pp("log_variance"))?)
             } else {
                 None
             },

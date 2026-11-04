@@ -82,6 +82,17 @@ pub const ATOM_ELEMENT_CLASSES: usize = FEATURED_ELEMENTS.len() + 1;
 /// anything from the neighbourhood.
 pub const ATOM_ELEMENT_COLUMNS: std::ops::Range<usize> = 0..ATOM_ELEMENT_CLASSES;
 
+/// The columns that between them fix an atom's valence: its heavy
+/// neighbours, formal charge, attached hydrogens and hybridization, which
+/// follow the element block in that order.
+///
+/// Named for the same reason as [`ATOM_ELEMENT_COLUMNS`]. With these left on a
+/// masked row the element is arithmetic rather than inference -- four bonds
+/// and no charge is a carbon, two and two lone pairs an oxygen -- so a
+/// pretraining objective that hides the element has to hide these too.
+pub const ATOM_VALENCE_COLUMNS: std::ops::Range<usize> =
+    ATOM_ELEMENT_CLASSES..ATOM_ELEMENT_CLASSES + 6 + 6 + 5 + 6;
+
 /// Which atom columns hold a quantity rather than an indicator.
 ///
 /// Everything else is one hot, and means what it means at the scale it is
@@ -333,6 +344,66 @@ pub fn graph_features_heavy_with_geometry<M: MoleculeCore + ?Sized>(
     positions: &[Vector3D],
 ) -> GraphFeatures {
     build_graph_features(molecule, Some(positions), false)
+}
+
+/// Adds an edge, each way round, between every two atom rows that sit within
+/// `cutoff` angstroms of each other in `positions` and are more than two bonds
+/// apart.
+///
+/// A bond's length and the angles at an atom are what
+/// [`graph_features_with_geometry`] adds, and both follow from the graph
+/// within a few hundredths of an angstrom. What a conformer knows that a
+/// graph does not is which distant parts of the molecule it folds onto each
+/// other -- an intramolecular hydrogen bond, a ring stacked on a ring, a polar
+/// group tucked away from the surface -- and that is an edge between two atoms
+/// no bond joins. Pairs one and two bonds apart are left out: their distances
+/// are the bond lengths and angles again.
+///
+/// The new rows use the bond schema as it is. A real bond always sets one of
+/// the four order columns, so a row with all four clear is a spatial contact
+/// and nothing else, and its 3D distance column holds the distance; every
+/// other column is zero. A model reads both kinds of edge with the same
+/// weights and tells them apart by that block. `positions` is indexed like
+/// `molecule`'s atoms, as for [`graph_features_with_geometry`].
+///
+/// [`GraphFeatures::bonds`] and a bond head see these edges too, so give
+/// spatial edges to a molecule-level model; a bond-level target belongs on
+/// the bonds alone.
+pub fn add_spatial_edges<M: MoleculeCore + ?Sized>(
+    features: &mut GraphFeatures,
+    molecule: &M,
+    positions: &[Vector3D],
+    cutoff: f64,
+) {
+    let neighbours = |atom: usize| -> Vec<usize> {
+        molecule.get_atom_bonds(atom).unwrap_or_default().iter().map(|bond| bond.target()).collect()
+    };
+    let rows = features.atoms.len();
+    for first in 0..rows {
+        let a = features.atoms[first];
+        let near: Vec<usize> = neighbours(a);
+        let mut close: Vec<usize> = near.iter().flat_map(|&b| neighbours(b)).collect();
+        close.extend(&near);
+        close.push(a);
+        for second in first + 1..rows {
+            let b = features.atoms[second];
+            if close.contains(&b) {
+                continue;
+            }
+            let distance = positions[a].distance(&positions[b]);
+            if distance > cutoff {
+                continue;
+            }
+            for (from, to) in [(first, second), (second, first)] {
+                features.edge_index.push(from as u32);
+                features.edge_index.push(to as u32);
+                let start = features.bond_features.len();
+                features.bond_features.resize(start + BOND_FEATURE_WIDTH, 0.0);
+                features.bond_features[start + BOND_FEATURE_WIDTH - 1] = distance as f32;
+            }
+            features.edge_count += 2;
+        }
+    }
 }
 
 fn build_graph_features<M: MoleculeCore + ?Sized>(

@@ -13,10 +13,12 @@
 //!   --batch N        molecules per step                (default 50)
 //!   --patience N     epochs without improvement        (default 15)
 //!   --seeds N        independent scaffold splits       (default 3)
-//!   --pool sum|mean  readout                            (default mean)
+//!   --pool sum|mean|both  readout: add, average, or both side by side  (default both)
 //!   --gine           use GINE instead of D-MPNN
 //!   --classify       binary targets, report ROC-AUC
 //!   --random-split   split at random rather than by scaffold
+//!   --given-split    take the split from a third column (train, valid or test) rather than
+//!                    computing one; --seeds then trains that many differently seeded models on it
 //!   --globals        add whole-molecule descriptors to the readout (graph level only)
 //!   --ensemble N     average N independently initialised models   (default 1)
 //!   --train-fraction F  keep only F of the training set, for a learning curve
@@ -29,6 +31,8 @@
 //!   --geometry       embed a 3D conformer per molecule and add bond length / local bond angle features
 //!   --shards N       spread each training step over N threads (default 1; worth raising for a single run,
 //!                    not when --jobs already fills the machine)
+//!   --spatial A      with --geometry, also join atom rows more than two bonds apart that sit within
+//!                    A angstroms in the conformer (a through-space edge with its distance)
 //!   --heavy          give rows to heavy atoms only, hydrogens counted on their neighbour (about twice as fast;
 //!                    atom/bond labels on hydrogens are dropped)
 //! ```
@@ -80,10 +84,11 @@ use oxidane::ml::nn::{
 use oxidane::ml::normalize::{
     BondFeatureStats, ClassMeans, FeatureStats, GlobalStats, TargetStats,
 };
-use oxidane::ml::split::{Fractions, Split, random_split, scaffold_split_balanced};
+use oxidane::ml::split::{Fractions, Side, Split, random_split, scaffold_split_balanced};
 use oxidane::molecule::embed::Embed3D;
 use oxidane::molecule::featurize::{
-    GraphFeatures, graph_features, graph_features_heavy, graph_features_heavy_with_geometry,
+    GraphFeatures, add_spatial_edges, graph_features, graph_features_heavy,
+    graph_features_heavy_with_geometry,
     graph_features_with_geometry, molecule_features,
 };
 use oxidane::molecule::scaffold::scaffold_key;
@@ -124,6 +129,7 @@ struct Options {
     kind: EncoderKind,
     classify: bool,
     random_split: bool,
+    given_split: bool,
     globals: bool,
     ensemble: usize,
     schedule: bool,
@@ -136,6 +142,7 @@ struct Options {
     geometry: bool,
     heavy: bool,
     shards: usize,
+    spatial: Option<f64>,
 }
 
 impl Default for Options {
@@ -150,10 +157,11 @@ impl Default for Options {
             batch_size: 50,
             patience: 15,
             seeds: 3,
-            pooling: Pooling::Mean,
+            pooling: Pooling::SumMean,
             kind: EncoderKind::Directed,
             classify: false,
             random_split: false,
+            given_split: false,
             globals: false,
             ensemble: 1,
             schedule: false,
@@ -166,6 +174,7 @@ impl Default for Options {
             geometry: false,
             heavy: false,
             shards: 1,
+            spatial: None,
         }
     }
 }
@@ -191,10 +200,10 @@ fn parse_options() -> Options {
             "--patience" => options.patience = value().parse().unwrap_or(options.patience),
             "--seeds" => options.seeds = value().parse().unwrap_or(options.seeds),
             "--pool" => {
-                options.pooling = if value() == "sum" {
-                    Pooling::Sum
-                } else {
-                    Pooling::Mean
+                options.pooling = match value().as_str() {
+                    "sum" => Pooling::Sum,
+                    "mean" => Pooling::Mean,
+                    _ => Pooling::SumMean,
                 }
             }
             "--gine" => {
@@ -203,6 +212,10 @@ fn parse_options() -> Options {
             }
             "--classify" => {
                 options.classify = true;
+                consumed = 1;
+            }
+            "--given-split" => {
+                options.given_split = true;
                 consumed = 1;
             }
             "--random-split" => {
@@ -242,6 +255,9 @@ fn parse_options() -> Options {
             "--heavy" => {
                 options.heavy = true;
                 consumed = 1;
+            }
+            "--spatial" => {
+                options.spatial = value().parse().ok();
             }
             "--shards" => {
                 options.shards = value().parse().unwrap_or(options.shards);
@@ -288,6 +304,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (Some(smiles), Some(rest)) = (fields.next(), fields.next()) else {
             continue;
         };
+        let side = if options.given_split {
+            match fields.next().map(str::trim) {
+                Some("train") => Some(Side::Train),
+                Some("valid") => Some(Side::Valid),
+                Some("test") => Some(Side::Test),
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
 
         match options.level {
             Level::Graph => {
@@ -309,6 +338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 parsed.push(Parsed {
                     molecule,
                     extra: Extra::Value(value),
+                    side,
                 });
             }
             Level::Atom | Level::Bond => {
@@ -330,6 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     parsed.push(Parsed {
                         molecule,
                         extra: Extra::AtomLabels(labels),
+                        side,
                     });
                 } else {
                     let Some(labels) = parse_bond_labels(rest) else {
@@ -339,6 +370,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     parsed.push(Parsed {
                         molecule,
                         extra: Extra::BondLabels(labels),
+                        side,
                     });
                 }
             }
@@ -348,12 +380,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let featurized: Vec<(GraphFeatures, bool)> = if options.geometry {
         parsed
             .par_iter()
-            .map(|entry| featurize(&entry.molecule, true, options.heavy))
+            .map(|entry| featurize(&entry.molecule, true, options.heavy, options.spatial))
             .collect()
     } else {
         parsed
             .iter()
-            .map(|entry| featurize(&entry.molecule, false, options.heavy))
+            .map(|entry| featurize(&entry.molecule, false, options.heavy, None))
             .collect()
     };
 
@@ -363,6 +395,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Level::Bond => Dataset::new(0).with_bond_tasks(1),
     };
     let mut keys: Vec<String> = Vec::new();
+    let mut sides: Vec<Option<Side>> = Vec::new();
     let mut geometry_failures = 0usize;
 
     for (entry, (features, embed_failed)) in parsed.into_iter().zip(featurized) {
@@ -370,6 +403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             geometry_failures += 1;
         }
         keys.push(scaffold_key(&entry.molecule));
+        sides.push(entry.side);
         match entry.extra {
             Extra::Value(value) => {
                 if options.globals {
@@ -415,7 +449,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // gather and scatter operations that no matmul library threads for us.
     let splits: Vec<Split> = (0..options.seeds)
         .map(|seed| {
-            if options.random_split {
+            if options.given_split {
+                // The same split every time: what differs is the seed the
+                // weights are drawn from, as in the protocol that published
+                // the split.
+                let mut split = Split::default();
+                for (index, side) in sides.iter().enumerate() {
+                    match side {
+                        Some(Side::Train) => split.train.push(index),
+                        Some(Side::Valid) => split.valid.push(index),
+                        _ => split.test.push(index),
+                    }
+                }
+                split
+            } else if options.random_split {
                 random_split(dataset.len(), Fractions::default(), seed)
             } else {
                 scaffold_split_balanced(&keys, Fractions::default(), seed)
@@ -505,7 +552,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (mean, deviation) = summarize(&scores);
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
-    let split_kind = if options.random_split {
+    let split_kind = if options.given_split {
+        "seeds of the given"
+    } else if options.random_split {
         "random"
     } else {
         "scaffold"
@@ -535,6 +584,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 struct Parsed {
     molecule: MolecularGraph,
     extra: Extra,
+    /// The side `--given-split` read for it.
+    side: Option<Side>,
 }
 
 /// What a [`Parsed`] line still needs to become a [`Dataset`] row -- the part
@@ -550,7 +601,12 @@ enum Extra {
 /// says the embedding failed and the plain 2D features were used instead; the
 /// caller counts it rather than sharing a mutable counter, since this runs
 /// across a `rayon` map over every molecule at once when `geometry` is set.
-fn featurize(molecule: &MolecularGraph, geometry: bool, heavy: bool) -> (GraphFeatures, bool) {
+fn featurize(
+    molecule: &MolecularGraph,
+    geometry: bool,
+    heavy: bool,
+    spatial: Option<f64>,
+) -> (GraphFeatures, bool) {
     let plain = || {
         if heavy {
             graph_features_heavy(molecule)
@@ -562,14 +618,17 @@ fn featurize(molecule: &MolecularGraph, geometry: bool, heavy: bool) -> (GraphFe
         return (plain(), false);
     }
     match molecule.embed_3d() {
-        Ok(embedded) if heavy => (
-            graph_features_heavy_with_geometry(molecule, &embedded.positions),
-            false,
-        ),
-        Ok(embedded) => (
-            graph_features_with_geometry(molecule, &embedded.positions),
-            false,
-        ),
+        Ok(embedded) => {
+            let mut features = if heavy {
+                graph_features_heavy_with_geometry(molecule, &embedded.positions)
+            } else {
+                graph_features_with_geometry(molecule, &embedded.positions)
+            };
+            if let Some(cutoff) = spatial {
+                add_spatial_edges(&mut features, molecule, &embedded.positions, cutoff);
+            }
+            (features, false)
+        }
         Err(_) => (plain(), true),
     }
 }

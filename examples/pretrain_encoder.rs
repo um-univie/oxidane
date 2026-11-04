@@ -9,17 +9,33 @@
 //! Reads one SMILES per line and ignores anything after the first whitespace or
 //! tab, so a labelled file can be fed in as-is. Labels are ignored:
 //! pretraining uses no measurements.
+//!
+//! * `--heavy` pretrains on graphs of the heavy atoms alone, which is what
+//!   keeps a hidden atom's hydrogen count -- and so its valence and its
+//!   element -- from reaching it through hydrogen rows. Fine-tune with
+//!   `train_mpnn --heavy` on the same.
+//! * `--exclude a.tsv,b.tsv` drops every structure whose canonical SMILES is the
+//!   first column of a line of those files: the benchmark sets a pretrained
+//!   encoder will be scored on, so its test molecules are not in what it
+//!   pretrained on.
+//! * `--shards N` spreads each step over N threads, as
+//!   `TrainConfig::shards` does for supervised training.
 
 use std::io::BufRead;
 
+use candle_core::backprop::GradStore;
 use candle_core::{DType, Device};
 use candle_nn::{Optimizer, VarBuilder, VarMap};
 
+use oxidane::graph_algorithms::mol_canonization::canonize_mol;
+use oxidane::io::ToSMILES;
+
 use oxidane::ml::batch::GraphBatch;
 use oxidane::ml::nn::pretrain::{MaskedAtomModel, PretrainConfig};
+use oxidane::ml::nn::train::{clip_global_norm, global_norm};
 use oxidane::ml::nn::{EncoderConfig, EncoderKind, save_prefixed, seed_variables};
 use oxidane::ml::normalize::FeatureStats;
-use oxidane::molecule::featurize::{GraphFeatures, graph_features};
+use oxidane::molecule::featurize::{GraphFeatures, graph_features, graph_features_heavy};
 use oxidane::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,6 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut hidden, mut depth, mut epochs, mut batch_size) = (300usize, 3usize, 5usize, 50usize);
     let (mut learning_rate, mut mask, mut seed, mut limit) = (1e-3f64, 0.15f64, 1u64, usize::MAX);
     let mut gine = false;
+    let (mut heavy, mut shards) = (false, 1usize);
+    let mut exclude: Vec<String> = Vec::new();
 
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -47,6 +65,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 gine = true;
                 consumed = 1;
             }
+            "--heavy" => {
+                heavy = true;
+                consumed = 1;
+            }
+            "--shards" => shards = value().parse().unwrap_or(shards).max(1),
+            "--exclude" => exclude = value().split(',').map(str::to_string).collect(),
             other => {
                 eprintln!("ignoring unknown argument {other}");
                 consumed = 1;
@@ -57,9 +81,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let device = Device::Cpu;
 
+    // ---- the structures to keep out ----------------------------------------
+    let canonical = |molecule: &MolecularGraph| canonize_mol(molecule).to_smiles();
+    let mut excluded = std::collections::HashSet::new();
+    for path in &exclude {
+        for line in std::io::BufReader::new(std::fs::File::open(path)?).lines() {
+            let line = line?;
+            let smiles = line.split_whitespace().next().unwrap_or("");
+            if let Ok(fragments) = MolecularGraph::from_smiles(smiles)
+                && !fragments.is_empty()
+            {
+                excluded.insert(canonical(&MolecularGraph::combine(
+                    &fragments.iter().collect::<Vec<_>>(),
+                )));
+            }
+        }
+    }
+
     // ---- read, keeping only the structures ---------------------------------
     let mut molecules: Vec<GraphFeatures> = Vec::new();
-    let mut unreadable = 0usize;
+    let (mut unreadable, mut held_out) = (0usize, 0usize);
     for line in std::io::stdin().lock().lines() {
         if molecules.len() >= limit {
             break;
@@ -77,13 +118,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
         let molecule = MolecularGraph::combine(&fragments.iter().collect::<Vec<_>>());
-        let features = graph_features(&molecule);
+        if !excluded.is_empty() && excluded.contains(&canonical(&molecule)) {
+            held_out += 1;
+            continue;
+        }
+        let features = if heavy {
+            graph_features_heavy(&molecule)
+        } else {
+            graph_features(&molecule)
+        };
         // A molecule with one heavy atom has nothing to infer an element from.
         if features.atom_count >= 3 {
             molecules.push(features);
         }
     }
-    eprintln!("{} molecules, {unreadable} unreadable", molecules.len());
+    eprintln!(
+        "{} molecules, {unreadable} unreadable, {held_out} held out as benchmark structures",
+        molecules.len()
+    );
     if molecules.is_empty() {
         return Ok(());
     }
@@ -113,8 +165,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let model = MaskedAtomModel::new(config, vb)?;
     seed_variables(&varmap, seed)?;
 
+    let variables = varmap.all_vars();
     let mut optimizer = candle_nn::AdamW::new(
-        varmap.all_vars(),
+        variables.clone(),
         candle_nn::ParamsAdamW {
             lr: learning_rate,
             ..Default::default()
@@ -129,24 +182,67 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (mut right, mut asked) = (0usize, 0usize);
 
         for chunk in order.chunks(batch_size) {
-            let batch = GraphBatch::collate_iter(chunk.iter().map(|&index| &molecules[index]));
-            let mut features = batch.atom_features.clone();
-            stats.apply(&mut features);
-
             let step_seed = (epoch as u64) << 32 | steps as u64;
-            let loss = model.loss(&batch, &features, &device, step_seed, true)?;
-            let value = loss.to_scalar::<f32>()?;
-            if value > 0.0 {
-                optimizer.backward_step(&loss)?;
-            }
-            total += value;
-            steps += 1;
+            // Each shard masks its own atoms and its loss counts equally:
+            // shards of one batch are near enough the same size that
+            // weighting them by their masked atoms would change little.
+            let size = chunk.len().div_ceil(shards.min(chunk.len()));
+            let parts: Vec<&[usize]> = chunk.chunks(size).collect();
+            let share = 1.0 / parts.len() as f64;
+            let run = |(part, indices): (usize, &&[usize])| -> candle_core::Result<(GradStore, f32, usize, usize)> {
+                let batch = GraphBatch::collate_iter(indices.iter().map(|&index| &molecules[index]));
+                let mut features = batch.atom_features.clone();
+                stats.apply(&mut features);
+                let seed = step_seed.wrapping_mul(31).wrapping_add(part as u64);
+                let loss = model.loss(&batch, &features, &device, seed, true)?.affine(share, 0.0)?;
+                let value = loss.to_scalar::<f32>()?;
+                let gradients = loss.backward()?;
+                // Measured on the same masking the step just trained on, so
+                // this is a training accuracy and not a held-out one.
+                let (correct, count) = model.accuracy(&batch, &features, &device, seed)?;
+                Ok((gradients, value, correct, count))
+            };
+            let run = &run;
+            let results: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = parts
+                    .iter()
+                    .enumerate()
+                    .map(|part| scope.spawn(move || run(part)))
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("a shard panicked"))
+                    .collect()
+            });
 
-            // Measured on the same masking the step just trained on, so this is
-            // a training accuracy and not a held-out one.
-            let (correct, count) = model.accuracy(&batch, &features, &device, step_seed)?;
-            right += correct;
-            asked += count;
+            let mut summed: Option<GradStore> = None;
+            for result in results {
+                let (gradients, value, correct, count) = result?;
+                total += value;
+                right += correct;
+                asked += count;
+                match &mut summed {
+                    None => summed = Some(gradients),
+                    Some(sum) => {
+                        for variable in &variables {
+                            if let Some(gradient) = gradients.get(variable) {
+                                let added = match sum.get(variable) {
+                                    Some(previous) => previous.add(gradient)?,
+                                    None => gradient.clone(),
+                                };
+                                sum.insert(variable, added);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(mut gradients) = summed
+                && global_norm(&gradients, &variables)?.is_finite()
+            {
+                clip_global_norm(&mut gradients, &variables, 5.0)?;
+                optimizer.step(&gradients)?;
+            }
+            steps += 1;
         }
 
         eprintln!(

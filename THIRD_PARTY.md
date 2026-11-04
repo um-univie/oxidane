@@ -91,7 +91,6 @@ just this crate:
 
 ## Canonaut — Apache-2.0
 
-`vendor/canonaut-1.1.0/` contains the exact upstream library source at commit
-`63f8b32`, with its `LICENSE.txt` and `NOTICE`. See `UPSTREAM.md` and
-`UPSTREAM.sha256` there for provenance, checksums and the library-only manifest.
-This corrected version is required; the published 1.0.0 is not a substitute.
+Graph canonicalization uses the [canonaut](https://crates.io/crates/canonaut)
+crate, version 1.1.0 or later, from crates.io. Its licence and `NOTICE` ship
+with the crate.

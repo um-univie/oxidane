@@ -42,7 +42,7 @@ tinyvec = "1.10.0"
 bitvec = "1.0.1"
 bit-set = "0.8.0"
 rustc-hash = "2.1.1"
-canonaut = { version = "=1.1.0", path = "vendor/canonaut-1.1.0" }
+canonaut = "1.1.0"
 rustfft = "6.4.1"
 
 [dev-dependencies]

@@ -178,6 +178,8 @@ dependencies = [
 [[package]]
 name = "canonaut"
 version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2925f0cc7fe7a2b0a1c42aa4720e294abf6d303f265a0dee72c37ba4734a9db"
 dependencies = [
  "cc",
  "rand 0.9.2",

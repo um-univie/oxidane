@@ -56,10 +56,6 @@ jobs:
           archive_path="$RUNNER_TEMP/$release_name.tar.gz"
           git archive --format=tar --prefix="$release_name/" HEAD | gzip -n > "$archive_path"
           tar -xzf "$archive_path" -C "$RUNNER_TEMP"
-          (
-            cd "$RUNNER_TEMP/$release_name/vendor/canonaut-1.1.0"
-            sha256sum --check UPSTREAM.sha256
-          )
           cargo +stable check --locked --all-features --all-targets --manifest-path "$RUNNER_TEMP/$release_name/Cargo.toml"
           (
             cd "$RUNNER_TEMP"

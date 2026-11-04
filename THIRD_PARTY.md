@@ -15,11 +15,18 @@ The following pieces derive from [RDKit](https://github.com/rdkit/rdkit):
 - **`src/molecule/cip/`** — a port of RDKit's `CIPLabeler`
   (`Code/GraphMol/CIPLabeler`), itself a port of John Mayfield's `centres`
   library for the Hanson *et al.* re-specification of the CIP rules.
+- **Three-coordinate SMILES stereo handling** in `src/molecule/chirality.rs`,
+  used by the parser and writer, follows RDKit's
+  [`chiralAtomNeedsTagInversion`](https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/Canon.cpp)
+  convention for a saturated centre with one written ring closure and no
+  folded hydrogen. The referenced source carries Copyright (C) 2001–2021
+  Greg Landrum and other RDKit contributors, under the BSD 3-Clause licence.
 - **`src/molecule/embed/torsion_preferences.rs`** — the experimental
   torsion-angle preferences of `torsionPreferences_v2.in`
   (`Code/GraphMol/ForceFieldHelpers/CrystalFF`), the rule set ETKDGv2 and
   ETKDGv3 use.
-- **`src/molecule/forcefield/uff/params.rs`** — the UFF parameter table of
+- **UFF reference parameters**, now supplied by `chemistry_consts::uff`
+  through `src/molecule/forcefield/uff/params.rs` — the UFF parameter table of
   `Code/ForceField/UFF/Params.cpp`. The term forms and parameter combination
   rules in `src/molecule/forcefield/uff/terms.rs` follow the same directory's
   implementation, which is also the oracle its energies are checked against.
@@ -27,7 +34,8 @@ The following pieces derive from [RDKit](https://github.com/rdkit/rdkit):
   charge model of `Code/GraphMol/ForceFieldHelpers/MMFF/AtomTyper.cpp`, the
   MMFF aromaticity model of `setMMFFAromaticity` in
   `Code/GraphMol/Aromaticity.cpp`, the parameter tables of
-  `Code/ForceField/MMFF/Params.cpp`, and the term forms, parameter-assignment
+  `Code/ForceField/MMFF/Params.cpp` (now supplied by `chemistry_consts::mmff`),
+  and the term forms, parameter-assignment
   rules and empirical fallbacks of `Code/ForceField/MMFF/` and the same
   `AtomTyper.cpp`. The rules are followed decision for decision, in the order
   the decisions are made; `tests/mmff_oracle.py` checks every atom's type and
@@ -88,6 +96,12 @@ just this crate:
   Rings and Macrocycles Based on Distance Geometry and Experimental
   Torsional-Angle Preferences. *J. Chem. Inf. Model.* **2020**, 60, 4,
   2044-2058.
+
+## cheq — MIT
+
+`chemistry_consts` supplies the QEq parameters; `src/molecule/charges.rs`'s Slater-orbital Coulomb
+kernel follows [`cheq`](https://github.com/caltechmsc/cheq) (MIT), itself
+implementing Rappe & Goddard, *J. Phys. Chem.* **1991**, 95, 3358.
 
 ## Canonaut — Apache-2.0
 

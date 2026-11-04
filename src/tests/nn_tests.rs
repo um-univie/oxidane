@@ -2701,18 +2701,80 @@ fn a_bond_head_reads_the_bond_row_itself() {
         let batch = batch_of(&["c1ccccc1-c1ccccc1", "CC(=O)N"]);
         let graph = GraphTensors::new(&batch, &device).unwrap();
         let (atoms, edges) = model.encode_with_edges(&graph, false).unwrap();
-        let plain = to_vec(&model.predict_with_edges(&atoms, edges.as_ref(), &graph, false).unwrap().bond.unwrap());
+        let plain = to_vec(
+            &model
+                .predict_with_edges(&atoms, edges.as_ref(), &graph, false)
+                .unwrap()
+                .bond
+                .unwrap(),
+        );
         let (reverse, _) = batch.reverse_edges();
         for edge in 0..batch.edge_count {
             let other = reverse[edge] as usize;
-            assert!((plain[edge] - plain[other]).abs() < 1e-5, "{kind:?}: edge {edge}");
+            assert!(
+                (plain[edge] - plain[other]).abs() < 1e-5,
+                "{kind:?}: edge {edge}"
+            );
         }
 
         // The same encoding, read by the heads against flipped bond rows:
         // only a head that reads the bond itself can answer differently.
         let mut flipped = graph.clone();
         flipped.bond_features = graph.bond_features.affine(-1.0, 1.0).unwrap();
-        let moved = to_vec(&model.predict_with_edges(&atoms, edges.as_ref(), &flipped, false).unwrap().bond.unwrap());
-        assert!((moved[0] - plain[0]).abs() > 1e-4, "{kind:?}: the bond row did not reach the head");
+        let moved = to_vec(
+            &model
+                .predict_with_edges(&atoms, edges.as_ref(), &flipped, false)
+                .unwrap()
+                .bond
+                .unwrap(),
+        );
+        assert!(
+            (moved[0] - plain[0]).abs() > 1e-4,
+            "{kind:?}: the bond row did not reach the head"
+        );
     }
+}
+
+#[test]
+fn sum_and_mean_pooling_side_by_side_is_both_of_them() {
+    let device = Device::Cpu;
+    let batch = batch_of(&["CCO", "c1ccccc1", "[Na+]"]);
+    let graph = GraphTensors::new(&batch, &device).unwrap();
+    let atoms = Tensor::randn(0f32, 1.0, (batch.atom_count, 4), &device).unwrap();
+    let both = graph.pool(&atoms, Pooling::SumMean).unwrap();
+    assert_eq!(both.dims(), &[3, 8]);
+    let sum = to_vec(&graph.pool_sum(&atoms).unwrap());
+    let mean = to_vec(&graph.pool_mean(&atoms).unwrap());
+    let both = to_vec(&both);
+    for graph_row in 0..3 {
+        assert_eq!(
+            &both[graph_row * 8..graph_row * 8 + 4],
+            &sum[graph_row * 4..graph_row * 4 + 4]
+        );
+        for column in 0..4 {
+            let (got, want) = (
+                both[graph_row * 8 + 4 + column],
+                mean[graph_row * 4 + column],
+            );
+            assert!((got - want).abs() < 1e-6, "{got} against {want}");
+        }
+    }
+
+    // And a model reading it has a graph head twice as wide to read it with.
+    let varmap = VarMap::new();
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let model = MolecularNet::new(
+        ModelConfig {
+            encoder: small_encoder(),
+            pooling: Pooling::SumMean,
+            graph_head: vec![16, 1],
+            ..Default::default()
+        },
+        vb,
+    )
+    .unwrap();
+    assert_eq!(
+        model.forward(&graph, false).unwrap().graph.unwrap().dims(),
+        &[3, 1]
+    );
 }

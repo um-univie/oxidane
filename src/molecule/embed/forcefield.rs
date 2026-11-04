@@ -11,17 +11,20 @@
 //! preference (staggered-vs-eclipsed, planar-vs-twisted) that a pairwise
 //! distance bound has no way to represent at all.
 
+/// Bond length in Å below which angle terms have no defined direction.
+const MIN_ANGLE_BOND_LENGTH: f64 = 1e-8;
+
 use super::bounds::{Geometry, angle_bounds_for_triple};
-use bit_set::BitSet;
 use super::torsion_preferences::TORSION_PREFERENCES;
+use crate::io::{AtomExpression, LogicalOperator};
 use crate::io::{CxSMARTSPattern, find_smarts_matches, parse_cxsmarts};
 use crate::molecule::molecular_graph::MolecularGraph;
 use crate::molecule::utils::order_tuple;
-use rustc_hash::{FxHashMap, FxHashSet};
-use crate::io::{AtomExpression, LogicalOperator};
 use crate::molecule::{base::MoleculeCore, bond::BondOrder, chirality::ChiralClass};
-use chemistry_consts::ElementProperties;
 use crate::vector::Vector3D;
+use bit_set::BitSet;
+use chemistry_consts::ElementProperties;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Harmonic-in-cosine force constant, soft relative to the bounds/chirality
 /// margins for the same reason `planarity::PLANARITY_K` is - see that
@@ -147,7 +150,10 @@ fn hybridization<T: MoleculeCore>(mol: &T, atom: usize) -> Hyb {
     let Some(bonds) = mol.get_atom_bonds(atom) else {
         return Hyb::Sp3;
     };
-    let double_count = bonds.iter().filter(|b| b.bond_order() == BondOrder::Double).count();
+    let double_count = bonds
+        .iter()
+        .filter(|b| b.bond_order() == BondOrder::Double)
+        .count();
     let has_triple = bonds.iter().any(|b| b.bond_order() == BondOrder::Triple);
     let has_aromatic_or_double = bonds
         .iter()
@@ -183,7 +189,12 @@ pub(super) fn collect_angle_bends<T: MoleculeCore>(
                 let j = neighbors[b];
                 let (theta_min, theta_max) = angle_bounds_for_triple(mol, i, k, j, cycles, lengths);
                 let theta0 = 0.5 * (theta_min + theta_max);
-                angles.push(AngleBend { i, k, j, cos_theta0: theta0.cos() });
+                angles.push(AngleBend {
+                    i,
+                    k,
+                    j,
+                    cos_theta0: theta0.cos(),
+                });
             }
         }
     }
@@ -213,7 +224,10 @@ fn is_explicit_cis_trans_bond<T: MoleculeCore>(mol: &T, b: usize, c: usize) -> b
         return false;
     };
     let is_tag = |class: ChiralClass| {
-        matches!(class, ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise)
+        matches!(
+            class,
+            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+        )
     };
     is_tag(classes[b]) && is_tag(classes[c])
 }
@@ -246,8 +260,16 @@ fn collect_stereo_planarity_torsions<T: MoleculeCore>(
                 continue;
             }
             let same_side = reference.target_sign
-                * if i == reference.reference_b { 1.0 } else { -1.0 }
-                * if j == reference.reference_c { 1.0 } else { -1.0 };
+                * if i == reference.reference_b {
+                    1.0
+                } else {
+                    -1.0
+                }
+                * if j == reference.reference_c {
+                    1.0
+                } else {
+                    -1.0
+                };
             // `1 - cos(phi - phase)` is minimal at `phi == phase`: zero for
             // the cis quadruples, 180 degrees for the trans ones.
             // `V * (1 + s*cos(phi))` is least where `cos(phi) = -s`, so the
@@ -345,9 +367,7 @@ fn atomic_number_of(symbol: &str) -> Option<u8> {
     BY_SYMBOL
         .get_or_init(|| {
             (1u8..=118)
-                .filter_map(|number| {
-                    Some((number.atomic_symbol()?.to_ascii_lowercase(), number))
-                })
+                .filter_map(|number| Some((number.atomic_symbol()?.to_ascii_lowercase(), number)))
                 .collect()
         })
         .get(&symbol.to_ascii_lowercase())
@@ -386,12 +406,19 @@ fn preferences_for(
     small_rings: bool,
     elements: u128,
 ) -> Vec<&'static CompiledPreference> {
-    let mut rules: Vec<&'static CompiledPreference> = compiled(&ACYCLIC, TORSION_PREFERENCES).iter().collect();
+    let mut rules: Vec<&'static CompiledPreference> =
+        compiled(&ACYCLIC, TORSION_PREFERENCES).iter().collect();
     if ring_sizes.iter().any(|&size| size >= MIN_MACROCYCLE_SIZE) {
-        rules.extend(compiled(&MACROCYCLE, super::torsion_preferences::MACROCYCLE_PREFERENCES));
+        rules.extend(compiled(
+            &MACROCYCLE,
+            super::torsion_preferences::MACROCYCLE_PREFERENCES,
+        ));
     }
     if small_rings && ring_sizes.iter().any(|&size| size < MIN_MACROCYCLE_SIZE) {
-        rules.extend(compiled(&SMALL_RING, super::torsion_preferences::SMALL_RING_PREFERENCES));
+        rules.extend(compiled(
+            &SMALL_RING,
+            super::torsion_preferences::SMALL_RING_PREFERENCES,
+        ));
     }
     // A rule that needs an element this molecule does not have cannot
     // match it, and the subgraph search that would discover that is the
@@ -518,7 +545,12 @@ fn ring_bookkeeping<T: MoleculeCore>(mol: &T) -> Rings {
         };
         side.extend(bonds.iter().copied());
     }
-    Rings { excluded, sizes: ring_sizes, in_macrocycle, in_small_ring }
+    Rings {
+        excluded,
+        sizes: ring_sizes,
+        in_macrocycle,
+        in_small_ring,
+    }
 }
 
 /// What the torsion rules need to know about a molecule's rings.
@@ -565,7 +597,10 @@ fn rule_candidate_bonds<T: MoleculeCore>(
             if hybridization(mol, b) == Hyb::Sp || hybridization(mol, c) == Hyb::Sp {
                 continue;
             }
-            if [b, c].iter().any(|&end| mol.get_atom_bonds(end).unwrap_or_default().len() < 2) {
+            if [b, c]
+                .iter()
+                .any(|&end| mol.get_atom_bonds(end).unwrap_or_default().len() < 2)
+            {
                 continue;
             }
             candidates.insert(pair);
@@ -749,7 +784,7 @@ fn angle_bend_energy(positions: &[Vector3D], a: &AngleBend) -> f64 {
     let u = positions[a.i] - positions[a.k];
     let v = positions[a.j] - positions[a.k];
     let (ru, rv) = (u.length(), v.length());
-    if ru < 1e-8 || rv < 1e-8 {
+    if ru < MIN_ANGLE_BOND_LENGTH || rv < MIN_ANGLE_BOND_LENGTH {
         return 0.0;
     }
     let delta = (u.dot(&v) / (ru * rv)).clamp(-1.0, 1.0) - a.cos_theta0;
@@ -761,7 +796,7 @@ fn angle_bend_energy_and_grad(positions: &[Vector3D], a: &AngleBend, grad: &mut 
     let v = positions[a.j] - positions[a.k];
     let ru = u.length();
     let rv = v.length();
-    if ru < 1e-8 || rv < 1e-8 {
+    if ru < MIN_ANGLE_BOND_LENGTH || rv < MIN_ANGLE_BOND_LENGTH {
         return 0.0; // degenerate (coincident points): no well-defined angle
     }
 
@@ -885,9 +920,12 @@ pub(super) fn forcefield_energy(
         energy += angle_bend_energy(positions, a);
     }
     for t in torsions {
-        if let Some((cosine, sine)) =
-            crate::vector::dihedral_cosine_sine(positions[t.i], positions[t.b], positions[t.c], positions[t.j])
-        {
+        if let Some((cosine, sine)) = crate::vector::dihedral_cosine_sine(
+            positions[t.i],
+            positions[t.b],
+            positions[t.c],
+            positions[t.j],
+        ) {
             energy += torsion_terms_from(cosine, sine, t).0;
         }
     }
@@ -973,9 +1011,7 @@ mod tests {
                 .any(|(other, _, _)| std::ptr::eq(other, pattern));
             if dropped {
                 assert!(
-                    required
-                        .iter()
-                        .any(|mask| mask & carbon_and_nitrogen == 0),
+                    required.iter().any(|mask| mask & carbon_and_nitrogen == 0),
                     "a rule was dropped without needing a missing element"
                 );
             }
@@ -995,7 +1031,12 @@ mod tests {
     #[test]
     fn angle_bend_gradient_descent_relaxes_to_target() {
         // Distorted ~100 deg angle, target 109.5 deg (tetrahedral).
-        let angle = AngleBend { i: 1, k: 0, j: 2, cos_theta0: 109.5_f64.to_radians().cos() };
+        let angle = AngleBend {
+            i: 1,
+            k: 0,
+            j: 2,
+            cos_theta0: 109.5_f64.to_radians().cos(),
+        };
         let mut positions = vec![
             Vector3D::new(0.0, 0.0, 0.0),
             Vector3D::new(1.0, 0.0, 0.0),
@@ -1021,7 +1062,12 @@ mod tests {
 
     #[test]
     fn angle_bend_gradient_matches_finite_difference() {
-        let angle = AngleBend { i: 0, k: 1, j: 2, cos_theta0: 100.0_f64.to_radians().cos() };
+        let angle = AngleBend {
+            i: 0,
+            k: 1,
+            j: 2,
+            cos_theta0: 100.0_f64.to_radians().cos(),
+        };
         let positions = vec![
             Vector3D::new(1.3, -0.2, 0.4),
             Vector3D::new(0.0, 0.0, 0.0),
@@ -1072,7 +1118,11 @@ mod tests {
         let positions = |j: Vector3D| vec![i, b, c, j];
 
         let phi_cis = dihedral_angle(&positions(j_cis), 0, 1, 2, 3).unwrap();
-        assert!(phi_cis.abs() < 1e-6, "expected ~0 deg, got {} deg", phi_cis.to_degrees());
+        assert!(
+            phi_cis.abs() < 1e-6,
+            "expected ~0 deg, got {} deg",
+            phi_cis.to_degrees()
+        );
 
         let phi_trans = dihedral_angle(&positions(j_trans), 0, 1, 2, 3).unwrap();
         assert!(
@@ -1096,7 +1146,13 @@ mod tests {
         // one specific "staggered" rotamer, so the meaningful invariant to
         // test is "energy reaches ~0 (its global minimum) from an arbitrary
         // non-minimum start", not "converges to a particular angle".
-        let t = Torsion { i: 0, b: 1, c: 2, j: 3, terms: single_term(3, -1.0, V_STAGGERED) };
+        let t = Torsion {
+            i: 0,
+            b: 1,
+            c: 2,
+            j: 3,
+            terms: single_term(3, -1.0, V_STAGGERED),
+        };
         let mut positions = vec![
             Vector3D::new(1.0, 0.0, 0.0),
             Vector3D::new(0.0, 0.0, 0.0),
@@ -1106,7 +1162,10 @@ mod tests {
 
         let phi_start = dihedral_angle(&positions, t.i, t.b, t.c, t.j).unwrap();
         let energy_start = torsion_energy(phi_start, &t);
-        assert!(energy_start > 1e-3, "fixture should start away from a minimum");
+        assert!(
+            energy_start > 1e-3,
+            "fixture should start away from a minimum"
+        );
 
         for _ in 0..2000 {
             let mut grad = vec![Vector3D::default(); positions.len()];
@@ -1162,8 +1221,13 @@ mod tests {
         ];
 
         for (folds, sign) in [(1, 1.0), (1, -1.0), (2, 1.0), (3, -1.0)] {
-            let torsion =
-                Torsion { i: 0, b: 1, c: 2, j: 3, terms: single_term(folds, sign, 0.7) };
+            let torsion = Torsion {
+                i: 0,
+                b: 1,
+                c: 2,
+                j: 3,
+                terms: single_term(folds, sign, 0.7),
+            };
             for positions in &geometries {
                 let positions = positions.to_vec();
                 let (_, analytic) =
@@ -1201,8 +1265,6 @@ mod tests {
             }
         }
     }
-
-
 }
 
 #[cfg(test)]
@@ -1239,7 +1301,10 @@ mod ring_rule_tests {
             .into_iter()
             .filter(|bond| cyclic.contains(bond))
             .count();
-        assert!(ring_terms > 8, "only {ring_terms} of the ring's bonds got a preference");
+        assert!(
+            ring_terms > 8,
+            "only {ring_terms} of the ring's bonds got a preference"
+        );
     }
 
     /// A bridged bicyclic gets none, however many rules match it.

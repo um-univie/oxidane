@@ -144,7 +144,7 @@ impl MolecularNet {
             graph_head: head(
                 &config.graph_head,
                 "graph_head",
-                width + config.global_width,
+                width * config.pooling.width_factor() + config.global_width,
             )?,
             atom_head: head(&config.atom_head, "atom_head", width)?,
             // See `bond_representation` for what a bond head reads.
@@ -176,7 +176,8 @@ impl MolecularNet {
         self.encoder.forward_with_edges(graph, train)
     }
 
-    /// One vector per molecule, `[graph_count, width]`.
+    /// One vector per molecule, `[graph_count, width]` -- twice the width for
+    /// [`Pooling::SumMean`].
     pub fn encode_molecules(&self, graph: &GraphTensors, train: bool) -> Result<Tensor> {
         let atoms = self.encode(graph, train)?;
         graph.pool(&atoms, self.config.pooling)

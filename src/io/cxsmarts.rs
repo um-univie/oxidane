@@ -425,8 +425,8 @@ impl CxSMARTSParser {
     /// Parse a reaction SMARTS pattern
     fn parse_reaction_smarts(&mut self) -> Result<CxSMARTSPattern, CxSMARTSError> {
         if let Some(arrow_pos) = self.input.find(">>") {
-            let reactant_part = &self.input[..arrow_pos];
-            let product_part = &self.input[arrow_pos + 2..];
+            let reactant_part = self.input[..arrow_pos].trim();
+            let product_part = self.input[arrow_pos + 2..].trim();
 
             let reactants = if !reactant_part.is_empty() {
                 let mut reactant_parser = CxSMARTSParser::new();

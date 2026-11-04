@@ -11,16 +11,22 @@
 //! [`super::uff`] says where and why, and `tests/uff_oracle.py` measures
 //! it.
 
+/// Bond-length threshold in Å for a well-defined angle gradient.
+const MIN_BOND_LENGTH: f64 = 1e-8;
+/// Dimensionless sine/cosine threshold near singular angular geometries.
+const MIN_ANGULAR_COMPONENT: f64 = 1e-8;
+/// Squared plane-normal norm below which inversion has no defined plane (Å⁴).
+const MIN_INVERSION_NORMAL_SQUARED: f64 = 1e-16;
+/// Squared out-of-plane bond length below which inversion is undefined (Å²).
+const MIN_INVERSION_BOND_SQUARED: f64 = 1e-16;
+
 use super::params::UffType;
 use crate::molecule::forcefield::lanes::{LANES, Lanes, horizontal_sum};
 use crate::vector::Vector3D;
 
-/// `G` in UFF, the prefactor that turns effective charges into a force
-/// constant, in kcal/mol.
-const COULOMB_PREFACTOR: f64 = 332.06;
-
-/// `lambda`, the bond-order correction's scale factor.
-const BOND_ORDER_LAMBDA: f64 = 0.1332;
+use chemistry_consts::uff::{
+    BOND_ORDER_LAMBDA, COULOMB_KCAL_ANGSTROM_PER_MOL as COULOMB_PREFACTOR,
+};
 
 /// Below this separation the Lennard-Jones energy is infinite. Returning
 /// zero would create an artificial minimum at an exact atomic overlap.
@@ -205,12 +211,12 @@ fn angle_and_gradient(positions: &[Vector3D], angle: &Angle) -> Option<(f64, [Ve
     let first = positions[angle.i] - positions[angle.k];
     let second = positions[angle.j] - positions[angle.k];
     let (r1, r2) = (first.length(), second.length());
-    if r1 < 1e-8 || r2 < 1e-8 {
+    if r1 < MIN_BOND_LENGTH || r2 < MIN_BOND_LENGTH {
         return None;
     }
     let cos_theta = (first.dot(&second) / (r1 * r2)).clamp(-1.0, 1.0);
     let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-    if sin_theta < 1e-8 {
+    if sin_theta < MIN_ANGULAR_COMPONENT {
         // The angular derivative has no unique direction at collinearity,
         // but the angle and its energy remain defined. Dropping the whole
         // term creates a false zero-energy minimum at 0 and 180 degrees.
@@ -330,8 +336,7 @@ pub(super) fn torsion_energy_and_gradient(
     let (cos_fold, sin_fold) = crate::vector::multiple_angle(cosine, sine, torsion.fold as usize);
     let energy = 0.5 * torsion.force_constant * (1.0 - torsion.phase * cos_fold);
     // d/dphi of -phase * cos(n phi) is +phase * n * sin(n phi).
-    let d_energy =
-        0.5 * torsion.force_constant * torsion.phase * torsion.fold as f64 * sin_fold;
+    let d_energy = 0.5 * torsion.force_constant * torsion.phase * torsion.fold as f64 * sin_fold;
     for (slot, atom) in [torsion.i, torsion.b, torsion.c, torsion.j]
         .into_iter()
         .enumerate()
@@ -360,7 +365,12 @@ fn lennard_jones(minimum_squared: f64, well_depth: f64, squared: f64) -> (f64, f
 #[cfg(test)]
 pub(super) fn van_der_waals_energy(positions: &[Vector3D], pair: &VanDerWaals) -> f64 {
     let offset = positions[pair.i] - positions[pair.j];
-    lennard_jones(pair.distance * pair.distance, pair.well_depth, offset.dot(&offset)).0
+    lennard_jones(
+        pair.distance * pair.distance,
+        pair.well_depth,
+        offset.dot(&offset),
+    )
+    .0
 }
 
 #[cfg(test)]
@@ -370,8 +380,11 @@ pub(super) fn van_der_waals_energy_and_gradient(
     gradient: &mut [Vector3D],
 ) -> f64 {
     let offset = positions[pair.i] - positions[pair.j];
-    let (energy, scale) =
-        lennard_jones(pair.distance * pair.distance, pair.well_depth, offset.dot(&offset));
+    let (energy, scale) = lennard_jones(
+        pair.distance * pair.distance,
+        pair.well_depth,
+        offset.dot(&offset),
+    );
     gradient[pair.i] += offset * scale;
     gradient[pair.j] += -(offset * scale);
     energy
@@ -389,8 +402,8 @@ fn lane_offsets<L: Lanes>(
     let mut y = [0.0; LANES];
     let mut z = [0.0; LANES];
     for lane in 0..LANES {
-        let offset = positions[pairs.i[start + lane] as usize]
-            - positions[pairs.j[start + lane] as usize];
+        let offset =
+            positions[pairs.i[start + lane] as usize] - positions[pairs.j[start + lane] as usize];
         x[lane] = offset.x;
         y[lane] = offset.y;
         z[lane] = offset.z;
@@ -401,7 +414,12 @@ fn lane_offsets<L: Lanes>(
 
 #[inline(always)]
 fn lane<L: Lanes>(simd: L, values: &[f64], start: usize) -> L::Vector {
-    simd.from_array([values[start], values[start + 1], values[start + 2], values[start + 3]])
+    simd.from_array([
+        values[start],
+        values[start + 1],
+        values[start + 2],
+        values[start + 3],
+    ])
 }
 
 /// [`lennard_jones`] four pairs at a time.
@@ -445,7 +463,12 @@ pub(super) fn van_der_waals_energies_in<L: Lanes>(
     let mut total = horizontal_sum(simd.to_array(total));
     for index in whole..pairs.len() {
         let offset = positions[pairs.i[index] as usize] - positions[pairs.j[index] as usize];
-        total += lennard_jones(pairs.minimum_squared[index], pairs.well_depth[index], offset.dot(&offset)).0;
+        total += lennard_jones(
+            pairs.minimum_squared[index],
+            pairs.well_depth[index],
+            offset.dot(&offset),
+        )
+        .0;
     }
     total
 }
@@ -483,8 +506,11 @@ pub(super) fn van_der_waals_energies_and_gradient_in<L: Lanes>(
     for index in whole..pairs.len() {
         let (i, j) = (pairs.i[index] as usize, pairs.j[index] as usize);
         let offset = positions[i] - positions[j];
-        let (energy, scale) =
-            lennard_jones(pairs.minimum_squared[index], pairs.well_depth[index], offset.dot(&offset));
+        let (energy, scale) = lennard_jones(
+            pairs.minimum_squared[index],
+            pairs.well_depth[index],
+            offset.dot(&offset),
+        );
         total += energy;
         gradient[i] += offset * scale;
         gradient[j] += -(offset * scale);
@@ -510,7 +536,7 @@ fn out_of_plane_and_gradient(
     let normal = first.cross(&second);
     let normal_sq = normal.dot(&normal);
     let out_sq = out.dot(&out);
-    if normal_sq < 1e-16 || out_sq < 1e-16 {
+    if normal_sq < MIN_INVERSION_NORMAL_SQUARED || out_sq < MIN_INVERSION_BOND_SQUARED {
         return None;
     }
     let scale = 1.0 / (normal_sq.sqrt() * out_sq.sqrt());
@@ -552,7 +578,7 @@ pub(super) fn inversion_energy_and_gradient(
     // away at 90 degrees out of plane. That is the top of the barrier and
     // not somewhere a minimisation goes, so the term is simply flat there
     // rather than infinite.
-    let d_energy = if cosine > 1e-8 {
+    let d_energy = if cosine > MIN_ANGULAR_COMPONENT {
         -inversion.force_constant * (inversion.c1 + 4.0 * inversion.c2 * cosine) * sine / cosine
     } else {
         0.0
@@ -668,20 +694,33 @@ mod tests {
             .map(|pair| van_der_waals_energy_and_gradient(&positions, pair, &mut want_gradient))
             .sum();
         let energy = van_der_waals_energies_in(portable, &pairs, &positions);
-        assert!((energy - want).abs() < 1e-9 * want.abs().max(1.0), "{energy} against {want}");
+        assert!(
+            (energy - want).abs() < 1e-9 * want.abs().max(1.0),
+            "{energy} against {want}"
+        );
 
         let mut gradient = vec![Vector3D::default(); positions.len()];
-        let energy = van_der_waals_energies_and_gradient_in(portable, &pairs, &positions, &mut gradient);
-        assert!((energy - want).abs() < 1e-9 * want.abs().max(1.0), "{energy} against {want}");
+        let energy =
+            van_der_waals_energies_and_gradient_in(portable, &pairs, &positions, &mut gradient);
+        assert!(
+            (energy - want).abs() < 1e-9 * want.abs().max(1.0),
+            "{energy} against {want}"
+        );
         for (got, want) in gradient.iter().zip(&want_gradient) {
             for axis in [got.x - want.x, got.y - want.y, got.z - want.z] {
-                assert!(axis.abs() < 1e-9 * want.length().max(1.0), "gradient differs by {axis}");
+                assert!(
+                    axis.abs() < 1e-9 * want.length().max(1.0),
+                    "gradient differs by {axis}"
+                );
             }
         }
 
         // And an exact overlap is infinite in lanes as in scalar.
         positions[7] = positions[3];
-        assert_eq!(van_der_waals_energies_in(portable, &pairs, &positions), f64::INFINITY);
+        assert_eq!(
+            van_der_waals_energies_in(portable, &pairs, &positions),
+            f64::INFINITY
+        );
     }
 
     /// Every lanes backend agrees to the bit, overlap included.
@@ -716,5 +755,4 @@ mod tests {
             assert_eq!(portable, native, "overlap: {overlap}");
         }
     }
-
 }

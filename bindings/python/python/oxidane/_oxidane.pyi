@@ -48,11 +48,15 @@ class ReactionSmarts:
              width: int = 800, height: int = 260) -> None: ...
     def _repr_svg_(self) -> str: ...
 
+# A missing entry (None, NaN, pandas.NA) gives None; whitespace around a SMILES is ignored.
 @overload
 def canonical_smiles(smiles: str, *, threads: Optional[int] = None,
                      errors: Literal["keep", "none", "raise"] = "keep") -> str: ...
 @overload
-def canonical_smiles(smiles: Iterable[str], *, threads: Optional[int] = None,
+def canonical_smiles(smiles: None, *, threads: Optional[int] = None,
+                     errors: Literal["keep", "none", "raise"] = "keep") -> None: ...
+@overload
+def canonical_smiles(smiles: Iterable[Optional[str]], *, threads: Optional[int] = None,
                      errors: Literal["keep", "none", "raise"] = "keep") -> List[Optional[str]]: ...
 
 @overload
@@ -60,7 +64,11 @@ def tautomer_key(smiles: str, *, carbon_endpoints: bool = False,
                  ionizable_endpoints: bool = False, threads: Optional[int] = None,
                  errors: Literal["keep", "none", "raise"] = "keep") -> str: ...
 @overload
-def tautomer_key(smiles: Iterable[str], *, carbon_endpoints: bool = False,
+def tautomer_key(smiles: None, *, carbon_endpoints: bool = False,
+                 ionizable_endpoints: bool = False, threads: Optional[int] = None,
+                 errors: Literal["keep", "none", "raise"] = "keep") -> None: ...
+@overload
+def tautomer_key(smiles: Iterable[Optional[str]], *, carbon_endpoints: bool = False,
                  ionizable_endpoints: bool = False, threads: Optional[int] = None,
                  errors: Literal["keep", "none", "raise"] = "keep") -> List[Optional[str]]: ...
 
@@ -69,6 +77,10 @@ def canonical_tautomer(smiles: str, *, carbon_endpoints: bool = False,
                        ionizable_endpoints: bool = False, threads: Optional[int] = None,
                        errors: Literal["keep", "none", "raise"] = "keep") -> str: ...
 @overload
-def canonical_tautomer(smiles: Iterable[str], *, carbon_endpoints: bool = False,
+def canonical_tautomer(smiles: None, *, carbon_endpoints: bool = False,
+                       ionizable_endpoints: bool = False, threads: Optional[int] = None,
+                       errors: Literal["keep", "none", "raise"] = "keep") -> None: ...
+@overload
+def canonical_tautomer(smiles: Iterable[Optional[str]], *, carbon_endpoints: bool = False,
                        ionizable_endpoints: bool = False, threads: Optional[int] = None,
                        errors: Literal["keep", "none", "raise"] = "keep") -> List[Optional[str]]: ...

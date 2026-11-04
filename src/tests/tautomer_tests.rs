@@ -283,6 +283,32 @@ fn tautomers_normalize_to_one_structure() {
     }
 }
 
+/// PubChem records already written as the form to store, which normalizing
+/// used to rewrite: a nitro group beside two NH donors into `N(O)O`, a nitro
+/// group beside a carboxylic acid into `[N+](O)=O` and a carboxylate, a
+/// nitrile into a ketenimine, a cation onto a methoxy or ester oxygen, a phenol
+/// beside a pyridone or a lactone into a quinone methide or a zwitterion, and
+/// a salicylidene imine into its keto-amine.
+#[test]
+fn normalization_keeps_forms_that_are_already_preferred() {
+    use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+    for smiles in [
+        "CC(C)(C)CN(C)S(=O)(=O)c1ccc(NN)c([N+](=O)[O-])c1",
+        "CCCc1nn(C)c(N2CCOCC2C(=O)O)c1[N+](=O)[O-]",
+        "NC=CC#N",
+        "CCc1ccc(NC(=O)C(C#N)=Cc2ccc(NC(C)=O)cc2)cc1",
+        "COc1cc([N+](=O)[O-])ccc1NC(=O)CNc1ccccc1N(C)Cc1ccccc1",
+        "CC1(C)C(C=Cc2ccc(OC)c(OCc3ccccc3)c2)=[N+](CCCCCC(=O)NCCN)c2ccc(Nc3ccccc3)cc21",
+        "O=C(CCS)Oc1ccc2[nH]c(-c3ccccc3)[nH+]c2c1",
+        "Cn1c(-c2ccc(O)cc2)cccc1=O",
+        "C[C@@H]1OC(=O)c2c(O)cccc21",
+        "Oc1ccccc1C=Nc1ccccc1",
+    ] {
+        let canonical = canonicalize_and_sort_smiles(smiles, true).unwrap();
+        assert_eq!(normalized(smiles), canonical, "{smiles}");
+    }
+}
+
 /// The form chosen is the one a registry would store: the carbonyl, not the
 /// enol; the amide, not the imidic acid.
 #[test]

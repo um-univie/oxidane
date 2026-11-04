@@ -36,7 +36,7 @@ pub fn update_degrees(
 pub fn reconstruct_path(mut current_node: usize, parents: &[Option<usize>]) -> Vec<usize> {
     let mut path = Vec::new();
 
-    while let Some(parent_atom) = parents[current_node] {   
+    while let Some(parent_atom) = parents[current_node] {
         path.push(current_node);
         current_node = parent_atom;
     }
@@ -46,17 +46,10 @@ pub fn reconstruct_path(mut current_node: usize, parents: &[Option<usize>]) -> V
     path
 }
 
-/// Renames ring numbers in a SMILES string to ensure they are sequential and conform to SMILES standards.
-/// This function mutates the input SMILES string in place.
+/// Renames ring closure numbers in a SMILES string in place to ensure they are sequential.
 ///
-/// # Arguments
-///
-/// * `smiles` - A mutable reference to the SMILES string that will be modified.
-///
-/// # Returns
-///
-/// * `Result<(), String>` - Returns `Ok(())` on success,
-///   or an error message if the input SMILES string has invalid ring closures.
+/// # Errors
+/// Returns an error message if the input SMILES contains mismatched or invalid ring closures.
 pub fn rename_ring_numbers_in_place(smiles: &mut String) -> Result<(), String> {
     let mut ring_relabel_map: IntMap<u8, u8> = IntMap::default();
     let mut ring_counter = 1u8;

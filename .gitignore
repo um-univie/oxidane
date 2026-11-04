@@ -3,6 +3,10 @@ src/test_io.sh
 git_pusher.sh
 __pycache__/
 .DS_Store
+flamegraph.sh
 
 # Local working notes, not for publication
 notes/
+manuscript/
+publication/
+examples/publication.rs

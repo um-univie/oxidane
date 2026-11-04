@@ -7,37 +7,32 @@
 //! Lennard-Jones 12-6. Angles and their force constants are in degrees
 //! throughout, which is why the conversion factors appear where they do.
 
+/// Minimum bond/vector length in Å for a defined angular gradient.
+const MIN_BOND_LENGTH: f64 = 1e-8;
+/// Norm of a cross product of unit vectors below which a plane is undefined.
+const MIN_PLANE_NORMAL: f64 = 1e-8;
+/// Dimensionless sine/cosine floor in singular angular derivatives.
+const MIN_ANGULAR_COMPONENT: f64 = 1e-8;
+/// Separate floor for squared sine factors in the out-of-plane derivative.
+const MIN_ANGULAR_COMPONENT_SQUARED: f64 = 1e-8;
+
 use super::assign::DEGREES_TO_RADIANS;
-use crate::molecule::forcefield::lanes::{LANES, Lanes, horizontal_sum};
 #[cfg(test)]
 use crate::molecule::forcefield::lanes::Portable;
+use crate::molecule::forcefield::lanes::{LANES, Lanes, horizontal_sum};
 use crate::vector::Vector3D;
 
-/// Millidyne-angstrom to kcal/mol, the unit conversion every MMFF force
-/// constant is quoted against.
-const MDYNE_TO_KCAL: f64 = 143.9325;
+pub(super) use chemistry_consts::mmff::ELECTROSTATIC_ONE_FOUR_SCALE as ONE_FOUR_SCALE;
+use chemistry_consts::mmff::{
+    ANGLE_CUBIC, BOND_CUBIC, BOND_QUARTIC, COULOMB_KCAL_ANGSTROM_PER_MOL as COULOMB,
+    ELECTROSTATIC_BUFFER_ANGSTROM as ELECTROSTATIC_BUFFER,
+    MDYNE_ANGSTROM_TO_KCAL_PER_MOL as MDYNE_TO_KCAL, VDW_FAR_BUFFER as FAR,
+    VDW_NEAR_BUFFER as NEAR,
+};
 
-/// The same, for a force constant quoted per squared degree.
+/// Conversion for a force constant quoted per squared degree.
 const MDYNE_TO_KCAL_PER_DEGREE_SQUARED: f64 =
     MDYNE_TO_KCAL * DEGREES_TO_RADIANS * DEGREES_TO_RADIANS;
-
-/// Coulomb's constant in these units.
-const COULOMB: f64 = 332.0716;
-
-/// How much of the electrostatic interaction survives between atoms three
-/// bonds apart, which are already restrained by the torsion term.
-pub(super) const ONE_FOUR_SCALE: f64 = 0.75;
-
-/// The buffer added to an electrostatic separation, which keeps two atoms
-/// on top of each other from producing an infinite energy.
-const ELECTROSTATIC_BUFFER: f64 = 0.05;
-
-/// The cubic and quartic coefficients of the bond's expansion.
-const BOND_CUBIC: f64 = -2.0;
-const BOND_QUARTIC: f64 = 7.0 / 12.0;
-
-/// The cubic coefficient of the angle's, per degree.
-const ANGLE_CUBIC: f64 = -0.006981317;
 
 pub(super) struct Bond {
     pub i: usize,
@@ -200,13 +195,6 @@ impl NonBondedPairs {
     }
 }
 
-
-/// The buffering constants of MMFF's 14-7: `NEAR` softens the attractive
-/// separation and `FAR` the repulsive one, so that two atoms on top of each
-/// other cost a large energy rather than an infinite one.
-const NEAR: f64 = 1.07;
-const FAR: f64 = 1.12;
-
 #[inline(always)]
 pub(super) fn bond_energy(positions: &[Vector3D], bond: &Bond) -> f64 {
     let stretch = positions[bond.i].distance(&positions[bond.j]) - bond.length;
@@ -225,7 +213,7 @@ pub(super) fn bond_energy_and_gradient(
 ) -> f64 {
     let offset = positions[bond.i] - positions[bond.j];
     let distance = offset.length();
-    if distance < 1e-8 {
+    if distance < DEGENERATE_SEPARATION {
         return bond_energy(positions, bond);
     }
     let stretch = distance - bond.length;
@@ -268,7 +256,7 @@ fn angle_geometry(
     let first = positions[i] - positions[central];
     let second = positions[k] - positions[central];
     let (one, two) = (first.length(), second.length());
-    if one < 1e-8 || two < 1e-8 {
+    if one < MIN_BOND_LENGTH || two < MIN_BOND_LENGTH {
         return None;
     }
     let cosine = (first.dot(&second) / (one * two)).clamp(-1.0, 1.0);
@@ -295,14 +283,16 @@ fn angle_and_gradient(
     let (one, two) = (geometry.first_distance, geometry.second_distance);
     let cosine = geometry.cosine;
     let sine = (1.0 - cosine * cosine).sqrt();
-    if sine < 1e-8 {
+    if sine < MIN_ANGULAR_COMPONENT {
         // A collinear angle still costs bending energy. Only its angular
         // gradient lacks a unique direction; the symmetric value is zero.
         // Stretch-bend must also retain its radial forces at this geometry.
         return Some((geometry, [Vector3D::default(); 3]));
     }
-    let d_cos_first = geometry.second * (1.0 / (one * two)) - geometry.first * (cosine / (one * one));
-    let d_cos_second = geometry.first * (1.0 / (one * two)) - geometry.second * (cosine / (two * two));
+    let d_cos_first =
+        geometry.second * (1.0 / (one * two)) - geometry.first * (cosine / (one * one));
+    let d_cos_second =
+        geometry.first * (1.0 / (one * two)) - geometry.second * (cosine / (two * two));
     let to_angle = -1.0 / sine;
     let d_i = d_cos_first * to_angle;
     let d_k = d_cos_second * to_angle;
@@ -334,10 +324,9 @@ pub(super) fn angle_energies(positions: &[Vector3D], angle: &Angle) -> (f64, f64
     };
     (
         angle_energy_from(angle, geometry.theta, geometry.cosine),
-        angle
-            .stretch
-            .as_ref()
-            .map_or(0.0, |stretch| stretch_energy_from(angle, stretch, &geometry)),
+        angle.stretch.as_ref().map_or(0.0, |stretch| {
+            stretch_energy_from(angle, stretch, &geometry)
+        }),
     )
 }
 
@@ -395,8 +384,7 @@ pub(super) fn angle_energies_and_gradient(
     let factor = MDYNE_TO_KCAL * DEGREES_TO_RADIANS;
 
     // The angle's share, along the same derivative the bending term used.
-    let d_bend = factor
-        * (stretch.first_constant * first + stretch.second_constant * second)
+    let d_bend = factor * (stretch.first_constant * first + stretch.second_constant * second)
         / DEGREES_TO_RADIANS;
     for (slot, atom) in atoms.into_iter().enumerate() {
         gradient[atom] += derivative[slot] * d_bend;
@@ -424,7 +412,7 @@ fn wilson_angle(positions: &[Vector3D], term: &OutOfPlane) -> Option<f64> {
     let to_l = (positions[term.l] - positions[term.central]).normalize();
     let normal = to_i.cross(&to_k);
     let length = normal.length();
-    if length < 1e-8 {
+    if length < MIN_BOND_LENGTH {
         return None;
     }
     let sine = ((normal * (1.0 / length)).dot(&to_l)).clamp(-1.0, 1.0);
@@ -449,7 +437,7 @@ pub(super) fn out_of_plane_energy_and_gradient(
     let to_k = positions[term.k] - positions[term.central];
     let to_l = positions[term.l] - positions[term.central];
     let (length_i, length_k, length_l) = (to_i.length(), to_k.length(), to_l.length());
-    if length_i < 1e-8 || length_k < 1e-8 || length_l < 1e-8 {
+    if length_i < MIN_BOND_LENGTH || length_k < MIN_BOND_LENGTH || length_l < MIN_BOND_LENGTH {
         return 0.0;
     }
     let unit_i = to_i * (1.0 / length_i);
@@ -458,7 +446,7 @@ pub(super) fn out_of_plane_energy_and_gradient(
 
     let normal = (-unit_i).cross(&unit_k);
     let normal_length = normal.length();
-    if normal_length < 1e-8 {
+    if normal_length < MIN_PLANE_NORMAL {
         return 0.0;
     }
     let normal = normal * (1.0 / normal_length);
@@ -471,10 +459,13 @@ pub(super) fn out_of_plane_energy_and_gradient(
     // describes for a dihedral, so it gets the same treatment rather than a
     // floor: this used to floor the cosine at 1e-8 and report a gradient of
     // order 1e8 on a term worth a few kcal/mol.
-    let cosine = (1.0 - sine * sine).max(0.0).sqrt().max(1e-8);
+    let cosine = (1.0 - sine * sine)
+        .max(0.0)
+        .sqrt()
+        .max(MIN_ANGULAR_COMPONENT);
     let cos_theta = unit_i.dot(&unit_k).clamp(-1.0, 1.0);
-    let sin_theta_squared = (1.0 - cos_theta * cos_theta).max(1e-8);
-    let sin_theta = sin_theta_squared.sqrt().max(1e-8);
+    let sin_theta_squared = (1.0 - cos_theta * cos_theta).max(MIN_ANGULAR_COMPONENT_SQUARED);
+    let sin_theta = sin_theta_squared.sqrt().max(MIN_ANGULAR_COMPONENT);
 
     let d_energy =
         MDYNE_TO_KCAL_PER_DEGREE_SQUARED * term.force_constant * chi / DEGREES_TO_RADIANS;
@@ -541,8 +532,7 @@ pub(super) fn torsion_energy_and_gradient(
     // rather than two more libm calls.
     let sine2 = 2.0 * sine * cosine;
     let sine3 = sine * (4.0 * cosine * cosine - 1.0);
-    let d_energy =
-        0.5 * (-torsion.v1 * sine + 2.0 * torsion.v2 * sine2 - 3.0 * torsion.v3 * sine3);
+    let d_energy = 0.5 * (-torsion.v1 * sine + 2.0 * torsion.v2 * sine2 - 3.0 * torsion.v3 * sine3);
     for (slot, atom) in [torsion.i, torsion.j, torsion.k, torsion.l]
         .into_iter()
         .enumerate()
@@ -589,7 +579,7 @@ pub(super) fn nonbonded_energy_and_gradient(
     let offset = positions[pair.i as usize] - positions[pair.j as usize];
     let distance_squared = offset.dot(&offset);
     let distance = distance_squared.sqrt();
-    if distance < 1e-8 {
+    if distance < DEGENERATE_SEPARATION {
         // No direction to push along; the energies are still finite.
         return nonbonded_energy(positions, pair);
     }
@@ -633,8 +623,8 @@ fn lane_offsets<L: Lanes>(
     let mut y = [0.0; LANES];
     let mut z = [0.0; LANES];
     for lane in 0..LANES {
-        let offset = positions[pairs.i[start + lane] as usize]
-            - positions[pairs.j[start + lane] as usize];
+        let offset =
+            positions[pairs.i[start + lane] as usize] - positions[pairs.j[start + lane] as usize];
         x[lane] = offset.x;
         y[lane] = offset.y;
         z[lane] = offset.z;
@@ -793,10 +783,8 @@ pub(super) fn nonbonded_energies_and_gradient_in<L: Lanes>(
     (van_der_waals, electrostatic)
 }
 
-
 /// Below this separation a pair has no gradient direction, only an energy.
 const DEGENERATE_SEPARATION: f64 = 1e-8;
-
 
 #[cfg(test)]
 mod tests {
@@ -820,7 +808,13 @@ mod tests {
                 if scalar.len() == 10 {
                     break;
                 }
-                let pair = NonBonded::new(i, j, 3.2 + 0.1 * i as f64, 0.08 + 0.01 * j as f64, 0.02 * (i as f64 - j as f64));
+                let pair = NonBonded::new(
+                    i,
+                    j,
+                    3.2 + 0.1 * i as f64,
+                    0.08 + 0.01 * j as f64,
+                    0.02 * (i as f64 - j as f64),
+                );
                 pairs.push(pair);
                 scalar.push(pair);
             }
@@ -837,7 +831,10 @@ mod tests {
         }
 
         let (vdw, electrostatic) = nonbonded_energies(&pairs, &positions);
-        assert!((vdw - want_vdw).abs() < 1e-9 * want_vdw.abs().max(1.0), "{vdw} against {want_vdw}");
+        assert!(
+            (vdw - want_vdw).abs() < 1e-9 * want_vdw.abs().max(1.0),
+            "{vdw} against {want_vdw}"
+        );
         assert!(
             (electrostatic - want_electrostatic).abs() < 1e-9 * want_electrostatic.abs().max(1.0),
             "{electrostatic} against {want_electrostatic}"
@@ -847,7 +844,9 @@ mod tests {
         let (vdw, electrostatic) =
             nonbonded_energies_and_gradient(&pairs, &positions, &mut gradient);
         assert!((vdw - want_vdw).abs() < 1e-9 * want_vdw.abs().max(1.0));
-        assert!((electrostatic - want_electrostatic).abs() < 1e-9 * want_electrostatic.abs().max(1.0));
+        assert!(
+            (electrostatic - want_electrostatic).abs() < 1e-9 * want_electrostatic.abs().max(1.0)
+        );
         for (got, want) in gradient.iter().zip(&want_gradient) {
             for axis in [got.x - want.x, got.y - want.y, got.z - want.z] {
                 assert!(axis.abs() < 1e-9, "gradient differs by {axis}");
@@ -872,7 +871,13 @@ mod tests {
         let mut pairs = NonBondedPairs::default();
         for i in 0..positions.len() {
             for j in (i + 2)..positions.len() {
-                pairs.push(NonBonded::new(i, j, 3.0 + 0.05 * i as f64, 0.05 + 0.003 * j as f64, 0.01 * (i as f64 - j as f64)));
+                pairs.push(NonBonded::new(
+                    i,
+                    j,
+                    3.0 + 0.05 * i as f64,
+                    0.05 + 0.003 * j as f64,
+                    0.01 * (i as f64 - j as f64),
+                ));
             }
         }
 
@@ -909,7 +914,10 @@ mod tests {
         let mut gradient = vec![Vector3D::default(); positions.len()];
         let (vdw, electrostatic) =
             nonbonded_energies_and_gradient(&pairs, &positions, &mut gradient);
-        assert!(vdw.is_finite() && electrostatic.is_finite(), "{vdw} {electrostatic}");
+        assert!(
+            vdw.is_finite() && electrostatic.is_finite(),
+            "{vdw} {electrostatic}"
+        );
         for slot in &gradient {
             assert_eq!((slot.x, slot.y, slot.z), (0.0, 0.0, 0.0));
         }
@@ -955,12 +963,14 @@ mod tests {
         // The bending term contributes to the same component, so compare
         // against the stretch-bend gradient alone: run it again with the
         // coupling off and take the difference.
-        let bending_only = Angle { stretch: None, ..angle };
+        let bending_only = Angle {
+            stretch: None,
+            ..angle
+        };
         let mut bending_gradient = [Vector3D::default(); 3];
         angle_energies_and_gradient(&positions, &bending_only, &mut bending_gradient);
         assert!((numeric - (gradient[0].x - bending_gradient[0].x)).abs() < 1e-6);
     }
-
 
     #[test]
     fn overlapping_atoms_keep_the_same_energy_in_gradient_evaluation() {

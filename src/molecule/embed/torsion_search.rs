@@ -49,6 +49,12 @@
 //!    which a candidate that is not winning yet is abandoned, since a
 //!    truncated relaxation can only overstate the final energy.
 
+/// Minimum norm for a usable rotation axis or reflection normal.
+/// Applied in the coordinate units of the construction being normalized.
+const MIN_TRANSFORM_AXIS_NORM: f64 = 1e-9;
+/// Dimensionless sine threshold for treating directions as parallel.
+const PARALLEL_DIRECTION_SINE: f64 = 1e-9;
+
 use super::chirality::StereoConstraints;
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::bond::BondOrder;
@@ -277,7 +283,9 @@ pub(super) fn refine_torsions(
                 };
                 if candidate < energy - ACCEPT
                     && candidate.is_finite()
-                    && trial.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+                    && trial
+                        .iter()
+                        .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
                     && stereo.count_mismatches(&trial) <= mismatches
                 {
                     // Taken at once rather than after comparing this bond's
@@ -320,7 +328,12 @@ pub(super) fn refine_torsions(
 /// in `a_corner_flip_finds_a_better_macrocycle_conformer` stopped improving.
 /// `minimize` answers with the energy it stopped at, so each gate reads that
 /// rather than paying for it again.
-fn relax_candidate(trial: &mut [Vector3D], field: &Field, screen: Screen, energy: f64) -> Option<f64> {
+fn relax_candidate(
+    trial: &mut [Vector3D],
+    field: &Field,
+    screen: Screen,
+    energy: f64,
+) -> Option<f64> {
     let (screened, partial, full) = match screen {
         Screen::Cartesian(iterations) => (
             minimize(trial, field, iterations, GRADIENT_TOLERANCE),
@@ -376,7 +389,7 @@ fn torsion_gradient(
         let pivot = positions[bond.pivot];
         let axis = positions[bond.axis_end] - pivot;
         let length = axis.length();
-        if length < 1e-9 {
+        if length < MIN_TRANSFORM_AXIS_NORM {
             *slot = 0.0;
             continue;
         }
@@ -433,7 +446,9 @@ fn relax_torsions(
             break;
         }
         for (i, slot) in direction.iter_mut().enumerate() {
-            *slot = -(0..m).map(|j| inverse[i * m + j] * gradient[j]).sum::<f64>();
+            *slot = -(0..m)
+                .map(|j| inverse[i * m + j] * gradient[j])
+                .sum::<f64>();
         }
         let mut slope: f64 = direction.iter().zip(&gradient).map(|(d, g)| d * g).sum();
         if !(slope < 0.0) {
@@ -454,7 +469,13 @@ fn relax_torsions(
         for _ in 0..MAX_TORSION_PROBES {
             trial.copy_from_slice(positions);
             for (bond, turn) in bonds.iter().zip(&direction) {
-                rotate(&mut trial, bond.pivot, bond.axis_end, &bond.side, turn * length);
+                rotate(
+                    &mut trial,
+                    bond.pivot,
+                    bond.axis_end,
+                    &bond.side,
+                    turn * length,
+                );
             }
             let probe = field.energy_and_gradient(&trial, &mut trial_cartesian);
             if probe.is_finite() && probe <= energy + TORSION_ARMIJO * length * slope {
@@ -496,8 +517,8 @@ fn relax_torsions(
             let outer = rho * rho * along + rho;
             for i in 0..m {
                 for j in 0..m {
-                    inverse[i * m + j] +=
-                        -rho * (curved[i] * step[j] + step[i] * curved[j]) + outer * step[i] * step[j];
+                    inverse[i * m + j] += -rho * (curved[i] * step[j] + step[i] * curved[j])
+                        + outer * step[i] * step[j];
                 }
             }
         }
@@ -628,14 +649,19 @@ fn shake(
         if touched < 2 {
             continue;
         }
-        let Some(candidate) =
-            relax_candidate(&mut trial, field, Screen::Cartesian(SCREEN_ITERATIONS), energy)
-        else {
+        let Some(candidate) = relax_candidate(
+            &mut trial,
+            field,
+            Screen::Cartesian(SCREEN_ITERATIONS),
+            energy,
+        ) else {
             continue;
         };
         if candidate < energy - ACCEPT
             && candidate.is_finite()
-            && trial.iter().all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+            && trial
+                .iter()
+                .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
             && stereo.count_mismatches(&trial) <= mismatches
         {
             *positions = trial;
@@ -700,25 +726,21 @@ impl Move {
 
     fn apply(&self, positions: &mut [Vector3D], degrees: f64) {
         match &self.operation {
-            Operation::Turn => {
-                rotate(positions, self.pivot, self.axis_end, &self.side, degrees.to_radians())
-            }
-            Operation::Invert { in_plane } => {
-                reflect(positions, self.pivot, *in_plane, &self.side)
-            }
-            Operation::InvertRing { ring, branches } => {
-                invert_ring(positions, ring, branches)
-            }
+            Operation::Turn => rotate(
+                positions,
+                self.pivot,
+                self.axis_end,
+                &self.side,
+                degrees.to_radians(),
+            ),
+            Operation::Invert { in_plane } => reflect(positions, self.pivot, *in_plane, &self.side),
+            Operation::InvertRing { ring, branches } => invert_ring(positions, ring, branches),
         }
     }
 }
 
 /// Turns a ring's pucker inside out, as [`Operation::InvertRing`] describes.
-fn invert_ring(
-    positions: &mut [Vector3D],
-    ring: &[usize],
-    branches: &[Vec<(usize, Vec<usize>)>],
-) {
+fn invert_ring(positions: &mut [Vector3D], ring: &[usize], branches: &[Vec<(usize, Vec<usize>)>]) {
     let centroid = ring
         .iter()
         .fold(Vector3D::default(), |sum, &atom| sum + positions[atom])
@@ -732,13 +754,12 @@ fn invert_ring(
         normal += current.cross(&next);
     }
     let length = normal.length();
-    if length < 1e-9 {
+    if length < MIN_TRANSFORM_AXIS_NORM {
         return;
     }
     let normal = normal * (1.0 / length);
-    let reflect_point = |point: Vector3D| -> Vector3D {
-        point - normal * (2.0 * (point - centroid).dot(&normal))
-    };
+    let reflect_point =
+        |point: Vector3D| -> Vector3D { point - normal * (2.0 * (point - centroid).dot(&normal)) };
 
     // Where each substituent has to end up, worked out before anything
     // moves: the reflection of the *other* substituent's direction at the
@@ -777,7 +798,7 @@ fn invert_ring(
         let axis = current.cross(&target);
         let sine = axis.length();
         let cosine = current.dot(&target).clamp(-1.0, 1.0);
-        let turn: Box<dyn Fn(Vector3D) -> Vector3D> = if sine < 1e-9 {
+        let turn: Box<dyn Fn(Vector3D) -> Vector3D> = if sine < PARALLEL_DIRECTION_SINE {
             if cosine > 0.0 {
                 Box::new(|offset: Vector3D| offset)
             } else {
@@ -789,9 +810,7 @@ fn invert_ring(
                     Vector3D::new(0.0, 1.0, 0.0)
                 };
                 let axis = current.cross(&perpendicular).normalize();
-                Box::new(move |offset: Vector3D| {
-                    axis * (2.0 * offset.dot(&axis)) - offset
-                })
+                Box::new(move |offset: Vector3D| axis * (2.0 * offset.dot(&axis)) - offset)
             }
         } else {
             let axis = axis * (1.0 / sine);
@@ -809,18 +828,13 @@ fn invert_ring(
 }
 
 /// Reflects `side` through the plane containing `pivot` and `in_plane`.
-fn reflect(
-    positions: &mut [Vector3D],
-    pivot: usize,
-    in_plane: (usize, usize),
-    side: &[usize],
-) {
+fn reflect(positions: &mut [Vector3D], pivot: usize, in_plane: (usize, usize), side: &[usize]) {
     let origin = positions[pivot];
     let first = positions[in_plane.0] - origin;
     let second = positions[in_plane.1] - origin;
     let normal = first.cross(&second);
     let length = normal.length();
-    if length < 1e-9 {
+    if length < MIN_TRANSFORM_AXIS_NORM {
         // The three are collinear, so they name no plane and there is
         // nothing to invert through.
         return;
@@ -1011,7 +1025,10 @@ fn inversion_moves(molecule: &Molecule3D) -> Vec<Move> {
         // a nitro -- or by conjugation with a neighbour, which is what makes
         // an amide's nitrogen flat even though all three of its bonds are
         // single. A peptide has one such nitrogen per residue.
-        if neighbours.iter().any(|bond| bond.bond_order() != BondOrder::Single) {
+        if neighbours
+            .iter()
+            .any(|bond| bond.bond_order() != BondOrder::Single)
+        {
             continue;
         }
         let conjugated = neighbours.iter().any(|bond| {
@@ -1053,7 +1070,9 @@ fn inversion_moves(molecule: &Molecule3D) -> Vec<Move> {
             rigid_allowance: RIGID_ALLOWANCE,
             screen_iterations: SCREEN_ITERATIONS,
             about_bond: false,
-            operation: Operation::Invert { in_plane: (heavy[0], heavy[1]) },
+            operation: Operation::Invert {
+                in_plane: (heavy[0], heavy[1]),
+            },
         });
     }
     moves
@@ -1143,7 +1162,10 @@ fn ring_inversion_moves(molecule: &Molecule3D) -> Vec<Move> {
             rigid_allowance: f64::INFINITY,
             screen_iterations: RING_SCREEN_ITERATIONS,
             about_bond: false,
-            operation: Operation::InvertRing { ring: ring.clone(), branches },
+            operation: Operation::InvertRing {
+                ring: ring.clone(),
+                branches,
+            },
         });
     }
     moves
@@ -1286,7 +1308,6 @@ fn branch_between(
     (branch.len() * 2 <= molecule.len()).then_some(branch)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1361,7 +1382,11 @@ mod tests {
             .into_iter()
             .next()
             .expect("ethane's one bond should give a rotor");
-        assert_eq!(rotor.side.len(), 3, "a methyl's three hydrogens turn together");
+        assert_eq!(
+            rotor.side.len(),
+            3,
+            "a methyl's three hydrogens turn together"
+        );
         assert_eq!(rotor.angles().len(), 1, "one sixth of a turn, once");
         assert_eq!(rotor.rigid_allowance, 0.0);
     }
@@ -1372,7 +1397,11 @@ mod tests {
     #[test]
     fn inversion_is_offered_where_a_pyramid_can_turn_over() {
         let morpholine = molecule("C1COCCN1");
-        assert_eq!(inversion_moves(&morpholine).len(), 1, "morpholine's one N-H");
+        assert_eq!(
+            inversion_moves(&morpholine).len(),
+            1,
+            "morpholine's one N-H"
+        );
 
         let amide = molecule("CC(=O)NC");
         assert!(
@@ -1519,7 +1548,13 @@ mod tests {
         let (mut positions, bonds, field) = torsion_space("CCCCOC(=O)N");
         assert!(bonds.len() >= 4, "the chain should have rotatable bonds");
         for (k, bond) in bonds.iter().enumerate() {
-            rotate(&mut positions, bond.pivot, bond.axis_end, &bond.side, 0.3 + 0.2 * k as f64);
+            rotate(
+                &mut positions,
+                bond.pivot,
+                bond.axis_end,
+                &bond.side,
+                0.3 + 0.2 * k as f64,
+            );
         }
         let mut cartesian = vec![Vector3D::default(); positions.len()];
         field.energy_and_gradient(&positions, &mut cartesian);
@@ -1572,12 +1607,18 @@ mod tests {
         let start = field.energy(&positions);
         let relaxed = relax_torsions(&mut positions, &field, &bonds, 50);
 
-        assert!(relaxed < start - 1.0, "{start:.3} should have relaxed, got {relaxed:.3}");
+        assert!(
+            relaxed < start - 1.0,
+            "{start:.3} should have relaxed, got {relaxed:.3}"
+        );
         assert!((relaxed - field.energy(&positions)).abs() < 1e-9);
         for (a, b) in pairs {
             let was = before[a].distance(&before[b]);
             let now = positions[a].distance(&positions[b]);
-            assert!((was - now).abs() < 1e-9, "{a}-{b} changed: {was:.6} to {now:.6}");
+            assert!(
+                (was - now).abs() < 1e-9,
+                "{a}-{b} changed: {was:.6} to {now:.6}"
+            );
         }
     }
 }

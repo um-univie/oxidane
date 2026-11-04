@@ -3,6 +3,26 @@
 //! Follows the Crippen/Havel convention: for a pair `(i, j)` with `i < j`,
 //! the upper bound is stored at `[i, j]` and the lower bound at `[j, i]`.
 
+/// Covalent-radius multiplier used when the van der Waals table has no row.
+const VDW_COVALENT_RADIUS_SCALE: f64 = 1.6;
+/// Radius fallback in Å when neither reference table covers an element.
+const DEFAULT_VDW_RADIUS: f64 = 1.7;
+/// Bond-length fallback covalent radius in Å for an unsupported element.
+const DEFAULT_COVALENT_RADIUS: f64 = 0.77;
+/// Upper-bound multiplier when repairing an inverted interval after smoothing.
+const BOUNDS_REPAIR_EXPANSION: f64 = 1.02;
+/// Maximum fraction of atom-pair bounds that may require repair.
+const MAX_BOUNDS_REPAIR_FRACTION: f64 = 0.01;
+
+/// Empirical scaling of summed single-bond covalent radii by bond order.
+/// These embedding estimates are calibrated against typical C-C distances;
+/// they are not reference radii or force-field equilibrium lengths.
+const SINGLE_BOND_RADIUS_SCALE: f64 = 1.01;
+const AROMATIC_BOND_RADIUS_SCALE: f64 = 0.915;
+const DOUBLE_BOND_RADIUS_SCALE: f64 = 0.87;
+const TRIPLE_BOND_RADIUS_SCALE: f64 = 0.78;
+const QUADRUPLE_BOND_RADIUS_SCALE: f64 = 0.70;
+
 use super::EmbedError;
 use crate::molecule::forcefield::lanes::{self, LANES, Lanes};
 use crate::molecule::minimize::Coordinate;
@@ -78,18 +98,7 @@ const VDW_LOWER_SCALE: f64 = 0.8;
 /// would -- so raw energies rise unless more trials are searched. They
 /// recover fully by 20 (atorvastatin 422.6 to 366.7, aspirin 79.9 to 59.6),
 /// which is what `EmbedConfig::max_attempts` is now for.
-const VDW_RADII: &[(u8, f64)] = &[
-    (1, 1.20),  // H
-    (6, 1.70),  // C
-    (7, 1.55),  // N
-    (8, 1.52),  // O
-    (9, 1.47),  // F
-    (15, 1.80), // P
-    (16, 1.80), // S
-    (17, 1.75), // Cl
-    (35, 1.85), // Br
-    (53, 1.98), // I
-];
+use chemistry_consts::BONDI_VDW_RADII_ANGSTROM as VDW_RADII;
 
 pub(super) fn vdw_radius(atomic_number: u8) -> f64 {
     if let Some(&(_, radius)) = VDW_RADII.iter().find(|&&(z, _)| z == atomic_number) {
@@ -97,8 +106,8 @@ pub(super) fn vdw_radius(atomic_number: u8) -> f64 {
     }
     atomic_number
         .covalent_radius()
-        .map(|r| r * 1.6)
-        .unwrap_or(1.7)
+        .map(|r| r * VDW_COVALENT_RADIUS_SCALE)
+        .unwrap_or(DEFAULT_VDW_RADIUS)
 }
 
 /// Multiplicative bond-order correction applied to the sum of single-bond
@@ -108,11 +117,13 @@ pub(super) fn vdw_radius(atomic_number: u8) -> f64 {
 /// simplification since real increments are element-pair-specific.
 fn bond_order_factor(order: BondOrder) -> f64 {
     match order {
-        BondOrder::Single | BondOrder::Up | BondOrder::Down | BondOrder::Coordinate => 1.01,
-        BondOrder::Aromatic => 0.915,
-        BondOrder::Double => 0.87,
-        BondOrder::Triple => 0.78,
-        BondOrder::Quadruple => 0.70,
+        BondOrder::Single | BondOrder::Up | BondOrder::Down | BondOrder::Coordinate => {
+            SINGLE_BOND_RADIUS_SCALE
+        }
+        BondOrder::Aromatic => AROMATIC_BOND_RADIUS_SCALE,
+        BondOrder::Double => DOUBLE_BOND_RADIUS_SCALE,
+        BondOrder::Triple => TRIPLE_BOND_RADIUS_SCALE,
+        BondOrder::Quadruple => QUADRUPLE_BOND_RADIUS_SCALE,
     }
 }
 
@@ -372,8 +383,15 @@ fn hybridisation_of<T: MoleculeCore>(mol: &T, atom: usize) -> RingHybridisation 
     let Some(bonds) = mol.get_atom_bonds(atom) else {
         return RingHybridisation::Other;
     };
-    let doubles = bonds.iter().filter(|bond| bond.bond_order == BondOrder::Double).count();
-    if bonds.iter().any(|bond| bond.bond_order == BondOrder::Triple) || doubles >= 2 {
+    let doubles = bonds
+        .iter()
+        .filter(|bond| bond.bond_order == BondOrder::Double)
+        .count();
+    if bonds
+        .iter()
+        .any(|bond| bond.bond_order == BondOrder::Triple)
+        || doubles >= 2
+    {
         return RingHybridisation::Other;
     }
     if bonds
@@ -384,7 +402,6 @@ fn hybridisation_of<T: MoleculeCore>(mol: &T, atom: usize) -> RingHybridisation 
     }
     RingHybridisation::Sp3
 }
-
 
 /// The angle at `k` of the 1-3 pair `(i, j)` inside a 3- or 4-membered ring,
 /// as that ring's own bond lengths make it -- not the regular polygon's
@@ -488,8 +505,12 @@ fn covalent_bond_length<T: MoleculeCore>(mol: &T, a: usize, b: usize) -> Option<
         .iter()
         .find(|bond| bond.target == b)?;
     Some(
-        (mol.atomic_numbers()[a].covalent_radius().unwrap_or(0.77)
-            + mol.atomic_numbers()[b].covalent_radius().unwrap_or(0.77))
+        (mol.atomic_numbers()[a]
+            .covalent_radius()
+            .unwrap_or(DEFAULT_COVALENT_RADIUS)
+            + mol.atomic_numbers()[b]
+                .covalent_radius()
+                .unwrap_or(DEFAULT_COVALENT_RADIUS))
             * bond_order_factor(bond.bond_order),
     )
 }
@@ -780,7 +801,11 @@ impl Geometry {
             );
         }
         let planar_rings = planar_ring_angles(mol, cycles, &lengths);
-        Self { lengths, angles, planar_rings }
+        Self {
+            lengths,
+            angles,
+            planar_rings,
+        }
     }
 
     /// No MMFF geometry at all: covalent radii and the hybridisation
@@ -804,7 +829,6 @@ impl Geometry {
         }
         covalent_bond_length(mol, a, b)
     }
-
 
     /// The angle an aromatic ring's own sides put at `centre`, in radians.
     fn planar_ring_angle(&self, i: usize, centre: usize, j: usize) -> Option<f64> {
@@ -1148,12 +1172,10 @@ fn apply_fourteen_bounds<T: MoleculeCore>(
                     let last_short = last_length - BOND_TOLERANCE;
                     let last_long = last_length + BOND_TOLERANCE;
 
-                    let cis = fourteen_distance(
-                        short, middle_short, last_short, near_low, far_low, true,
-                    );
-                    let trans = fourteen_distance(
-                        long, middle_long, last_long, near_high, far_high, false,
-                    );
+                    let cis =
+                        fourteen_distance(short, middle_short, last_short, near_low, far_low, true);
+                    let trans =
+                        fourteen_distance(long, middle_long, last_long, near_high, far_high, false);
                     // The ceiling only. The anti arrangement is as far apart
                     // as three bonds and two angles allow, which is real
                     // information and tighter than anything smoothing can
@@ -1468,7 +1490,6 @@ fn apply_aromatic_ring_bounds<T: MoleculeCore>(
     }
 }
 
-
 /// The cyclic order of an all-aromatic-bonded ring, or `None` if any of its
 /// bonds is not aromatic. Same bond-adjacency walk as
 /// [`super::planarity`]'s, which needs the order for the same reason: a
@@ -1549,11 +1570,11 @@ pub(crate) fn smooth_bounds(bounds: &mut Array2<f64>) -> Result<(), EmbedError> 
             let upper = get_upper(bounds, i, j);
             if lower > upper {
                 fixups += 1;
-                set_bounds(bounds, i, j, lower, lower * 1.02);
+                set_bounds(bounds, i, j, lower, lower * BOUNDS_REPAIR_EXPANSION);
             }
         }
     }
-    if total > 0 && (fixups as f64) / (total as f64) > 0.01 {
+    if total > 0 && (fixups as f64) / (total as f64) > MAX_BOUNDS_REPAIR_FRACTION {
         return Err(EmbedError::BoundsInfeasible);
     }
 
@@ -1574,7 +1595,12 @@ mod tests {
     #[test]
     fn ethane_cc_bond_length() {
         let m = mol("CC");
-        let bounds = build_bounds(&m, &Geometry::for_molecule(&m, &ring_set(&m)), &ring_set(&m)).unwrap();
+        let bounds = build_bounds(
+            &m,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+            &ring_set(&m),
+        )
+        .unwrap();
         let lower = get_lower(&bounds, 0, 1);
         let upper = get_upper(&bounds, 0, 1);
         assert!(
@@ -1586,7 +1612,12 @@ mod tests {
     #[test]
     fn benzene_bond_length_and_1_3_angle() {
         let m = mol("c1ccccc1");
-        let mut bounds = build_bounds(&m, &Geometry::for_molecule(&m, &ring_set(&m)), &ring_set(&m)).unwrap();
+        let mut bounds = build_bounds(
+            &m,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+            &ring_set(&m),
+        )
+        .unwrap();
         smooth_bounds(&mut bounds).unwrap();
 
         let lower = get_lower(&bounds, 0, 1);
@@ -1618,7 +1649,12 @@ mod tests {
         // the angle.
         for smiles in ["C1PC1", "C1CS1", "C1C[Si]1", "C1SS1", "C1CPC1"] {
             let m = mol(smiles);
-            let mut bounds = build_bounds(&m, &Geometry::for_molecule(&m, &ring_set(&m)), &ring_set(&m)).unwrap();
+            let mut bounds = build_bounds(
+                &m,
+                &Geometry::for_molecule(&m, &ring_set(&m)),
+                &ring_set(&m),
+            )
+            .unwrap();
             smooth_bounds(&mut bounds)
                 .unwrap_or_else(|_| panic!("{smiles} should have feasible bounds"));
         }
@@ -1630,7 +1666,14 @@ mod tests {
         // phosphorus is ~49 degrees, not the regular polygon's 60.
         let m = mol("C1PC1");
         let cycles = m.compute_fundamental_cycles();
-        let (min, max) = angle_bounds_for_triple(&m, 0, 1, 2, &cycles, &Geometry::for_molecule(&m, &ring_set(&m)));
+        let (min, max) = angle_bounds_for_triple(
+            &m,
+            0,
+            1,
+            2,
+            &cycles,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+        );
         let (min, max) = (min.to_degrees(), max.to_degrees());
         assert!(
             max < 55.0,
@@ -1645,7 +1688,14 @@ mod tests {
         // polygon's own, around 60.
         let m = mol("C1CC1");
         let cycles = m.compute_fundamental_cycles();
-        let (min, max) = angle_bounds_for_triple(&m, 0, 1, 2, &cycles, &Geometry::for_molecule(&m, &ring_set(&m)));
+        let (min, max) = angle_bounds_for_triple(
+            &m,
+            0,
+            1,
+            2,
+            &cycles,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+        );
         assert!(min.to_degrees() <= 60.0 && max.to_degrees() >= 60.0);
     }
 
@@ -1656,7 +1706,14 @@ mod tests {
         // square's 90. (Atoms: C0-C1-P2-C3.)
         let m = mol("C1CPC1");
         let cycles = m.compute_fundamental_cycles();
-        let (min, max) = angle_bounds_for_triple(&m, 1, 2, 3, &cycles, &Geometry::for_molecule(&m, &ring_set(&m)));
+        let (min, max) = angle_bounds_for_triple(
+            &m,
+            1,
+            2,
+            3,
+            &cycles,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+        );
         let (min, max) = (min.to_degrees(), max.to_degrees());
         assert!(
             max < 90.0,
@@ -1674,7 +1731,12 @@ mod tests {
         // (not directly bonded), so the ring-size override (90 deg interior
         // angle) should apply instead of the generic sp3 default (109.5 deg).
         let m = mol("C1CCC1");
-        let bounds = build_bounds(&m, &Geometry::for_molecule(&m, &ring_set(&m)), &ring_set(&m)).unwrap();
+        let bounds = build_bounds(
+            &m,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+            &ring_set(&m),
+        )
+        .unwrap();
 
         let bond_lower = get_lower(&bounds, 0, 1);
         let bond_upper = get_upper(&bounds, 0, 1);
@@ -1710,7 +1772,12 @@ mod tests {
     #[test]
     fn allene_center_is_linear() {
         let m = mol("C=C=C");
-        let bounds = build_bounds(&m, &Geometry::for_molecule(&m, &ring_set(&m)), &ring_set(&m)).unwrap();
+        let bounds = build_bounds(
+            &m,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+            &ring_set(&m),
+        )
+        .unwrap();
 
         let l_ik = get_lower(&bounds, 0, 1);
         let u_ik = get_upper(&bounds, 0, 1);
@@ -1730,7 +1797,12 @@ mod tests {
     #[test]
     fn smoothing_keeps_fused_ring_bounds_feasible() {
         let m = mol("C1CC2CCCCC2C1");
-        let mut bounds = build_bounds(&m, &Geometry::for_molecule(&m, &ring_set(&m)), &ring_set(&m)).unwrap();
+        let mut bounds = build_bounds(
+            &m,
+            &Geometry::for_molecule(&m, &ring_set(&m)),
+            &ring_set(&m),
+        )
+        .unwrap();
         smooth_bounds(&mut bounds).unwrap();
 
         let n = bounds.nrows();

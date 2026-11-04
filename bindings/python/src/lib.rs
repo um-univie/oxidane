@@ -11,9 +11,11 @@ use oxidane::molecule::tautomer::{TautomerRules, normalized_smiles, tautomer_key
 use oxidane::molecule::{MolecularGraph, Molecule3D};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyString;
+use pyo3::types::{PyFloat, PyString};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn value_error(error: impl std::fmt::Debug) -> PyErr {
     PyValueError::new_err(format!("{error:?}"))
@@ -79,7 +81,7 @@ impl PyMolecule {
     #[new]
     fn new(smiles: &str) -> PyResult<Self> {
         // Keep every dot-separated component, including counterions.
-        let molecules = MolecularGraph::from_smiles(smiles).map_err(value_error)?;
+        let molecules = MolecularGraph::from_smiles(smiles.trim()).map_err(value_error)?;
         if molecules.is_empty() {
             return Err(PyValueError::new_err("SMILES must contain a molecule"));
         }
@@ -99,8 +101,9 @@ impl PyMolecule {
     fn canonize(&mut self) {
         canonize_mol_inplace(&mut self.inner);
     }
-    fn to_canonical_smiles(&self) -> String {
-        canonize_mol(&self.inner).to_smiles()
+    /// The same string `oxidane.canonical_smiles` gives for this molecule's SMILES.
+    fn to_canonical_smiles(&self) -> PyResult<String> {
+        canonicalize_and_sort_smiles(&self.inner.to_smiles(), true).map_err(value_error)
     }
     /// The same string `oxidane.tautomer_key` gives for this molecule's SMILES.
     #[pyo3(signature = (*, carbon_endpoints=false, ionizable_endpoints=false))]
@@ -164,8 +167,9 @@ impl PyMolecule3D {
     fn to_smiles(&self) -> String {
         self.inner.to_smiles()
     }
-    fn to_canonical_smiles(&self) -> String {
-        canonize_mol(&self.inner).to_smiles()
+    /// The same string `oxidane.canonical_smiles` gives for this molecule's SMILES.
+    fn to_canonical_smiles(&self) -> PyResult<String> {
+        canonicalize_and_sort_smiles(&self.inner.to_smiles(), true).map_err(value_error)
     }
     fn to_graph(&self) -> PyMolecule {
         PyMolecule {
@@ -381,13 +385,50 @@ impl OnError {
     }
 }
 
+/// Whether `value` is a missing entry rather than a SMILES: `None`, a float
+/// NaN, or pandas' `NA`, which is what a column with gaps holds.
+fn is_missing(value: &Bound<'_, PyAny>) -> bool {
+    value.is_none()
+        || value
+            .cast::<PyFloat>()
+            .is_ok_and(|number| number.value().is_nan())
+        || value.get_type().name().is_ok_and(|name| name == "NAType")
+}
+
+/// One rayon pool per thread count asked for, built on first use; building one
+/// per call cost more than canonizing a small batch.
+fn pool(threads: usize) -> PyResult<Arc<rayon::ThreadPool>> {
+    static POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
+    let mut pools = POOLS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(pool) = pools.get(&threads) {
+        return Ok(Arc::clone(pool));
+    }
+    let pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .map_err(value_error)?,
+    );
+    pools.insert(threads, Arc::clone(&pool));
+    Ok(pool)
+}
+
+/// How many unreadable SMILES one call names on stderr before only counting
+/// the rest; a wrong column would otherwise print a line for every row.
+const REPORTED: usize = 10;
+
 /// Applies `compute` to one SMILES or to every SMILES of an iterable.
 ///
 /// A single string gives back a string. Anything else is read as an iterable
 /// of strings, copied out while the GIL is held, and computed on rayon's pool
 /// without it, so other Python threads keep running; the answers come back as
-/// a list in input order. A SMILES that does not parse is handled as `errors`
-/// says: kept as it was with a line on stderr, replaced by None, or raised.
+/// a list in input order. Surrounding whitespace is ignored. A missing entry
+/// (`None`, NaN, `pandas.NA`) gives `None`. A SMILES that does not parse is
+/// handled as `errors` says: kept as it was with a line on stderr (the first
+/// [`REPORTED`] of a call, then a count), replaced by None, or raised.
 fn map_smiles(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -396,38 +437,56 @@ fn map_smiles(
     compute: impl Fn(&str) -> Result<String, SMILESParseError> + Sync,
 ) -> PyResult<Py<PyAny>> {
     let on_error = OnError::parse(errors)?;
+    if threads == Some(0) {
+        return Err(PyValueError::new_err("threads must be positive"));
+    }
     let single = smiles.cast::<PyString>().is_ok();
-    let inputs = if single {
-        vec![smiles.extract::<String>()?]
+    if !single && is_missing(smiles) {
+        return Ok(py.None());
+    }
+    let inputs: Vec<Option<String>> = if single {
+        vec![Some(smiles.extract::<String>()?)]
     } else {
         smiles
             .try_iter()
             .map_err(|_| PyTypeError::new_err("smiles must be a string or an iterable of strings"))?
             .enumerate()
             .map(|(index, item)| {
-                item?
-                    .extract::<String>()
-                    .map_err(|_| PyTypeError::new_err(format!("item {index} is not a string")))
+                let item = item?;
+                if is_missing(&item) {
+                    return Ok(None);
+                }
+                item.extract::<String>().map(Some).map_err(|_| {
+                    PyTypeError::new_err(format!(
+                        "item {index} is not a string (got {})",
+                        item.get_type()
+                            .name()
+                            .map_or_else(|_| "?".to_owned(), |name| name.to_string())
+                    ))
+                })
             })
-            .collect::<PyResult<Vec<String>>>()?
+            .collect::<PyResult<Vec<Option<String>>>>()?
     };
-    let answers = py.detach(|| match threads {
-        Some(0) => Err(PyValueError::new_err("threads must be positive")),
-        Some(1) => Ok(inputs.iter().map(|smiles| compute(smiles)).collect()),
-        Some(count) => rayon::ThreadPoolBuilder::new()
-            .num_threads(count)
-            .build()
-            .map_err(value_error)
-            .map(|pool| pool.install(|| inputs.par_iter().map(|smiles| compute(smiles)).collect())),
-        None => Ok(inputs.par_iter().map(|smiles| compute(smiles)).collect()),
-    })?;
-    let answers: Vec<Result<String, SMILESParseError>> = answers;
+    let pool = match threads {
+        Some(count) if count > 1 => Some(pool(count)?),
+        _ => None,
+    };
+    let answer = |smiles: &Option<String>| smiles.as_deref().map(|smiles| compute(smiles.trim()));
+    let answers: Vec<Option<Result<String, SMILESParseError>>> =
+        py.detach(|| match (threads, pool) {
+            (Some(1), _) => inputs.iter().map(answer).collect(),
+            (_, Some(pool)) => pool.install(|| inputs.par_iter().map(answer).collect()),
+            _ => inputs.par_iter().map(answer).collect(),
+        });
     let mut list = Vec::with_capacity(answers.len());
     let mut report = String::new();
+    let mut kept = 0;
     for (index, (answer, input)) in answers.into_iter().zip(inputs).enumerate() {
         match answer {
-            Ok(answer) => list.push(Some(answer)),
-            Err(error) => {
+            None => list.push(None),
+            Some(Ok(answer)) => list.push(Some(answer)),
+            Some(Err(error)) => {
+                let input = input.unwrap_or_default();
                 let place = if single {
                     String::new()
                 } else {
@@ -438,14 +497,23 @@ fn map_smiles(
                     OnError::Raise => return Err(PyValueError::new_err(message)),
                     OnError::Null => list.push(None),
                     OnError::Keep => {
-                        report.push_str("oxidane: ");
-                        report.push_str(&message);
-                        report.push_str(", kept as it was\n");
+                        if kept < REPORTED {
+                            report.push_str("oxidane: ");
+                            report.push_str(&message);
+                            report.push_str(", kept as it was\n");
+                        }
+                        kept += 1;
                         list.push(Some(input));
                     }
                 }
             }
         }
+    }
+    if kept > REPORTED {
+        report.push_str(&format!(
+            "oxidane: {} more SMILES could not be read and were kept as they were\n",
+            kept - REPORTED
+        ));
     }
     if !report.is_empty() {
         py.import("sys")?

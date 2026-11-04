@@ -111,7 +111,11 @@ pub(super) fn angle_type(
 /// decide between them.
 pub(super) fn stretch_bend_type(angle_type: u8, first_bond: u8, second_bond: u8) -> u8 {
     let asymmetric = |low: u8, high: u8| {
-        if first_bond != 0 || first_bond == second_bond { low } else { high }
+        if first_bond != 0 || first_bond == second_bond {
+            low
+        } else {
+            high
+        }
     };
     match angle_type {
         1 => asymmetric(1, 2),
@@ -189,7 +193,11 @@ fn periodic_row_herschbach_laurie(atomic_number: u8) -> u8 {
         37..=54 => 5,
         _ => 0,
     };
-    if matches!(atomic_number, 21..=30 | 39..=48) { row * 10 } else { row }
+    if matches!(atomic_number, 21..=30 | 39..=48) {
+        row * 10
+    } else {
+        row
+    }
 }
 
 /// A bond's parameters: the table where it has them, and MMFF.V's empirical
@@ -215,12 +223,16 @@ pub(super) fn bond_parameters(
     // Equation 18 of MMFF.V: two covalent radii, shortened by a term in the
     // electronegativity difference, which is smaller when hydrogen is one of
     // the two.
-    let shrinkage = if one == 1 || two == 1 { 0.050 } else { 0.085 };
+    let shrinkage = if one == 1 || two == 1 {
+        params::BOND_SHRINKAGE_HYDROGEN
+    } else {
+        params::BOND_SHRINKAGE_HEAVY
+    };
     let length = radius_one.radius + radius_two.radius
         - shrinkage
             * (radius_one.electronegativity - radius_two.electronegativity)
                 .abs()
-                .powf(1.4);
+                .powf(params::BOND_ELECTRONEGATIVITY_EXPONENT);
 
     // Equation 19: the force constant of a reference bond between the same
     // two elements, scaled by the sixth power of how much this bond differs
@@ -237,7 +249,10 @@ pub(super) fn bond_parameters(
         }
     };
 
-    Some(BondParameters { force_constant, length })
+    Some(BondParameters {
+        force_constant,
+        length,
+    })
 }
 
 /// An angle's parameters, by table or by MMFF.V's empirical rule. The rule
@@ -273,7 +288,11 @@ pub(super) fn angle_parameters(
                 2 if perception.element(central) == 8 => 105.0,
                 2 if properties.linear => 180.0,
                 3 if properties.valence == 3 && properties.multiple_bonds == 0 => {
-                    if perception.element(central) == 7 { 107.0 } else { 92.0 }
+                    if perception.element(central) == 7 {
+                        107.0
+                    } else {
+                        92.0
+                    }
                 }
                 _ => 120.0,
             };
@@ -289,46 +308,25 @@ pub(super) fn angle_parameters(
     // Equation 20 of MMFF.V: an effective nuclear charge for each outer
     // atom, a shell factor for the centre, and a penalty for the two bonds
     // being of different lengths. A strained ring softens the whole thing.
-    let charge = |atomic_number: u8| -> f64 { match atomic_number {
-        1 => 1.395,
-        6 => 2.494,
-        7 => 2.711,
-        8 => 3.045,
-        9 => 2.847,
-        14 => 2.350,
-        15 => 2.350,
-        16 => 2.980,
-        17 => 2.909,
-        35 => 3.017,
-        53 => 3.086,
-        _ => 0.0,
-    } };
-    let shell = |atomic_number: u8| -> f64 { match atomic_number {
-        6 => 1.016,
-        7 => 1.113,
-        8 => 1.337,
-        14 => 0.811,
-        15 => 1.068,
-        16 => 1.249,
-        17 => 1.078,
-        _ => 0.0,
-    } };
 
     let beta = match ring_size {
-        3 => 1.75 * 0.05,
-        4 => 1.75 * 0.85,
-        _ => 1.75,
+        3 => params::EMPIRICAL_ANGLE_PREFACTOR * params::THREE_RING_ANGLE_SCALE,
+        4 => params::EMPIRICAL_ANGLE_PREFACTOR * params::FOUR_RING_ANGLE_SCALE,
+        _ => params::EMPIRICAL_ANGLE_PREFACTOR,
     };
     let lengths = first_bond.length + last_bond.length;
     let imbalance = (first_bond.length - last_bond.length) / lengths;
     let radians = DEGREES_TO_RADIANS * angle;
     let force_constant = beta
-        * charge(perception.element(first))
-        * shell(perception.element(central))
-        * charge(perception.element(last))
+        * params::empirical_angle_charge(perception.element(first))
+        * params::empirical_angle_shell(perception.element(central))
+        * params::empirical_angle_charge(perception.element(last))
         / (lengths * radians * radians * (2.0 * imbalance * imbalance).exp());
 
-    Some(AngleParameters { force_constant, angle })
+    Some(AngleParameters {
+        force_constant,
+        angle,
+    })
 }
 
 /// An angle's stretch-bend parameters, or `None` where the term does not
@@ -349,8 +347,16 @@ pub(super) fn stretch_bend_parameters(
     let last_bond = bond_type(perception, types, central, last);
     let kind = stretch_bend_type(
         angle_type(perception, types, first, central, last),
-        if types[first] <= types[last] { first_bond } else { last_bond },
-        if types[first] < types[last] { last_bond } else { first_bond },
+        if types[first] <= types[last] {
+            first_bond
+        } else {
+            last_bond
+        },
+        if types[first] < types[last] {
+            last_bond
+        } else {
+            first_bond
+        },
     );
 
     let found = params::stretch_bend(
@@ -374,7 +380,10 @@ pub(super) fn stretch_bend_parameters(
         return None;
     }
     Some(if swapped {
-        StretchBendParameters { first: parameters.second, second: parameters.first }
+        StretchBendParameters {
+            first: parameters.second,
+            second: parameters.first,
+        }
     } else {
         *parameters
     })
@@ -391,12 +400,17 @@ pub(super) fn torsion_parameters(
     fourth: usize,
 ) -> Option<(u8, TorsionParameters)> {
     let (kind, secondary) = torsion_types(perception, types, first, second, third, fourth);
-    let (kind, parameters) =
-        match params::torsion(kind, secondary, types[first], types[second], types[third], types[fourth])
-        {
-            Some((found, parameters)) => (found, *parameters),
-            None => (kind, empirical_torsion(perception, types, second, third)?),
-        };
+    let (kind, parameters) = match params::torsion(
+        kind,
+        secondary,
+        types[first],
+        types[second],
+        types[third],
+        types[fourth],
+    ) {
+        Some((found, parameters)) => (found, *parameters),
+        None => (kind, empirical_torsion(perception, types, second, third)?),
+    };
     if parameters.v1 == 0.0 && parameters.v2 == 0.0 && parameters.v3 == 0.0 {
         return None;
     }
@@ -415,21 +429,17 @@ fn empirical_torsion(
     let one = params::properties(types[second])?;
     let two = params::properties(types[third])?;
     let elements = [perception.element(second), perception.element(third)];
-    let mut parameters = TorsionParameters { v1: 0.0, v2: 0.0, v3: 0.0 };
+    let mut parameters = TorsionParameters {
+        v1: 0.0,
+        v2: 0.0,
+        v3: 0.0,
+    };
 
     // Table of the per-element constants: `U` scales a conjugation barrier,
     // `V` a threefold one, `W` the case of two chalcogens in a row.
-    let constants = |atomic_number: u8| -> (f64, f64, f64) { match atomic_number {
-        6 => (2.0, 2.12, 0.0),
-        7 => (2.0, 1.5, 0.0),
-        8 => (2.0, 0.2, 2.0),
-        14 => (1.25, 1.22, 0.0),
-        15 => (1.25, 2.40, 0.0),
-        16 => (1.25, 0.49, 8.0),
-        _ => (0.0, 0.0, 0.0),
-    } };
-    let (first_u, first_v, first_w) = constants(elements[0]);
-    let (second_u, second_v, second_w) = constants(elements[1]);
+
+    let (first_u, first_v, first_w) = params::empirical_torsion_constants(elements[0]);
+    let (second_u, second_v, second_w) = params::empirical_torsion_constants(elements[1]);
     let bonds = ((one.connections as f64) - 1.0) * ((two.connections as f64) - 1.0);
     let conjugated = |pi: f64| 6.0 * pi * (first_u * second_u).sqrt();
 
@@ -440,18 +450,25 @@ fn empirical_torsion(
         && perception.order(second, third) == BondOrder::Aromatic
     {
         // Rule (b): an aromatic bond.
-        let beta = if (one.valence == 3 && two.valence == 4)
-            || (one.valence == 4 && two.valence == 3)
-        {
-            3.0
+        let beta =
+            if (one.valence == 3 && two.valence == 4) || (one.valence == 4 && two.valence == 3) {
+                3.0
+            } else {
+                6.0
+            };
+        let pi = if !one.lone_pair && !two.lone_pair {
+            0.5
         } else {
-            6.0
+            0.3
         };
-        let pi = if !one.lone_pair && !two.lone_pair { 0.5 } else { 0.3 };
         parameters.v2 = beta * pi * (first_u * second_u).sqrt();
     } else if perception.order(second, third) == BondOrder::Double {
         // Rule (c): a double bond.
-        let pi = if one.multiple_bonds == 2 && two.multiple_bonds == 2 { 1.0 } else { 0.4 };
+        let pi = if one.multiple_bonds == 2 && two.multiple_bonds == 2 {
+            1.0
+        } else {
+            0.4
+        };
         parameters.v2 = conjugated(pi);
     } else if one.connections == 4 && two.connections == 4 {
         // Rule (d): two saturated centres.
@@ -543,7 +560,11 @@ pub(super) fn van_der_waals(types: &[u8], first: usize, second: usize) -> Option
     };
     let mut minimum = 0.5 * (one_radius + two_radius) * (1.0 + widening);
 
-    let mut well = 181.16 * one.factor * two.factor * one.polarizability * two.polarizability
+    let mut well = params::VDW_WELL_PREFACTOR
+        * one.factor
+        * two.factor
+        * one.polarizability
+        * two.polarizability
         / ((one.polarizability / one.electrons).sqrt()
             + (two.polarizability / two.electrons).sqrt())
         / minimum.powi(6);

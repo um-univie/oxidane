@@ -1308,6 +1308,7 @@ fn a_stereocentre_has_one_hand_however_it_is_written() {
         "C[C@H](N)C(=O)O",
         "OC(=O)[C@@H](N)C",
         "[C@H](N)(C)C(=O)O",
+        "[H][C@](N)(C)C(=O)O",
     ];
     let canonical = |smiles: &str| {
         canonize_mol(&MolecularGraph::from_smiles_single(smiles).unwrap()).to_smiles()
@@ -1392,4 +1393,43 @@ fn a_heavy_atom_graph_is_the_full_graph_without_its_hydrogens() {
     let heavy = graph_features_heavy(&hydrogen);
     assert_eq!(heavy.atom_count, 2);
     assert_eq!(heavy.edge_count, 2);
+}
+
+#[test]
+fn a_spatial_edge_joins_atoms_the_conformer_folds_together() {
+    use crate::molecule::featurize::{add_spatial_edges, graph_features_heavy_with_geometry};
+    use crate::vector::Vector3D;
+    // Pentane's heavy atoms on a tight curl. The pairs more than two bonds
+    // apart are contacts a graph does not already describe; the pairs two
+    // bonds apart are closer still, and are not.
+    let molecule = MolecularGraph::from_smiles_single("CCCCC").unwrap();
+    let mut positions: Vec<Vector3D> =
+        (0..molecule.len()).map(|atom| Vector3D::new(100.0 + 5.0 * atom as f64, 0.0, 0.0)).collect();
+    for (atom, (x, y)) in [(0.0, 0.0), (1.5, 0.0), (2.2, 1.3), (1.5, 2.6), (0.0, 2.6)].into_iter().enumerate() {
+        positions[atom] = Vector3D::new(x, y, 0.0);
+    }
+    let mut features = graph_features_heavy_with_geometry(&molecule, &positions);
+    let bonds = features.edge_count;
+    add_spatial_edges(&mut features, &molecule, &positions, 3.5);
+
+    let mut pairs: Vec<(usize, usize)> = (bonds..features.edge_count)
+        .map(|edge| features.edge(edge))
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .collect();
+    assert_eq!(pairs.len(), 6, "each contact both ways round");
+    pairs.sort();
+    pairs.dedup();
+    // Every pair more than two bonds apart is within 3.5 here (3.0, 2.6 and
+    // 3.0 angstroms); 0-2 at 2.6 is two bonds apart and is not an edge.
+    assert_eq!(pairs, vec![(0, 3), (0, 4), (1, 4)]);
+    for edge in bonds..features.edge_count {
+        let row = features.bond_row(edge);
+        assert!(row[..4].iter().all(|&value| value == 0.0), "a spatial edge has no bond order");
+        let (a, b) = features.edge(edge);
+        let want = positions[a].distance(&positions[b]) as f32;
+        assert!((row[BOND_FEATURE_WIDTH - 1] - want).abs() < 1e-5);
+    }
+    // And it reaches the batch with its reverse, as a bond does.
+    let batch = GraphBatch::collate(&[features]);
+    assert!(batch.reverse_edges().1.iter().all(|&found| found));
 }

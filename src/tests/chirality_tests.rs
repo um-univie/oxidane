@@ -24,7 +24,12 @@ mod tests {
     /// an XYZ/SDF file) must reproduce the original tag.
     #[test]
     fn tetrahedral_chirality_round_trips_through_3d_and_back_to_smiles() {
-        for smiles in ["[C@](F)(Cl)(Br)I", "[C@@](F)(Cl)(Br)I", "N[C@@H](C)C(=O)O", "N[C@H](C)C(=O)O"] {
+        for smiles in [
+            "[C@](F)(Cl)(Br)I",
+            "[C@@](F)(Cl)(Br)I",
+            "N[C@@H](C)C(=O)O",
+            "N[C@H](C)C(=O)O",
+        ] {
             let mol = MolecularGraph::from_smiles_single(smiles).unwrap();
             let mut embedded = mol.embed_3d().unwrap();
             embedded.chiral_classes = None; // simulate "freshly read from XYZ/SDF, no stereo tag yet"
@@ -39,11 +44,26 @@ mod tests {
 
     #[test]
     fn test_square_planar_chirality() {
+        // Under OpenSMILES / SP_VERTEX_TABLE convention:
+        //   SP1: trans pairs are (0, 2) and (1, 3)
+        //   SP2: trans pairs are (0, 1) and (2, 3)
+        //   SP3: trans pairs are (0, 3) and (1, 2)
+        //
+        // In "tests/cisplatin_sp2.xyz", the ligands around Pt are ordered:
+        //   atom 1 (ligand 0): N  ( 1.45,  1.45) [quadrant 1]
+        //   atom 2 (ligand 1): N  (-1.45,  1.45) [quadrant 2]
+        //   atom 3 (ligand 2): Cl ( 1.63, -1.63) [quadrant 4]
+        //   atom 4 (ligand 3): Cl (-1.63, -1.63) [quadrant 3]
+        // Across Pt at the origin, ligand 0 is trans to ligand 3, and ligand 1 is
+        // trans to ligand 2. With trans pairs (0, 3) and (1, 2), this geometry is
+        // classified as SP(3) (despite the legacy filename "cisplatin_sp2.xyz").
         let mols = Molecule3D::from_xyz("tests/cisplatin_sp2.xyz").unwrap();
         let mut cisplatin = mols.into_iter().next().unwrap();
         cisplatin.identify_chiral_classes();
         assert_eq!(cisplatin.chiral_classes().unwrap()[0], ChiralClass::SP(3));
 
+        // The three transplatin files test each of the three SP permutation classes
+        // by permuting the ligand ordering of trans-diamminedichloroplatinum(II):
         let mols = Molecule3D::from_xyz("tests/transplatin_sp1.xyz").unwrap();
         let mut transplatin = mols.into_iter().next().unwrap();
         transplatin.identify_chiral_classes();
@@ -100,8 +120,12 @@ mod tests {
     /// information is in the other end.
     #[test]
     fn test_cis_trans_chirality() {
-        let cis = Molecule3D::from_sdf("tests/cis_2_butene.sdf").unwrap().remove(0);
-        let trans = Molecule3D::from_sdf("tests/trans_2_butene.sdf").unwrap().remove(0);
+        let cis = Molecule3D::from_sdf("tests/cis_2_butene.sdf")
+            .unwrap()
+            .remove(0);
+        let trans = Molecule3D::from_sdf("tests/trans_2_butene.sdf")
+            .unwrap()
+            .remove(0);
 
         let cis_classes = cis.chiral_classes().unwrap();
         let trans_classes = trans.chiral_classes().unwrap();
@@ -155,7 +179,11 @@ mod tests {
                 .iter()
                 .map(|ligand| format!("({ligand})"))
                 .collect();
-            format!("{}[{centre}@{tag}{class}]{middle}{}", listed[0], listed[listed.len() - 1])
+            format!(
+                "{}[{centre}@{tag}{class}]{middle}{}",
+                listed[0],
+                listed[listed.len() - 1]
+            )
         };
         let cases: [(&str, &str, u8, &[&str], usize); 3] = [
             ("As", "TB", 20, &["S", "F", "Cl", "Br", "N"], 1),
@@ -181,7 +209,8 @@ mod tests {
                     };
                     let mut listing: Vec<usize> = (0..ligands.len()).collect();
                     listing.sort_by_key(|&position| order[position]);
-                    let listed: Vec<&str> = listing.iter().map(|&position| ligands[position]).collect();
+                    let listed: Vec<&str> =
+                        listing.iter().map(|&position| ligands[position]).collect();
                     let rewritten = write(centre, tag, relabelled, &listed);
                     assert_eq!(
                         canon(&rewritten),
@@ -212,6 +241,9 @@ mod tests {
         assert_eq!(relabel(tb1, &[0, 1, 2, 4, 3, 5]), ChiralClass::TB(2));
         assert_eq!(relabel(tb1, &[5, 1, 2, 3, 4, 0]), ChiralClass::TB(2));
         assert_eq!(relabel(tb1, &[0, 1, 3, 4, 2, 5]), ChiralClass::TB(1));
-        assert_eq!(relabel("F[Pt@SP1](Cl)(Br)I", &[3, 1, 2, 0, 4]), ChiralClass::SP(1));
+        assert_eq!(
+            relabel("F[Pt@SP1](Cl)(Br)I", &[3, 1, 2, 0, 4]),
+            ChiralClass::SP(1)
+        );
     }
 }

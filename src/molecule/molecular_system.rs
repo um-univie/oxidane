@@ -124,16 +124,20 @@ impl MolecularSystem {
     // }
 }
 
-/// This function reads a pdb file line and extracts the atom information
+/// Extracts atom information and coordinates from a PDB record line.
+///
+/// # Errors
+/// Returns [`ParseFloatError`] if the coordinate fields cannot be parsed as floating-point numbers.
 ///
 /// # Panics
-/// This function returns a ParseFloatError if the line has errors in the float region, it does not check for other errors.
+/// Panics for an unknown element or a record too short for the required fields.
+/// The PDB reader also requires byte offsets to fall on UTF-8 character boundaries.
 ///
+/// # Examples
 /// ```
 /// use oxidane::molecule::molecular_system::extract_atom_pdb;
 ///
-///
-/// let line =  "ATOM   2073  CB  ALA B 128      11.390 -11.172  71.797  1.00 16.79           C";
+/// let line = "ATOM   2073  CB  ALA B 128      11.390 -11.172  71.797  1.00 16.79           C";
 /// let atom = extract_atom_pdb(line).unwrap();
 /// let position = atom.position_vector.unwrap();
 /// assert_eq!(position.x, 11.390, "Incorrect x coordinate");
@@ -161,13 +165,17 @@ pub fn extract_atom_pdb(line: &str) -> Result<Atom, ParseFloatError> {
         ..Default::default()
     })
 }
-/// This function reads a cif file line and extracts the atom information
+
+/// Extracts atom information and coordinates from a whitespace-separated atom-site row.
+/// Assumes the fixed column order shown below; it does not read mmCIF loop headers.
+///
+/// # Errors
+/// Returns [`ParseFloatError`] if the coordinate fields cannot be parsed as floating-point numbers.
 ///
 /// # Panics
+/// Panics for an unknown element or fewer than 13 whitespace-separated fields.
 ///
-/// This function returns a ParseFloatError if the line has errors in the float region, it does not check for other errors.
-///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use oxidane::prelude::*;

@@ -4,6 +4,7 @@ import csv
 import gzip
 import io
 import sys
+from contextlib import nullcontext
 from itertools import islice
 from os import PathLike, fspath
 from typing import Dict, Optional, Sequence, Union
@@ -11,9 +12,12 @@ from typing import Dict, Optional, Sequence, Union
 from ._oxidane import canonical_smiles, canonical_tautomer, tautomer_key
 
 COLUMNS = ("canonical_smiles", "tautomer_key", "canonical_tautomer")
+REPORTED = 10  # unreadable lines named on stderr per file; the rest are counted
 
 
 def _open(path, mode):
+    if fspath(path) == "-":
+        return nullcontext(sys.stdin if mode == "r" else sys.stdout)
     if fspath(path).endswith(".gz"):
         return gzip.open(path, mode + "t", encoding="utf-8", newline="")
     return open(path, mode, encoding="utf-8", newline="")
@@ -66,14 +70,16 @@ def process_file(
 
     The delimiter follows the extension unless given: `,` for .csv, tab for .tsv,
     and whitespace for .smi and anything else (written back as tabs). A `.gz`
-    suffix on either path compresses that side. `smiles_column` is a 0-based
+    suffix on either path compresses that side, and `-` reads standard input or
+    writes standard output. `smiles_column` is a 0-based
     index, or a column name, which implies a header row. With a header, the
     output header gains the names in `columns`.
 
     A SMILES that does not parse is handled as `errors` says: "keep" (default)
     writes the input SMILES unchanged in each result field and reports the line
-    on stderr, "none" leaves the fields empty silently, "raise" stops with
-    ValueError. Returns counts of rows written and SMILES that did not parse.
+    on stderr (the first ten, then a count), "none" leaves the fields empty
+    silently, "raise" stops with ValueError. Returns counts of rows written and
+    SMILES that did not parse.
     """
     unknown = [name for name in columns if name not in COLUMNS]
     if unknown:
@@ -123,7 +129,9 @@ def process_file(
                     if errors == "raise":
                         raise ValueError(f"{fspath(input)}: {message}")
                     if errors == "keep":
-                        report.write(f"oxidane: {fspath(input)}: {message}, kept as it was\n")
+                        if unparsed <= REPORTED:
+                            report.write(
+                                f"oxidane: {fspath(input)}: {message}, kept as it was\n")
                         answers = [batch[index]] * len(answers)
                     else:
                         answers = [""] * len(answers)
@@ -131,4 +139,7 @@ def process_file(
             rows_written += len(chunk)
             if report.tell():
                 sys.stderr.write(report.getvalue())
+    if errors == "keep" and unparsed > REPORTED:
+        sys.stderr.write(f"oxidane: {fspath(input)}: {unparsed - REPORTED} more unreadable "
+                         "SMILES kept as they were\n")
     return {"rows": rows_written, "unparsed": unparsed}

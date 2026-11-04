@@ -1231,6 +1231,7 @@ dependencies = [
  "rayon",
  "rustc-hash",
  "rustfft",
+ "serde_json",
  "tinyvec",
  "wide",
 ]

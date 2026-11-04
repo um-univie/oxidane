@@ -11,27 +11,54 @@ fn parse(smiles: &str) -> MolecularGraph {
 /// the two molecules' matched atoms/bonds: the atom mapping is injective on
 /// both sides, every bond mapping's endpoints agree with it, and every
 /// mapped bond is an actual bond in its molecule.
-fn assert_valid_mces(mol_a: &MolecularGraph, mol_b: &MolecularGraph, mces: &MaximumCommonEdgeSubgraph) {
+fn assert_valid_mces(
+    mol_a: &MolecularGraph,
+    mol_b: &MolecularGraph,
+    mces: &MaximumCommonEdgeSubgraph,
+) {
     let mut seen_a = HashSet::new();
     let mut seen_b = HashSet::new();
     for m in &mces.atom_mapping {
-        assert!(seen_a.insert(m.atom_a), "atom_a={} mapped more than once", m.atom_a);
-        assert!(seen_b.insert(m.atom_b), "atom_b={} mapped more than once", m.atom_b);
-        assert_eq!(mol_a.atomic_numbers[m.atom_a], mol_b.atomic_numbers[m.atom_b]);
+        assert!(
+            seen_a.insert(m.atom_a),
+            "atom_a={} mapped more than once",
+            m.atom_a
+        );
+        assert!(
+            seen_b.insert(m.atom_b),
+            "atom_b={} mapped more than once",
+            m.atom_b
+        );
+        assert_eq!(
+            mol_a.atomic_numbers[m.atom_a],
+            mol_b.atomic_numbers[m.atom_b]
+        );
         assert_eq!(m.atomic_number, mol_a.atomic_numbers[m.atom_a]);
     }
 
-    let a_to_b: std::collections::HashMap<usize, usize> =
-        mces.atom_mapping.iter().map(|m| (m.atom_a, m.atom_b)).collect();
+    let a_to_b: std::collections::HashMap<usize, usize> = mces
+        .atom_mapping
+        .iter()
+        .map(|m| (m.atom_a, m.atom_b))
+        .collect();
     let has_bond = |mol: &MolecularGraph, x: usize, y: usize| {
-        mol.get_atom_bonds(x).is_some_and(|bonds| bonds.iter().any(|b| b.target() == y))
+        mol.get_atom_bonds(x)
+            .is_some_and(|bonds| bonds.iter().any(|b| b.target() == y))
     };
 
     for bm in &mces.bond_mapping {
         let (a1, a2) = bm.bond_a;
         let (b1, b2) = bm.bond_b;
-        assert!(has_bond(mol_a, a1, a2), "bond_a {:?} is not an actual bond in mol_a", bm.bond_a);
-        assert!(has_bond(mol_b, b1, b2), "bond_b {:?} is not an actual bond in mol_b", bm.bond_b);
+        assert!(
+            has_bond(mol_a, a1, a2),
+            "bond_a {:?} is not an actual bond in mol_a",
+            bm.bond_a
+        );
+        assert!(
+            has_bond(mol_b, b1, b2),
+            "bond_b {:?} is not an actual bond in mol_b",
+            bm.bond_b
+        );
 
         let mapped = (a_to_b.get(&a1), a_to_b.get(&a2));
         let consistent = mapped == (Some(&b1), Some(&b2)) || mapped == (Some(&b2), Some(&b1));
@@ -49,6 +76,7 @@ fn identical_molecules_match_fully() {
     let benzene_b = parse("c1ccccc1");
 
     let mces = find_maximum_common_edge_subgraph(&benzene_a, &benzene_b).unwrap();
+    assert_valid_mces(&benzene_a, &benzene_b, &mces);
     assert_eq!(mces.num_atoms(), 6);
     assert_eq!(mces.num_bonds(), 6);
 }
@@ -61,22 +89,9 @@ fn shared_linear_scaffold() {
     let propanol = parse("CCCO");
 
     let mces = find_maximum_common_edge_subgraph(&ethanol, &propanol).unwrap();
+    assert_valid_mces(&ethanol, &propanol, &mces);
     assert_eq!(mces.num_atoms(), 3);
     assert_eq!(mces.num_bonds(), 2);
-
-    for mapping in &mces.atom_mapping {
-        assert_eq!(
-            ethanol.atomic_numbers[mapping.atom_a],
-            propanol.atomic_numbers[mapping.atom_b]
-        );
-        assert_eq!(mapping.atomic_number, ethanol.atomic_numbers[mapping.atom_a]);
-    }
-    for mapping in &mces.bond_mapping {
-        let (a1, a2) = mapping.bond_a;
-        let (b1, b2) = mapping.bond_b;
-        assert_eq!(ethanol.atomic_numbers[a1], propanol.atomic_numbers[b1]);
-        assert_eq!(ethanol.atomic_numbers[a2], propanol.atomic_numbers[b2]);
-    }
 }
 
 #[test]
@@ -99,15 +114,20 @@ fn bond_order_must_match() {
 
 #[test]
 fn find_all_returns_every_tied_maximum() {
-    // Both bonds of propane (C-C-C) map onto either bond of butane
-    // (C-C-C-C) with the same 2-atom/1-bond size; there should be more than
-    // one way to place a single C-C match, all tied for the maximum.
+    // Propane (C-C-C, 2 bonds) can map to butane (C-C-C-C, 3 bonds) at bonds {0, 1}
+    // or {1, 2}. There are at least two distinct maximum common edge subgraphs
+    // tied for the maximum size (2 bonds).
     let propane = parse("CCC");
     let butane = parse("CCCC");
 
     let all = find_all_maximum_common_edge_subgraphs(&propane, &butane);
-    assert!(!all.is_empty());
+    assert!(
+        all.len() > 1,
+        "expected multiple tied maximum subgraphs (propane C-C-C maps to multiple 2-bond subgraphs of butane C-C-C-C), but got {}",
+        all.len()
+    );
     for result in &all {
+        assert_valid_mces(&propane, &butane, result);
         assert_eq!(result.num_bonds(), 2);
     }
 }
@@ -151,6 +171,7 @@ fn ring_vs_chain_matches_open_path_only() {
     let hexane = parse("CCCCCC");
 
     let mces = find_maximum_common_edge_subgraph(&cyclohexane, &hexane).unwrap();
+    assert_valid_mces(&cyclohexane, &hexane, &mces);
     assert_eq!(mces.num_atoms(), 6);
     assert_eq!(mces.num_bonds(), 5);
 }

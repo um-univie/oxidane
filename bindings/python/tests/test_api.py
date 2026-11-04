@@ -221,3 +221,133 @@ def test_process_csv_with_header_and_gzip(tmp_path):
         ox.process_file(source, tmp_path / "x.csv", columns=["inchi"])
     with pytest.raises(ValueError, match="line 1"):
         ox.process_file(source, tmp_path / "x.csv", errors="raise")  # "id" read as SMILES
+
+
+def test_unreadable_smiles_are_counted_after_ten(tmp_path, capsys):
+    assert ox.canonical_smiles(["C1CC"] * 25 + ["CCO"])[-1] == ox.canonical_smiles("CCO")
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 11 and err[-1] == (
+        "oxidane: 15 more SMILES could not be read and were kept as they were")
+    source = tmp_path / "in.smi"
+    source.write_text("C1CC\n" * 25)
+    assert ox.process_file(source, tmp_path / "out.tsv", chunk_size=4)["unparsed"] == 25
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 11 and "line 10" in err[9] and "15 more" in err[-1]
+
+
+def test_command_line(tmp_path, capsys):
+    from oxidane.__main__ import main
+    source = tmp_path / "in.csv"
+    source.write_text("id,smiles\n1,Oc1ccccn1\n2,\n3,C1CC\n")
+    assert main([str(source), str(tmp_path / "out.csv"), "-s", "smiles", "--errors", "none",
+                 "-c", "tautomer_key,canonical_tautomer"]) == 0
+    assert "3 rows, 1 unreadable" in capsys.readouterr().err
+    import csv
+    rows = list(csv.reader((tmp_path / "out.csv").open(newline="")))
+    assert rows[0] == ["id", "smiles", "tautomer_key", "canonical_tautomer"]
+    assert rows[1] == ["1", "Oc1ccccn1", ox.tautomer_key("Oc1ccccn1"),  # key has commas, quoted
+                       ox.canonical_tautomer("Oc1ccccn1")]
+    assert rows[2:] == [["2", "", "", ""], ["3", "C1CC", "", ""]]
+    with pytest.raises(SystemExit):
+        main([str(source), str(tmp_path / "x.csv"), "-s", "SMILES"])
+    assert "no column named" in capsys.readouterr().err
+
+
+def test_command_line_pipes():
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, "-m", "oxidane", "-", "-", "-c", "canonical_smiles"],
+                            input="OCC 1\nC(=O)O 2\n", capture_output=True, text=True, check=True)
+    ethanol, formic = ox.canonical_smiles(["OCC", "C(=O)O"])
+    assert result.stdout == f"OCC\t1\t{ethanol}\nC(=O)O\t2\t{formic}\n"
+
+
+def test_sqlite_example(tmp_path):
+    import runpy
+    import sqlite3
+    example = runpy.run_path(str(FIXTURES.parent / "examples" / "normalize_sqlite.py"))
+    path = tmp_path / "compounds.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE compounds (id INTEGER, smiles TEXT)")
+        connection.executemany("INSERT INTO compounds VALUES (?, ?)",
+                               [(1, "Oc1ccccn1"), (2, None), (3, "C1CC"), (4, "O=c1cccc[nH]1")])
+    assert example["normalize_table"](path, "compounds", batch_size=3) == 4
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT * FROM compounds ORDER BY id").fetchall()
+    assert rows[0][2:] == (ox.canonical_smiles("Oc1ccccn1"), ox.tautomer_key("Oc1ccccn1"),
+                           ox.canonical_tautomer("Oc1ccccn1"))
+    assert rows[1][2:] == rows[2][2:] == (None, None, None)
+    assert rows[3][3:] == rows[0][3:]
+
+
+def test_missing_values_and_whitespace():
+    nan = float("nan")
+    for function in (ox.canonical_smiles, ox.tautomer_key, ox.canonical_tautomer):
+        ethanol = function("OCC")
+        assert function(["OCC", None, nan, " OCC\n"]) == [ethanol, None, None, ethanol]
+        assert function(None) is None
+        assert function(nan) is None
+        assert function("\tOCC ") == ethanol
+    assert ox.Molecule(" OCC ").to_smiles() == ox.Molecule("OCC").to_smiles()
+
+
+def test_pandas_columns_with_gaps():
+    pandas = pytest.importorskip("pandas")
+    frame = pandas.DataFrame({"smiles": ["Oc1ccccn1", None, "O=c1cccc[nH]1"]})
+    frame["tautomer"] = ox.canonical_tautomer(frame["smiles"])
+    assert frame["tautomer"].isna().tolist() == [False, True, False]
+    assert frame["tautomer"][0] == frame["tautomer"][2]
+    typed = pandas.Series(["OCC", pandas.NA], dtype="string")
+    assert ox.canonical_smiles(typed) == [ox.canonical_smiles("OCC"), None]
+    assert frame["smiles"].map(ox.canonical_smiles).isna().tolist() == [False, True, False]
+
+
+def test_molecule_methods_agree_with_the_functions():
+    for smiles in ["OCC", "[Na+].[Cl-]", "CC(=O)[O-].[NH4+]", "Oc1ccccn1.O"]:
+        molecule = ox.Molecule(smiles)
+        assert molecule.to_canonical_smiles() == ox.canonical_smiles(smiles)
+        assert molecule.tautomer_key() == ox.tautomer_key(smiles)
+        assert molecule.canonical_tautomer() == ox.canonical_tautomer(smiles)
+
+
+def test_threads_reuse_their_pool():
+    smiles = ["OCC", "c1ccccc1O", "CC(O)=N"] * 10
+    expected = ox.canonical_tautomer(smiles)
+    for _ in range(50):
+        assert ox.canonical_tautomer(smiles, threads=3) == expected
+
+
+# Each row is one compound written several ways, in different atom orders,
+# aromatic and Kekulé, and as different tautomers.
+WRITINGS = [
+    ["CC(=O)Nc1ccc(O)cc1", "Oc1ccc(NC(C)=O)cc1", "CC(O)=Nc1ccc(O)cc1", "C1=CC(=CC=C1NC(=O)C)O"],
+    ["O=c1cccc[nH]1", "Oc1ccccn1", "C1=CC(=O)NC=C1", "n1c(O)cccc1"],
+    ["Nc1nc2[nH]cnc2c(=O)[nH]1", "Nc1nc2nc[nH]c2c(O)n1", "NC1=NC(=O)C2=C(N1)N=CN2"],
+    ["OC(=O)c1ccccc1O", "Oc1ccccc1C(O)=O", "O=C(O)C1=CC=CC=C1O"],
+    ["[O-][N+](=O)c1ccc(N)cc1", "Nc1ccc([N+]([O-])=O)cc1", "NC1=CC=C(C=C1)[N+](=O)[O-]"],
+    ["N#Cc1ccc(O)cc1", "Oc1ccc(C#N)cc1", "C1=CC(=CC=C1C#N)O"],
+    ["C[C@H](N)C(=O)O", "OC(=O)[C@H](C)N", "N[C@@H](C)C(O)=O"],
+    ["CC(=O)[O-].[Na+]", "[Na+].CC([O-])=O", "[Na+].[O-]C(C)=O"],
+]
+
+
+@pytest.mark.parametrize("forms", WRITINGS)
+def test_every_writing_of_a_compound_agrees(forms):
+    assert len(set(ox.tautomer_key(forms))) == 1
+    assert len(set(ox.canonical_tautomer(forms))) == 1
+    tautomer = ox.canonical_tautomer(forms[0])
+    assert ox.canonical_tautomer(tautomer) == tautomer
+    assert ox.tautomer_key(tautomer) == ox.tautomer_key(forms[0])
+    assert ox.canonical_smiles(ox.canonical_smiles(forms[0])) == ox.canonical_smiles(forms[0])
+
+
+@pytest.mark.parametrize("smiles", [
+    "CC(C)(C)CN(C)S(=O)(=O)c1ccc(NN)c([N+](=O)[O-])c1",  # nitro beside NH donors
+    "CCCc1nn(C)c(N2CCOCC2C(=O)O)c1[N+](=O)[O-]",  # nitro beside a carboxylic acid
+    "NC=CC#N",  # nitrile, not ketenimine
+    "O=C(CCS)Oc1ccc2[nH]c(-c3ccccc3)[nH+]c2c1",  # cation on nitrogen, not the ester
+    "Cn1c(-c2ccc(O)cc2)cccc1=O",  # phenol beside a pyridone stays neutral
+    "C[C@@H]1OC(=O)c2c(O)cccc21",  # phenol beside a lactone stays aromatic
+])
+def test_preferred_forms_are_kept(smiles):
+    assert ox.canonical_tautomer(smiles) == ox.canonical_smiles(smiles)

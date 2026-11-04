@@ -59,7 +59,10 @@ use crate::io::{
 use crate::molecule::aromaticity::MoleculeAromaticity;
 use crate::molecule::base::{MoleculeCore, charge_valency_shift, saturating_valency};
 use crate::molecule::bond::BondOrder;
-use crate::molecule::chirality::{ChiralClass, index_sorted_neighbors, tetrahedral_tag_for_order};
+use crate::molecule::chirality::{
+    ChiralClass, index_sorted_neighbors, tetrahedral_ring_closure_inverts,
+    tetrahedral_tag_for_order,
+};
 use crate::molecule::molecular_graph::MolecularGraph;
 
 /// Helper returning standard chemical element symbol from atomic number.
@@ -1907,6 +1910,16 @@ impl ReactionSmarts {
                 .is_some(),
         );
         written.splice(insertion..insertion, missing);
+        let closures = pattern
+            .ring_closures
+            .values()
+            .map(|ends| ends.iter().filter(|&&end| end == pattern_atom).count())
+            .sum();
+        let tag = if tetrahedral_ring_closure_inverts(product, atom, closures) {
+            3 - tag
+        } else {
+            tag
+        };
         Some(tetrahedral_tag_for_order(tag, &written, &sorted))
     }
 

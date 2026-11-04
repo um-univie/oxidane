@@ -1,6 +1,7 @@
 pub mod aromaticity;
 pub mod base;
 pub mod bond;
+pub mod charges;
 pub mod chirality;
 pub mod crippen;
 pub mod descriptors;

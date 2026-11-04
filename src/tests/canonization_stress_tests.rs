@@ -27,16 +27,137 @@ mod canonization_stress_tests {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
 
+    #[test]
+    fn hydrogen_first_reordering_preserves_stereochemistry() {
+        let molecule = MolecularGraph::from_smiles_single("CC(C)[C@@H](C(=O)O)N").unwrap();
+        let expected = canonize_mol(&molecule).to_smiles();
+        for first in 0..molecule.len() {
+            let mut order: Vec<_> = (0..molecule.len()).collect();
+            order.swap(0, first);
+            let mut permuted = molecule.clone();
+            reorder_molecule(&mut permuted, &order);
+            // Emission must list every neighbor exactly once, even when atom
+            // zero is a hydrogen folded into a tetrahedral centre.
+            let emission = permuted.smiles_emission_orders();
+            for atom in 0..permuted.len() {
+                if !matches!(permuted.get_chiral_class(atom), ChiralClass::TH(_)) {
+                    continue;
+                }
+                let mut emitted = emission[atom].clone();
+                emitted.sort_unstable();
+                let neighbors = crate::molecule::chirality::index_sorted_neighbors(&permuted, atom);
+                assert_eq!(emitted, neighbors, "root {first}, centre {atom}");
+            }
+            assert_eq!(
+                canonize_mol(&permuted).to_smiles(),
+                expected,
+                "root {first}"
+            );
+            let written = permuted.to_smiles();
+            let reparsed = MolecularGraph::from_smiles_single(&written).unwrap();
+            assert_eq!(
+                canonize_mol(&reparsed).to_smiles(),
+                expected,
+                "root {first}: {written}"
+            );
+            reorder_molecule(&mut permuted, &order); // a swap is its own inverse
+            assert_eq!(
+                permuted.chiral_classes(),
+                molecule.chiral_classes(),
+                "root {first}"
+            );
+        }
+    }
+
+    #[test]
+    fn pubchem_stereo_permutations_preserve_both_canonical_forms() {
+        use crate::molecule::tautomer::{TautomerRules, normalize, tautomer_key};
+        let rules = TautomerRules::new();
+        for line in include_str!("../../tests/pubchem_stereo_permutation_regressions.tsv").lines() {
+            let (cid, smiles) = line.split_once('\t').unwrap();
+            for molecule in MolecularGraph::from_smiles(smiles).unwrap() {
+                let expected = canonize_mol(&molecule).to_smiles();
+                let normal = normalize(&molecule, &rules).unwrap().to_smiles();
+                let key = tautomer_key(&molecule, &rules);
+                let mut rng = StdRng::seed_from_u64(cid.parse::<u64>().unwrap() ^ 0xBEEF);
+                for trial in 0..12 {
+                    let order = random_permutation(molecule.len(), &mut rng);
+                    let mut permuted = molecule.clone();
+                    reorder_molecule(&mut permuted, &order);
+                    assert_eq!(
+                        canonize_mol(&permuted).to_smiles(),
+                        expected,
+                        "CID {cid}, trial {trial}"
+                    );
+                    assert_eq!(
+                        normalize(&permuted, &rules).unwrap().to_smiles(),
+                        normal,
+                        "CID {cid}, trial {trial}"
+                    );
+                    assert_eq!(
+                        tautomer_key(&permuted, &rules),
+                        key,
+                        "CID {cid}, trial {trial}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cage_symmetry_group_is_complete_after_relabeling() {
+        use crate::graph_algorithms::mol_canonization::Canonizer;
+        use crate::molecule::tautomer::{TautomerRules, erased_skeleton};
+        let record = include_str!("../../tests/pubchem_stereo_permutation_regressions.tsv")
+            .lines()
+            .find(|line| line.starts_with("4048341\t"))
+            .unwrap();
+        let molecule =
+            MolecularGraph::from_smiles_single(record.split_once('\t').unwrap().1).unwrap();
+        let (skeleton, _) = erased_skeleton(&molecule, &TautomerRules::new());
+        let mut rng = StdRng::seed_from_u64(4048341 ^ 0xBEEF);
+        for graph in [molecule, skeleton] {
+            for trial in 0..32 {
+                let mut permuted = graph.clone();
+                let order = random_permutation(graph.len(), &mut rng);
+                reorder_molecule(&mut permuted, &order);
+                let mut canonizer = Canonizer::new();
+                let canonical = canonizer.canonize(&permuted);
+                let heavy = canonical
+                    .atomic_numbers()
+                    .iter()
+                    .filter(|&&z| z != 1)
+                    .count();
+                let identity: Vec<_> = (0..heavy).collect();
+                let mut group = BTreeSet::from([identity.clone()]);
+                let mut pending = vec![identity];
+                while let Some(element) = pending.pop() {
+                    for generator in canonizer.last_graph_automorphisms() {
+                        let composed: Vec<_> =
+                            element.iter().map(|&atom| generator[atom]).collect();
+                        if group.insert(composed.clone()) {
+                            pending.push(composed);
+                            assert!(group.len() <= 4, "spurious cage symmetry, trial {trial}");
+                        }
+                    }
+                }
+                // Four heavy-atom symmetries, independently checked against
+                // graph self-isomorphisms; canonical-label equality alone did
+                // not catch the backend pruning away a symmetry generator.
+                assert_eq!(group.len(), 4, "incomplete cage symmetry, trial {trial}");
+            }
+        }
+    }
+
     /// The 66 drug-like molecules already checked into `tests/smiles.txt`,
     /// plus hand-picked structures exercising charges, isotopes, disconnected
     /// salts, fused/bridged rings, heteroaromatics and triple bonds.
     fn curated_corpus() -> Vec<String> {
-        let base = BufReader::new(
-            File::open("tests/smiles.txt").expect("tests/smiles.txt should exist"),
-        )
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| !line.trim().is_empty());
+        let base =
+            BufReader::new(File::open("tests/smiles.txt").expect("tests/smiles.txt should exist"))
+                .lines()
+                .map_while(Result::ok)
+                .filter(|line| !line.trim().is_empty());
 
         let extra = [
             "[Na+].[Cl-]",
@@ -403,6 +524,75 @@ mod canonization_stress_tests {
                 "CC1=CCC(C(C)=Cc2cc#cc(C)n2)OC(=O)CCC(C)(O)C(=O)C(C)C(O)C(C)CCC1",
                 "OC1C(C)C(=O)C(O)(C)CCC(OC(CC=C(C)CCCC1C)C(C)=Cc2nc(c#cc2)C)=O",
                 "CC1=CCC(C(C)=CC2=CC#CC(C)=N2)OC(=O)CCC(C)(O)C(=O)C(C)C(O)C(C)CCC1",
+            ],
+        );
+    }
+
+    /// The digits an atom writes are the ones the finished string shows, in
+    /// ascending order.
+    ///
+    /// The writer numbers rings as it meets them and a string pass renumbers
+    /// them afterwards by order of first appearance. Sorting before that pass
+    /// sorted the wrong numbers: this tetralithium carbanion macrocycle wrote
+    /// `\5=2` from its deposited form and `=2\5` from its own canonical one,
+    /// the same two closures read out in opposite orders, so canonization took
+    /// a second pass to settle. PubChem CID 134866860.
+    #[test]
+    fn ring_closure_digits_are_the_ones_the_string_ends_up_with() {
+        assert_all_equal(
+            "tetralithium carbanion macrocycle",
+            &[
+                "CC(C1=C/C/2=C/3\\C(=C\\4/C(=C\\5/C(=C2/[C-]=C1)/[C-]=CC(=C5)C(C)(C)C)/C=C(C=[C-]4)C(C)(C)C)\\[C-]=CC(=C3)C(C)(C)C)(C)C",
+                "c1c(c[c-]c=2\\c1=c3/cc(c[c-]/c/3=c4/c(cc(c[c-]4)C(C)(C)C)=c5\\cc(c[c-]\\c=2\\5)C(C)(C)C)C(C)(C)C)C(C)(C)C",
+            ],
+        );
+    }
+
+    /// A ring whose every atom brings a lone pair and none brings half of a π
+    /// bond has no π system to delocalize, whatever Hückel's count says.
+    ///
+    /// `O1S[Te+]1` is three such atoms and six electrons, so `4n + 2` held and
+    /// the ring was perceived aromatic -- and the writer then emitted
+    /// `[te]1s[o+]1`, which no reader takes back, this crate's own included,
+    /// because a three-membered ring of aromatic bonds has no Kekulé structure.
+    /// RDKit reads the same molecule as three single bonds. PubChem CID
+    /// 173332364.
+    #[test]
+    fn a_ring_of_lone_pairs_is_not_aromatic() {
+        let molecule = MolecularGraph::from_smiles_single("O1S[Te+]1").expect("the SMILES parses");
+        let written = canonize_mol(&molecule).to_smiles();
+        assert!(
+            !written.contains("[te]") && !written.contains("[o+]"),
+            "{written} should not be aromatic"
+        );
+        MolecularGraph::from_smiles_single(&written)
+            .unwrap_or_else(|_| panic!("{written} should parse back"));
+
+        // The cyclopropenyl cation has a π bond and two electrons, and stays
+        // aromatic.
+        let cation = MolecularGraph::from_smiles_single("C1=C[CH+]1").expect("the SMILES parses");
+        let written = canonize_mol(&cation).to_smiles();
+        assert!(written.contains("[cH+]"), "{written} should stay aromatic");
+    }
+
+    /// An atom that opens two ring closures writes their digits in one order,
+    /// whichever way the molecule was handed to the writer.
+    ///
+    /// The two ends of a ring are reached at different moments, so an atom's
+    /// digits were pushed in one order when it opened them and in another when
+    /// it closed them -- and which happened depended on the bond lists, which
+    /// are a fact about the input rather than about the molecule. A bis-indolyl
+    /// pigment from PubChem (CID 10817494) canonicalized to `...ccccc32...`
+    /// from its deposited form and to `...ccccc23...` from that answer, so
+    /// canonization was not idempotent and the second pass was needed to settle
+    /// it. Found by the corpus sweep, 10.8 million records in.
+    #[test]
+    fn ring_closure_digits_do_not_depend_on_the_writing() {
+        assert_all_equal(
+            "bis-indolyl pigment with fused ring closures",
+            &[
+                "C1=CC=C2C(=C1)C(=CN2)C3=[13CH][13C](=C(N3)/C=C\\4/[13C](=[13CH]/C(=C\\5/C=NC6=CC=CC=C65)/N4)C7=CNC8=CC=CC=C87)C9=CNC1=CC=CC=C19",
+                "[nH]1/c([13cH][13c](-c2c[nH]c3ccccc32)/c1=C/c4[nH]c([13cH][13c]4-c5c[nH]c6ccccc65)-c7c[nH]c8ccccc87)=C9/c%10ccccc%10N=C9",
             ],
         );
     }

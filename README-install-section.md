@@ -1,48 +1,23 @@
-# Installation
+# Using Oxidane from source
 
-You can install `oxidane` with a single command:
+Oxidane is a Rust library. Add it to another Rust project's `Cargo.toml`
+(adjust the path to the checkout):
 
-## macOS and Linux
-
-```bash
-curl -sSL https://raw.githubusercontent.com/um-univie/oxidane/main/install.sh | bash
+```toml
+[dependencies]
+oxidane = { path = "../oxidane" }
 ```
 
-This will download the latest version. To install a specific version:
+Enable the optional neural-network modules with `features = ["ml"]` on that
+dependency. Molecular parsing, descriptors, featurization, and dataset splitting
+do not require this feature.
 
-```bash
-curl -sSL https://raw.githubusercontent.com/um-univie/oxidane/main/install.sh | bash -s -- v1.0.0
+From the Oxidane checkout, check the library and run its documentation examples:
+
+```sh
+cargo check --locked --all-features
+cargo test --locked --doc
 ```
 
-## Windows
-
-Open PowerShell and run:
-
-```powershell
-iwr -useb https://raw.githubusercontent.com/um-univie/oxidane/main/install.ps1 | iex
-```
-
-For a specific version:
-
-```powershell
-iwr -useb https://raw.githubusercontent.com/um-univie/oxidane/main/install.ps1 | iex -args "v1.0.0"
-```
-
-## Manual Installation
-
-If you prefer to manually install:
-
-1. Download the appropriate binary for your platform from the [releases page](https://github.com/um-univie/oxidane/releases)
-2. Rename it to `oxidane` (or `oxidane.exe` on Windows)
-3. Make it executable (on macOS/Linux): `chmod +x oxidane`
-4. Move it to a directory in your PATH:
-   - macOS/Linux: `/usr/local/bin` or `~/bin`
-   - Windows: Create a directory and add it to your PATH environment variable
-
-## Verifying Installation
-
-After installation, verify it works by running:
-
-```bash
-oxidane --version
-``` 
+See [RELEASING.md](RELEASING.md) for source-release contents and registry
+prerequisites. There is no installed `oxidane` command or prebuilt CLI binary.

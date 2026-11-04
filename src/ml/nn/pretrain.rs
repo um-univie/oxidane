@@ -28,6 +28,16 @@
 //! the element as plainly as the one-hot does. Leaving it would let the model
 //! score perfectly by reading the answer off the row.
 //!
+//! It clears the valence columns as well -- heavy neighbours, charge,
+//! hydrogens, hybridization; see [`ATOM_VALENCE_COLUMNS`]. Those fix the
+//! valence, and the valence names the element: with them left on the row the
+//! model named 98% of hidden atoms from its first epoch by arithmetic, and the
+//! encoder it left behind made every downstream set but one worse. A graph
+//! that gives hydrogens rows of their own still hands the hydrogen count over
+//! through its edges, so pretrain on
+//! [`crate::molecule::featurize::graph_features_heavy`] graphs, as
+//! Hu et al.'s attribute masking does, and fine-tune on the same.
+//!
 //! Only heavy atoms are hidden. Hydrogens stay in the graph as context, but
 //! asking for one gives nothing away to learn: a hydrogen row is the only one
 //! with an unspecified hybridisation, a single heavy neighbour and no attached
@@ -45,6 +55,7 @@ use crate::ml::nn::mpnn::{Encoder, EncoderConfig, EncoderKind};
 use crate::ml::nn::tensors::GraphTensors;
 use crate::molecule::featurize::{
     ATOM_CONTINUOUS_COLUMNS, ATOM_ELEMENT_CLASSES, ATOM_ELEMENT_COLUMNS, ATOM_FEATURE_WIDTH,
+    ATOM_VALENCE_COLUMNS,
 };
 
 /// How much of the molecule to hide, and how much encoder to hide it from.
@@ -237,6 +248,9 @@ impl Masking {
             for &column in ATOM_CONTINUOUS_COLUMNS.iter() {
                 features[start + column] = 0.0;
             }
+            for column in ATOM_VALENCE_COLUMNS {
+                features[start + column] = 0.0;
+            }
             rows.push(row as u32);
             classes.push(class as u32);
         }
@@ -245,6 +259,42 @@ impl Masking {
             features,
             rows,
             classes,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::molecule::featurize::graph_features_heavy;
+    use crate::prelude::*;
+
+    #[test]
+    fn a_hidden_atom_keeps_nothing_that_fixes_its_valence() {
+        // Heavy degree, charge, hydrogens and hybridization between them name
+        // the element by arithmetic; with any of them left on a hidden row the
+        // objective is solved without looking at a neighbour.
+        let molecule = MolecularGraph::from_smiles_single("CC(=O)Nc1ccc(O)cc1").unwrap();
+        let batch = GraphBatch::collate(&[graph_features_heavy(&molecule)]);
+        let masking = Masking::choose(&batch, &batch.atom_features, 1.0, 5);
+        assert_eq!(
+            masking.rows.len(),
+            batch.atom_count,
+            "every heavy atom is hidden"
+        );
+        for &row in &masking.rows {
+            let start = row as usize * ATOM_FEATURE_WIDTH;
+            let hidden = &masking.features[start..start + ATOM_FEATURE_WIDTH];
+            for column in ATOM_ELEMENT_COLUMNS.chain(ATOM_VALENCE_COLUMNS) {
+                assert_eq!(hidden[column], 0.0, "row {row} column {column}");
+            }
+            for &column in ATOM_CONTINUOUS_COLUMNS.iter() {
+                assert_eq!(hidden[column], 0.0, "row {row} column {column}");
+            }
+            // What is left -- aromatic, in a ring, chirality -- is context.
+            let original = &batch.atom_features[start..start + ATOM_FEATURE_WIDTH];
+            let context = ATOM_VALENCE_COLUMNS.end..ATOM_VALENCE_COLUMNS.end + 2;
+            assert_eq!(&hidden[context.clone()], &original[context]);
         }
     }
 }

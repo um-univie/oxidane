@@ -8,12 +8,9 @@ pub trait ToGml {
 }
 
 impl<T: Molecule> ToGml for T {
-    /// This function converts a `Molecule` to a gml file
+    /// Serializes the molecule to Graph Modelling Language (GML) format.
     ///
-    /// # Panics
-    /// This function does not panic
-    ///
-    /// # Example
+    /// # Examples
     /// ```
     /// use oxidane::prelude::*;
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
@@ -146,9 +143,9 @@ pub struct GraphSection {
 //     }
 
 //     /// Parses a GML string into a ReactionRule
-//     /// 
+//     ///
 //     /// # Examples
-//     /// 
+//     ///
 //     /// ```
 //     /// let gml = r#"
 //     /// rule [
@@ -175,7 +172,7 @@ pub struct GraphSection {
 //                 trimmed
 //             })
 //             .filter(|l| !l.is_empty());
-        
+
 //         // Parse the rule header
 //         let first_line = lines.next();
 //         if first_line != Some("rule [") {
@@ -221,7 +218,7 @@ pub struct GraphSection {
 //                         rule = Some(ReactionRule::new(id));
 //                     } else if line.starts_with("node [") {
 //                         let mut node = Node { id: 0, label: String::new() };
-                        
+
 //                         // Check if it's a single-line node definition
 //                         if line.ends_with("]") {
 //                             let content = line.trim_start_matches("node [").trim_end_matches(']');
@@ -241,8 +238,8 @@ pub struct GraphSection {
 //                             // Multi-line node definition
 //                             while let Some(node_line) = lines.next() {
 //                                 let node_line = node_line.trim();
-//                                 if node_line == "]" { 
-//                                     break; 
+//                                 if node_line == "]" {
+//                                     break;
 //                                 }
 //                                 let parts: Vec<&str> = node_line.split_whitespace().collect();
 //                                 if parts.len() < 2 { continue; }
@@ -257,7 +254,7 @@ pub struct GraphSection {
 //                                 }
 //                             }
 //                         }
-                        
+
 //                         if let (Some(section), Some(rule)) = (section_type, rule.as_mut()) {
 //                             match section {
 //                                 SectionType::Left => rule.left.nodes.push(node),
@@ -271,7 +268,7 @@ pub struct GraphSection {
 //                             target: 0,
 //                             label: String::new(),
 //                         };
-                        
+
 //                         // Check if it's a single-line edge definition
 //                         if line.ends_with("]") {
 //                             let content = line.trim_start_matches("edge [").trim_end_matches(']');
@@ -294,8 +291,8 @@ pub struct GraphSection {
 //                             // Multi-line edge definition
 //                             while let Some(edge_line) = lines.next() {
 //                                 let edge_line = edge_line.trim();
-//                                 if edge_line == "]" { 
-//                                     break; 
+//                                 if edge_line == "]" {
+//                                     break;
 //                                 }
 //                                 let parts: Vec<&str> = edge_line.split_whitespace().collect();
 //                                 if parts.len() < 2 { continue; }
@@ -313,7 +310,7 @@ pub struct GraphSection {
 //                                 }
 //                             }
 //                         }
-                        
+
 //                         if let (Some(section), Some(rule)) = (section_type, rule.as_mut()) {
 //                             match section {
 //                                 SectionType::Left => rule.left.edges.push(edge),
@@ -335,13 +332,13 @@ pub struct GraphSection {
 //         let create_graph = |section: &GraphSection| {
 //             let mut graph = UnGraph::new_undirected();
 //             let mut node_map = HashMap::new();
-            
+
 //             // Add nodes
 //             for node in &section.nodes {
 //                 let node_index = graph.add_node(node.label.clone());
 //                 node_map.insert(node.id, node_index);
 //             }
-            
+
 //             // For sections with edges but no nodes, we need to create the nodes
 //             for edge in &section.edges {
 //                 if !node_map.contains_key(&edge.source) {
@@ -353,14 +350,14 @@ pub struct GraphSection {
 //                     node_map.insert(edge.target, node_index);
 //                 }
 //             }
-            
+
 //             // Add edges
 //             for edge in &section.edges {
 //                 let source = node_map[&edge.source];
 //                 let target = node_map[&edge.target];
 //                 graph.add_edge(source, target, edge.label.clone());
 //             }
-            
+
 //             graph
 //         };
 
@@ -373,35 +370,35 @@ pub struct GraphSection {
 
 //     /// Returns a canonicalized version of the reaction rule
 //     pub fn to_canonical(&self) -> ReactionRule {
-        
+
 //         // Create a new rule with the same ID
 //         let mut rule = ReactionRule::new(self.rule_id.clone());
-        
+
 //         // First convert to a canonical graph structure using nauty-pet
 //         let graph = self.to_reaction_graph();
 //         let mut colored_graph = UnGraph::new_undirected();
 //         let mut color_map = HashMap::new();
 //         let mut node_indices = HashMap::new();
 //         let mut original_indices = HashMap::new();
-        
+
 //         // Add nodes with colors based on their labels (ignoring the transformation markers)
 //         for (i, node_idx) in graph.node_indices().enumerate() {
 //             let label = &graph[node_idx];
-            
+
 //             // For coloring, we use just the base element part (ignoring >, + etc.)
 //             let base_label = if label.contains('>') {
 //                 label.split('>').next().unwrap_or("")
 //             } else {
 //                 label
 //             };
-            
+
 //             let color = color_map.len();
 //             color_map.entry(base_label.to_string()).or_insert(color);
 //             let new_idx = colored_graph.add_node(color_map[base_label]);
 //             node_indices.insert(i, new_idx);
 //             original_indices.insert(new_idx.index(), node_idx);
 //         }
-        
+
 //         // Add edges (without labels for canonicalization)
 //         for edge in graph.edge_references() {
 //             let source_idx = edge.source().index();
@@ -410,19 +407,19 @@ pub struct GraphSection {
 //             let target = node_indices[&target_idx];
 //             colored_graph.add_edge(source, target, ());
 //         }
-        
+
 //         // Get the canonicalized graph
 //         let canon_graph = colored_graph.into_canon();
-        
+
 //         // Create a mapping of new node IDs
 //         let mut new_node_ids = HashMap::new();
-        
+
 //         // Process nodes in canonical order
 //         for (i, node_idx) in canon_graph.node_indices().enumerate() {
 //             let original_idx = original_indices[&node_idx.index()];
 //             let label = &graph[original_idx];
 //             new_node_ids.insert(original_idx.index(), i);
-            
+
 //             // Parse the node label to determine which section it belongs to
 //             if label.contains('>') {
 //                 let parts: Vec<&str> = label.split('>').collect();
@@ -462,7 +459,7 @@ pub struct GraphSection {
 //                 });
 //             }
 //         }
-        
+
 //         // Now process edges in the canonical graph
 //         for edge in graph.edge_references() {
 //             let source_idx = edge.source().index();
@@ -470,7 +467,7 @@ pub struct GraphSection {
 //             let source = new_node_ids[&source_idx];
 //             let target = new_node_ids[&target_idx];
 //             let label = &graph[edge.id()];
-            
+
 //             // Parse the edge label to determine which section it belongs to
 //             if label.contains('>') {
 //                 let parts: Vec<&str> = label.split('>').collect();
@@ -515,17 +512,17 @@ pub struct GraphSection {
 //                 });
 //             }
 //         }
-        
+
 //         rule
 //     }
 
 //     /// Converts the reaction rule into a combined graph representation
 //     /// where nodes and edges that change have labels in the format "LabelLeft>LabelRight"
 //     pub fn to_reaction_graph(&self) -> UnGraph<String, String> {
-        
+
 //         let mut graph = UnGraph::new_undirected();
 //         let mut node_indices = HashMap::new();
-        
+
 //         // First, add all nodes from context
 //         for node in &self.context.nodes {
 //             let node_index = graph.add_node(node.label.clone());
@@ -561,7 +558,7 @@ pub struct GraphSection {
 
 //         // Add nodes only in right (new nodes)
 //         for right_node in &self.right.nodes {
-//             if !self.left.nodes.iter().any(|n| n.id == right_node.id) 
+//             if !self.left.nodes.iter().any(|n| n.id == right_node.id)
 //                && !node_indices.contains_key(&right_node.id) {
 //                 let node_index = graph.add_node(format!(">{}", right_node.label));
 //                 node_indices.insert(right_node.id, node_index);
@@ -580,7 +577,7 @@ pub struct GraphSection {
 //         for left_edge in &self.left.edges {
 //             if let Some(right_edge) = self.right.edges.iter()
 //                 .find(|e| e.source == left_edge.source && e.target == left_edge.target) {
-                
+
 //                 if left_edge.label != right_edge.label {
 //                     // This is a transformation edge
 //                     if let (Some(&source), Some(&target)) = (node_indices.get(&left_edge.source), node_indices.get(&left_edge.target)) {
@@ -618,7 +615,7 @@ pub struct GraphSection {
 //         // Write nodes
 //         for node_idx in graph.node_indices() {
 //             let label = &graph[node_idx];
-//             output.push_str(&format!("    node [ id {} label \"{}\" ]\n", 
+//             output.push_str(&format!("    node [ id {} label \"{}\" ]\n",
 //                 node_idx.index(), label));
 //         }
 
@@ -637,7 +634,7 @@ pub struct GraphSection {
 //         let canonical = self.to_canonical();
 //         let mut output = String::from("rule [\n");
 //         output.push_str(&format!("    ruleID \"{}\"\n", canonical.rule_id));
-        
+
 //         // Write left section
 //         output.push_str("    left [\n");
 //         for edge in &canonical.left.edges {
@@ -645,7 +642,7 @@ pub struct GraphSection {
 //                 edge.source, edge.target, edge.label));
 //         }
 //         output.push_str("    ]\n");
-        
+
 //         // Write context section
 //         output.push_str("    context [\n");
 //         for node in &canonical.context.nodes {
@@ -657,7 +654,7 @@ pub struct GraphSection {
 //                 edge.source, edge.target, edge.label));
 //         }
 //         output.push_str("    ]\n");
-        
+
 //         // Write right section
 //         output.push_str("    right [\n");
 //         for edge in &canonical.right.edges {
@@ -666,7 +663,7 @@ pub struct GraphSection {
 //         }
 //         output.push_str("    ]\n");
 //         output.push_str("]\n");
-        
+
 //         std::fs::write(path, output)
 //     }
 // }
@@ -677,7 +674,7 @@ pub struct GraphSection {
 //     fn from_str(s: &str) -> Result<Self, Self::Err> {
 //         ReactionRule::from_str(s)
 //     }
-// } 
+// }
 
 // #[cfg(test)]
 // mod rule_gml_tests {
@@ -704,22 +701,22 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
-        
+
 //         // Check rule ID
 //         assert_eq!(rule.rule_id, "rule");
-        
+
 //         // Check left section
 //         assert_eq!(rule.left.edges.len(), 2);
 //         assert_eq!(rule.left.edges[0].source, 1);
 //         assert_eq!(rule.left.edges[0].target, 2);
 //         assert_eq!(rule.left.edges[0].label, "-");
-        
+
 //         // Check context section
 //         assert_eq!(rule.context.nodes.len(), 5);
 //         assert_eq!(rule.context.nodes[0].id, 1);
 //         assert_eq!(rule.context.nodes[0].label, "O");
 //         assert_eq!(rule.context.nodes[1].label, "Si");
-        
+
 //         // Check right section
 //         assert_eq!(rule.right.edges.len(), 2);
 //         assert_eq!(rule.right.edges[0].source, 1);
@@ -785,18 +782,18 @@ pub struct GraphSection {
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
 //         assert_eq!(rule.rule_id, "multiline");
-        
+
 //         // Check left section
 //         assert_eq!(rule.left.edges.len(), 1);
 //         assert_eq!(rule.left.edges[0].source, 1);
 //         assert_eq!(rule.left.edges[0].target, 2);
 //         assert_eq!(rule.left.edges[0].label, "-");
-        
+
 //         // Check context section
 //         assert_eq!(rule.context.nodes.len(), 2);
 //         assert_eq!(rule.context.nodes[0].label, "C");
 //         assert_eq!(rule.context.nodes[1].label, "O");
-        
+
 //         // Check right section
 //         assert_eq!(rule.right.edges.len(), 1);
 //         assert_eq!(rule.right.edges[0].source, 2);
@@ -831,19 +828,19 @@ pub struct GraphSection {
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
 //         assert_eq!(rule.rule_id, "mixed");
-        
+
 //         // Check left section
 //         assert_eq!(rule.left.edges.len(), 2);
 //         assert_eq!(rule.left.edges[0].label, "-");
 //         assert_eq!(rule.left.edges[1].label, "=");
-        
+
 //         // Check context section
 //         assert_eq!(rule.context.nodes.len(), 3);
 //         assert_eq!(rule.context.nodes[0].label, "C");
 //         assert_eq!(rule.context.nodes[1].label, "O");
 //         assert_eq!(rule.context.nodes[2].label, "N");
 //         assert_eq!(rule.context.edges.len(), 1);
-        
+
 //         // Check right section
 //         assert_eq!(rule.right.edges.len(), 1);
 //         assert_eq!(rule.right.edges[0].source, 1);
@@ -864,10 +861,10 @@ pub struct GraphSection {
 //     fn test_error_cases() {
 //         // Missing rule header
 //         assert!(ReactionRule::from_str("left []").is_err());
-        
+
 //         // Missing ruleID
 //         assert!(ReactionRule::from_str("rule [\nleft []\n]").is_err());
-        
+
 //         // Invalid node ID
 //         let invalid_node = r#"rule [
 //     ruleID "invalid"
@@ -876,7 +873,7 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         assert!(ReactionRule::from_str(invalid_node).is_err());
-        
+
 //         // Invalid edge source
 //         let invalid_edge = r#"rule [
 //     ruleID "invalid"
@@ -976,22 +973,22 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
-        
+
 //         // Check rule ID
 //         assert_eq!(rule.rule_id, "rule");
-        
+
 //         // Check left section
 //         assert_eq!(rule.left.edges.len(), 2);
 //         assert_eq!(rule.left.edges[0].source, 1);
 //         assert_eq!(rule.left.edges[0].target, 2);
 //         assert_eq!(rule.left.edges[0].label, "-");
-        
+
 //         // Check context section
 //         assert_eq!(rule.context.nodes.len(), 73, "Should have all 73 nodes");
 //         assert_eq!(rule.context.nodes[0].id, 1);
 //         assert_eq!(rule.context.nodes[0].label, "O");
 //         assert_eq!(rule.context.nodes[1].label, "Si");
-        
+
 //         // Check right section
 //         assert_eq!(rule.right.edges.len(), 2);
 //         assert_eq!(rule.right.edges[0].source, 1);
@@ -1002,7 +999,7 @@ pub struct GraphSection {
 //         let canonical = rule.to_canonical();
 //         println!("Canonical Rule: {:?}", canonical);
 //         canonical.write_canonical("test_reaction.gml").unwrap();
-        
+
 //         // Read and verify the canonical file
 //         let content = std::fs::read_to_string("test_reaction.gml").unwrap();
 //         println!("Content: {:?}", content);
@@ -1011,7 +1008,7 @@ pub struct GraphSection {
 //         assert!(content.contains("left ["));
 //         assert!(content.contains("context ["));
 //         assert!(content.contains("right ["));
-        
+
 //         // Clean up
 //         std::fs::remove_file("test_reaction.gml").unwrap();
 //     }
@@ -1044,7 +1041,7 @@ pub struct GraphSection {
 //         println!("Graph: {:?}", graph);
 //         // Check nodes
 //         assert_eq!(graph.node_count(), 3);
-        
+
 //         // Find the edge that changes
 //         let mut found_changing_edge = false;
 //         for edge in graph.edge_references() {
@@ -1083,7 +1080,7 @@ pub struct GraphSection {
 //         // assert!(content.contains("node [ id"));
 //         // assert!(content.contains("edge [ source"));
 //         // assert!(content.contains("->="));  // Check for the transformed edge label
-        
+
 //         // Clean up
 //         std::fs::remove_file("test_reaction.gml").unwrap();
 //     }
@@ -1110,14 +1107,14 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
-        
+
 //         // Check that node 1 appears in both left and right with different labels
 //         assert_eq!(rule.left.nodes[0].label, "C");
 //         assert_eq!(rule.right.nodes[0].label, "C+");
-        
+
 //         // Check that node 2 remains unchanged in context
 //         assert_eq!(rule.context.nodes[0].label, "O");
-        
+
 //         // Test canonicalization preserves the transformation
 //         let canonical = rule.to_canonical();
 //         assert!(canonical.left.nodes.iter().any(|n| n.label == "C"));
@@ -1143,15 +1140,15 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
-        
+
 //         // Check node transformations
 //         assert_eq!(rule.left.nodes[0].label, "C");
 //         assert_eq!(rule.right.nodes[0].label, "C.");
-        
+
 //         // Check that H is only in left (gets removed)
 //         assert!(rule.left.nodes.iter().any(|n| n.label == "H"));
 //         assert!(!rule.right.nodes.iter().any(|n| n.label == "H"));
-        
+
 //         // Test canonicalization
 //         let canonical = rule.to_canonical();
 //         assert!(canonical.left.nodes.iter().any(|n| n.label == "C"));
@@ -1176,13 +1173,13 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
-        
+
 //         // Check node appearances/disappearances
 //         assert!(rule.left.nodes.iter().any(|n| n.label == "C"));
 //         assert!(!rule.right.nodes.iter().any(|n| n.label == "C")); // C disappears
 //         assert!(!rule.left.nodes.iter().any(|n| n.label == "N"));
 //         assert!(rule.right.nodes.iter().any(|n| n.label == "N")); // N appears
-        
+
 //         // Test canonicalization
 //         let canonical = rule.to_canonical();
 //         assert!(canonical.left.nodes.iter().any(|n| n.label == "C"));
@@ -1212,39 +1209,39 @@ pub struct GraphSection {
 //     ]
 // ]"#;
 //         let rule = ReactionRule::from_str(gml).unwrap();
-        
+
 //         // Check node transformations
 //         assert!(rule.left.nodes.iter().any(|n| n.label == "C"));
 //         assert!(rule.right.nodes.iter().any(|n| n.label == "C+"));
 //         assert!(rule.left.nodes.iter().any(|n| n.label == "O"));
 //         assert!(rule.right.nodes.iter().any(|n| n.label == "O-"));
-        
+
 //         // Check edge transformations
-//         assert!(rule.left.edges.iter().any(|e| e.label == "-" && 
+//         assert!(rule.left.edges.iter().any(|e| e.label == "-" &&
 //             e.source == 1 && e.target == 2));
-//         assert!(rule.right.edges.iter().any(|e| e.label == "=" && 
+//         assert!(rule.right.edges.iter().any(|e| e.label == "=" &&
 //             e.source == 1 && e.target == 2));
-        
+
 //         // Check H disappears
 //         assert!(rule.left.nodes.iter().any(|n| n.label == "H"));
 //         assert!(!rule.right.nodes.iter().any(|n| n.label == "H"));
-        
+
 //         // Test canonicalization preserves all transformations
 //         let canonical = rule.to_canonical();
 //         println!("Canonical Rule: {:?}", canonical);
-        
+
 //         // Node transformations preserved
 //         assert!(canonical.left.nodes.iter().any(|n| n.label == "C"));
 //         assert!(canonical.right.nodes.iter().any(|n| n.label == "C+"));
 //         assert!(canonical.left.nodes.iter().any(|n| n.label == "O"));
 //         assert!(canonical.right.nodes.iter().any(|n| n.label == "O-"));
-        
+
 //         // Edge transformations preserved
 //         let has_edge_transform = canonical.left.edges.iter().zip(canonical.right.edges.iter())
-//             .any(|(l, r)| l.label == "-" && r.label == "=" && 
+//             .any(|(l, r)| l.label == "-" && r.label == "=" &&
 //                 l.source == r.source && l.target == r.target);
 //         assert!(has_edge_transform);
-        
+
 //         // Node deletion preserved
 //         assert!(canonical.left.nodes.iter().any(|n| n.label == "H"));
 //         assert!(!canonical.right.nodes.iter().any(|n| n.label == "H"));

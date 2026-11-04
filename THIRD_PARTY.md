@@ -89,6 +89,12 @@ just this crate:
   Torsional-Angle Preferences. *J. Chem. Inf. Model.* **2020**, 60, 4,
   2044-2058.
 
+## cheq — MIT
+
+`chemistry_consts` supplies the QEq parameters; `src/molecule/charges.rs`'s Slater-orbital Coulomb
+kernel follows [`cheq`](https://github.com/caltechmsc/cheq) (MIT), itself
+implementing Rappe & Goddard, *J. Phys. Chem.* **1991**, 95, 3358.
+
 ## Canonaut — Apache-2.0
 
 Graph canonicalization uses the [canonaut](https://crates.io/crates/canonaut)

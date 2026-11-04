@@ -1,4 +1,4 @@
-use super::aromaticity::AromaticityType;
+use super::aromaticity::{AromaticityType, MoleculeAromaticity};
 use crate::molecule::{
     base::{MoleculeCore, cycle_to_bitset},
     bond::BondOrder,
@@ -8,12 +8,26 @@ use bit_set::BitSet;
 use bitvec::prelude::BitVec;
 use rustc_hash::FxHashSet;
 
-pub trait MoleculeExperimental: MoleculeCore {
-    /// Kekulizes the molecule by adding double bonds to aromatic atoms
+pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
+    /// Rewrites every aromatic bond as a single or a double one.
+    ///
+    /// This is [`MoleculeAromaticity::localize_aromatic_bonds`] under an older
+    /// name, and delegates to it. It used to have a kekulizer of its own, which
+    /// walked each perceived ring laying double bonds down greedily on
+    /// alternate bonds; that is the approach `pi_system` exists to replace. It
+    /// read a degree table captured once before the walk, so a bond it had just
+    /// made double was still counted as single when it came back round to the
+    /// closing bond of the ring, and an odd ring closed onto an atom that was
+    /// already paired. Pyrrole came out as `[CH]=1=C[CH]NC=1` -- a carbon with
+    /// two double bonds and a hydrogen -- and so did furan and
+    /// 1H-1,2,4-triazole, with `Ok` returned each time. Six-membered rings were
+    /// unaffected, which is why it survived.
     ///
     /// # Errors
     ///
-    /// Returns an error if the molecule cannot be kekulized
+    /// The message from [`KekulizationError`](super::aromaticity::KekulizationError)
+    /// when the molecule has no Kekulé structure, in which case the bonds that
+    /// cannot be localized are left aromatic.
     ///
     /// # Examples
     ///
@@ -23,103 +37,17 @@ pub trait MoleculeExperimental: MoleculeCore {
     /// let mut molecule = molecule.first().unwrap().clone();
     /// molecule.kekulize().unwrap();
     /// assert_eq!(molecule.to_smiles(), "C1=CC=CC=C1");
-    /// let molecule = MolecularGraph::from_smiles("c1ccccn1").unwrap();
+    ///
+    /// // A five-membered ring, where the greedy walk this replaced produced a
+    /// // five-valent carbon.
+    /// let molecule = MolecularGraph::from_smiles("c1cc[nH]c1").unwrap();
     /// let mut molecule = molecule.first().unwrap().clone();
     /// molecule.kekulize().unwrap();
-    /// assert_eq!(molecule.to_smiles(), "C1=CC=CC=N1");
+    /// assert_eq!(molecule.to_smiles(), "C=1C=CNC=1");
     /// ```
     fn kekulize(&mut self) -> Result<(), String> {
-        let mut aromatic_atoms: BitVec<usize> = BitVec::repeat(false, self.atom_bonds().len());
-        let mut aromatic_rings: Vec<Vec<usize>> = Vec::new();
-        let mut visited = BitVec::repeat(false, self.atomic_numbers().len());
-
-        // Find aromatic atoms and rings
-        for (index, bonds) in self.atom_bonds().iter().enumerate() {
-            for bond in bonds {
-                if bond.bond_order() == BondOrder::Aromatic {
-                    aromatic_atoms.set(index, true);
-                    break;
-                }
-            }
-        }
-
-        // Early return if no aromatic atoms
-        if !aromatic_atoms.any() {
-            return Ok(());
-        }
-
-        // Find aromatic rings using DFS
-        let mut path = Vec::new();
-        let mut path_set = FxHashSet::default();
-
-        for start in 0..self.atomic_numbers().len() {
-            if aromatic_atoms[start] && !visited[start] {
-                self.dfs_find_aromatic_rings(
-                    start,
-                    start,
-                    &mut visited,
-                    &mut path,
-                    &mut path_set,
-                    &mut aromatic_rings,
-                    &aromatic_atoms,
-                );
-            }
-        }
-
-        // Validate rings follow Hückel's rule
-        //aromatic_rings.retain(|ring| self.is_valid_aromatic_cycle(ring));
-
-        // Drop rings wholly contained in a larger one. A ring can be a subset
-        // of several larger rings, so the same index can be collected more
-        // than once, and removing by index invalidates every later index —
-        // marking then filtering in one pass avoids both.
-        let mut is_subset = vec![false; aromatic_rings.len()];
-        for outer_ring in &aromatic_rings {
-            for (index, inner_ring) in aromatic_rings.iter().enumerate() {
-                if inner_ring.len() < outer_ring.len()
-                    && inner_ring
-                        .iter()
-                        .all(|atom_index| outer_ring.contains(atom_index))
-                {
-                    is_subset[index] = true;
-                }
-            }
-        }
-
-        let mut keep = is_subset.iter().map(|&subset| !subset);
-        aromatic_rings.retain(|_| keep.next().unwrap_or(true));
-
-        // Convert aromatic bonds to alternating single/double bonds
-        for ring in &aromatic_rings {
-            let ring_len = ring.len();
-
-            // First convert all bonds to single bonds
-            for atom_index in ring {
-                let atom_bonds = self.get_atom_bonds(*atom_index).unwrap().to_vec();
-                for bond in atom_bonds {
-                    if bond.bond_order() == BondOrder::Aromatic {
-                        self.change_bond_order(*atom_index, bond.target(), BondOrder::Single);
-                    }
-                }
-            }
-
-            let degrees = self.degrees();
-
-            // Then add double bonds in alternating pattern
-            let mut last_bond_was_double = false;
-            for i in 0..ring_len {
-                let atom1 = ring[i];
-                let atom2 = ring[(i + 1) % ring_len];
-                if Self::can_increase_bond(atom1, atom2, &degrees) && !last_bond_was_double {
-                    self.change_bond_order(atom1, atom2, BondOrder::Double);
-                    last_bond_was_double = true;
-                } else {
-                    last_bond_was_double = false;
-                }
-            }
-        }
-
-        Ok(())
+        self.localize_aromatic_bonds()
+            .map_err(|failure| failure.to_string())
     }
 
     fn can_be_conjugated(&self, atom_idx: usize) -> bool {

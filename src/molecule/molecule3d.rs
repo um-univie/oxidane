@@ -101,17 +101,19 @@ impl Molecule3D {
     }
 
     pub fn is_atom_radical(&self, atom_index: usize) -> bool {
-        self.radical_states.get(atom_index).is_some_and(|&state| state > 0)
+        self.radical_states
+            .get(atom_index)
+            .is_some_and(|&state| state > 0)
     }
 
-    // This function returns a reference to outgoing bonds of an atom
+    /// Returns a reference to the outgoing bonds of all atoms in the molecule.
     pub fn atom_bonds(&self) -> &Vec<ArrayVec<[BondTarget; 10]>> {
         &self.atom_bonds
     }
-    /// Creates a new molecule from an xyz file
+    /// Loads molecules from an XYZ format file.
     ///
     /// # Panics
-    /// Function panics if the file cannot be opened or the file is empty
+    /// Panics if the file cannot be opened.
     ///
     /// # Examples
     /// ```
@@ -264,8 +266,7 @@ impl Molecule3D {
         self.atom_bonds = bonds;
     }
 
-    /// This function checks if two atoms are bonded based on their atomic numbers and distance
-
+    /// Determines whether two atoms are bonded based on distance and covalent radii.
     fn is_bonded(
         &self,
         index1: usize,
@@ -357,13 +358,9 @@ impl Molecule3D {
             .collect();
         bond_angles
     }
-    /// This function identifies all dihedral angles in a molecule
-    /// It is currently broken due to some internal changes
+    /// Identifies all dihedral angles in the molecule and computes their values in radians.
     ///
-    /// # Panics
-    /// This function does not panic
-    ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use oxidane::prelude::*;
@@ -401,12 +398,11 @@ impl Molecule3D {
             .collect();
         dihedrals
     }
-    /// This function calculates the dihedral angle for all atoms
+    /// Calculates the signed dihedral angle in radians for four atom indices `(a, b, c, d)`.
     ///
-    /// # Panics
-    /// This function does not panic.
+    /// Returns `None` if any atom index is out of bounds or if any three consecutive atoms are collinear.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use oxidane::molecule::{Molecule3D,Molecule};
@@ -442,9 +438,9 @@ impl Molecule3D {
             Some(angle)
         }
     }
-    /// This function calculates the degrees of all atoms
+    /// Calculates the degrees of all atoms.
     ///
-    /// # Example
+    /// # Examples
     /// ```
     /// use oxidane::molecule::{Molecule3D,Molecule};
     /// let molecule = Molecule3D::from_xyz("tests/ethane.xyz").unwrap().remove(0);
@@ -589,15 +585,18 @@ impl Molecule3D {
 
             let molecule = Molecule3D {
                 atomic_numbers,
-                atom_classes: self.atom_classes.as_ref().map(|values| {
-                    component.iter().map(|&index| values[index]).collect()
-                }),
-                chiral_classes: self.chiral_classes.as_ref().map(|values| {
-                    component.iter().map(|&index| values[index]).collect()
-                }),
-                isotopes: self.isotopes.as_ref().map(|values| {
-                    component.iter().map(|&index| values[index]).collect()
-                }),
+                atom_classes: self
+                    .atom_classes
+                    .as_ref()
+                    .map(|values| component.iter().map(|&index| values[index]).collect()),
+                chiral_classes: self
+                    .chiral_classes
+                    .as_ref()
+                    .map(|values| component.iter().map(|&index| values[index]).collect()),
+                isotopes: self
+                    .isotopes
+                    .as_ref()
+                    .map(|values| component.iter().map(|&index| values[index]).collect()),
                 charges: new_charges,
                 radical_states: new_is_radical,
                 atom_bonds: new_bonds,
@@ -793,7 +792,7 @@ impl Molecule3D {
         vertex_degrees
     }
 }
-/// This function tries to increase bonds in a greedy way to satisfy all bonds to saturate all atoms valence shells
+/// Heuristically adjusts bond orders to satisfy valence shells across all atoms.
 fn backtrack_bonding(molecule: &mut Molecule3D, degrees: &mut [i8]) -> bool {
     if degrees.iter().all(|&degree| degree >= 0) {
         return true;
@@ -1003,7 +1002,10 @@ impl MoleculeCore for Molecule3D {
         if atom_index < self.radical_states.len() {
             self.radical_states[atom_index] = radical_state;
         } else {
-            debug_assert!(false, "atom index out of bounds, could not set radical state");
+            debug_assert!(
+                false,
+                "atom index out of bounds, could not set radical state"
+            );
         }
     }
 

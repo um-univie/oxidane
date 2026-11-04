@@ -65,9 +65,10 @@ impl fmt::Display for SplitError {
     }
 }
 
-impl std::error::Error for SplitError {}
-
-/// This function
+/// Core graph-based molecular representation.
+///
+/// Stores atom properties (atomic numbers, charges, isotopes, chiral classes,
+/// radical states) and bond connectivity.
 #[derive(Debug, Default, Clone)]
 pub struct MolecularGraph {
     pub atomic_numbers: Vec<u8>,
@@ -345,11 +346,11 @@ impl MolecularGraph {
     ) -> Result<Self, SMILESParseError> {
         SMILESParser::parse_smiles_single_with(smiles, options)
     }
-    /// Split the molecule into multiple molecules based on atom indices.
+    /// Splits the molecule into multiple separate molecules based on atom groupings.
     ///
-    /// This method creates separate molecules from groups of atoms, but only if the split
-    /// doesn't break any existing bonds. If any bond would be broken between atoms in
-    /// different groups, the method returns an error.
+    /// # Errors
+    /// Returns [`SplitError::BondWouldBreak`] if any bond connects atoms placed in different groups,
+    /// or [`SplitError::EmptyGroups`] if no groups are provided.
     ///
     /// # Arguments
     ///
@@ -392,6 +393,18 @@ impl MolecularGraph {
         }
 
         Ok(result_molecules)
+    }
+
+    /// Splits a molecule containing disconnected components into separate molecules.
+    ///
+    /// If the molecule consists of only a single connected component, returns a
+    /// single-element vector containing a clone of self.
+    pub fn split_components(&self) -> Result<Vec<MolecularGraph>, SplitError> {
+        let components = self.get_components();
+        if components.len() <= 1 {
+            return Ok(vec![self.clone()]);
+        }
+        self.split(components)
     }
 
     /// Validates that the atom groups are well-formed

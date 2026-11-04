@@ -357,19 +357,9 @@ pub fn parse_sdf_file<R: BufRead>(reader: R) -> Result<Vec<SDFEntry>, SDFParseEr
 }
 
 impl Molecule3D {
-    /// This function parses an SDF file and returns a vector of Molecule3D instances.
-    ///
-    ///
-    /// # Arguments
-    ///
-    /// * `sdf` - The path to the SDF file.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` containing a vector of `Molecule3D` instances or an error.
+    /// Parses an SDF file and returns a vector of `Molecule3D` instances.
     ///
     /// # Errors
-    ///
     /// Returns an error if the SDF file cannot be read or parsed.
     ///
     /// # Examples

@@ -62,6 +62,25 @@
 //! something here misbehaves or its still-open items below matter for your
 //! case.
 //!
+//! # Example
+//!
+//! Finding the shared core between Morphine and Codeine:
+//!
+//! ```rust
+//! use oxidane::prelude::*;
+//! use oxidane::graph_algorithms::mcsplit::find_maximum_common_edge_subgraph;
+//!
+//! let morphine = MolecularGraph::from_smiles_single(
+//!     "CN1CC[C@]23[C@@H]4[C@H]1CC5=C2C(=C(C=C5)O)O[C@H]3[C@H](C=C4)O"
+//! ).unwrap();
+//! let codeine = MolecularGraph::from_smiles_single(
+//!     "CN1CC[C@]23[C@@H]4[C@H]1CC5=C2C(=C(C=C5)OC)O[C@H]3[C@H](C=C4)O"
+//! ).unwrap();
+//!
+//! let mcs = find_maximum_common_edge_subgraph(&morphine, &codeine).unwrap();
+//! assert!(mcs.num_atoms() >= 20);
+//! ```
+//!
 //! # What counts as "the same atom"
 //!
 //! Atom compatibility is exact equality of everything
@@ -278,11 +297,18 @@ pub fn find_maximum_common_edge_subgraph<T: Molecule + CipConfigs>(
         .map(|&(a, b)| {
             let atom_a = g1.original_index[a];
             let atom_b = g2.original_index[b];
-            AtomMapping { atom_a, atom_b, atomic_number: mol_a.atomic_numbers()[atom_a] }
+            AtomMapping {
+                atom_a,
+                atom_b,
+                atomic_number: mol_a.atomic_numbers()[atom_a],
+            }
         })
         .collect();
 
-    Some(MaximumCommonEdgeSubgraph { atom_mapping, bond_mapping })
+    Some(MaximumCommonEdgeSubgraph {
+        atom_mapping,
+        bond_mapping,
+    })
 }
 
 /// The common substructure shared by three or more molecules, reported in
@@ -334,8 +360,10 @@ pub fn find_common_edge_subgraph_multi<T: Molecule + CipConfigs>(
             return None;
         }
 
-        let keep_bonds: Vec<(usize, usize)> =
-            matched.iter().map(|&(bond_acc, _)| lg_acc.endpoints[bond_acc]).collect();
+        let keep_bonds: Vec<(usize, usize)> = matched
+            .iter()
+            .map(|&(bond_acc, _)| lg_acc.endpoints[bond_acc])
+            .collect();
         accumulated = accumulated.edge_subgraph(&keep_bonds);
     }
 
@@ -398,15 +426,24 @@ fn induced_result<T: Molecule>(
         return None;
     }
 
-    let bonded_atoms_a: HashSet<usize> =
-        bond_mapping.iter().flat_map(|b| [b.bond_a.0, b.bond_a.1]).collect();
+    let bonded_atoms_a: HashSet<usize> = bond_mapping
+        .iter()
+        .flat_map(|b| [b.bond_a.0, b.bond_a.1])
+        .collect();
 
     let atom_mapping: Vec<AtomMapping> = matched
         .iter()
         .map(|&(a, b)| (g1.original_index[a], g2.original_index[b]))
         .filter(|(a, _)| bonded_atoms_a.contains(a))
-        .map(|(a, b)| AtomMapping { atom_a: a, atom_b: b, atomic_number: mol_a.atomic_numbers()[a] })
+        .map(|(a, b)| AtomMapping {
+            atom_a: a,
+            atom_b: b,
+            atomic_number: mol_a.atomic_numbers()[a],
+        })
         .collect();
 
-    Some(MaximumCommonEdgeSubgraph { atom_mapping, bond_mapping })
+    Some(MaximumCommonEdgeSubgraph {
+        atom_mapping,
+        bond_mapping,
+    })
 }

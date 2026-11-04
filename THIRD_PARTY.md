@@ -15,6 +15,12 @@ The following pieces derive from [RDKit](https://github.com/rdkit/rdkit):
 - **`src/molecule/cip/`** — a port of RDKit's `CIPLabeler`
   (`Code/GraphMol/CIPLabeler`), itself a port of John Mayfield's `centres`
   library for the Hanson *et al.* re-specification of the CIP rules.
+- **Three-coordinate SMILES stereo handling** in `src/molecule/chirality.rs`,
+  used by the parser and writer, follows RDKit's
+  [`chiralAtomNeedsTagInversion`](https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/Canon.cpp)
+  convention for a saturated centre with one written ring closure and no
+  folded hydrogen. The referenced source carries Copyright (C) 2001–2021
+  Greg Landrum and other RDKit contributors, under the BSD 3-Clause licence.
 - **`src/molecule/embed/torsion_preferences.rs`** — the experimental
   torsion-angle preferences of `torsionPreferences_v2.in`
   (`Code/GraphMol/ForceFieldHelpers/CrystalFF`), the rule set ETKDGv2 and

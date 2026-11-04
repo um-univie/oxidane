@@ -1,5 +1,7 @@
 use crate::io::{MOLFile, MOLParseError, parse_mol_file};
-use crate::molecule::aromaticity::{AromaticityModel, MoleculeAromaticity};
+use crate::molecule::aromaticity::{
+    AromaticityModel, MoleculeAromaticity, default_aromaticity_model,
+};
 use crate::molecule::base::MoleculeCore;
 use crate::molecule::chirality::{ChiralClass, ChiralClassifier};
 use crate::{
@@ -59,7 +61,7 @@ impl Default for SdfParseOptions {
         Self {
             hydrogens: true,
             stereochemistry: true,
-            aromaticity: Some(AromaticityModel::OpenSMILES),
+            aromaticity: Some(default_aromaticity_model()),
         }
     }
 }

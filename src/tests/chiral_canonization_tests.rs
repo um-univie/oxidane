@@ -30,8 +30,7 @@ mod chiral_canonization_tests {
         let mut canons: Vec<(String, String)> =
             writings.iter().map(|w| (w.to_string(), canon(w))).collect();
         canons.sort_by(|a, b| a.1.cmp(&b.1));
-        let distinct: std::collections::BTreeSet<&String> =
-            canons.iter().map(|(_, c)| c).collect();
+        let distinct: std::collections::BTreeSet<&String> = canons.iter().map(|(_, c)| c).collect();
         assert_eq!(
             distinct.len(),
             1,
@@ -331,7 +330,10 @@ mod chiral_canonization_tests {
     fn discriminate_tartaric_chiral_vs_meso() {
         assert_distinct(
             "tartaric (R,R) vs meso",
-            &["OC(=O)[C@H](O)[C@@H](O)C(=O)O", "OC(=O)[C@H](O)[C@H](O)C(=O)O"],
+            &[
+                "OC(=O)[C@H](O)[C@@H](O)C(=O)O",
+                "OC(=O)[C@H](O)[C@H](O)C(=O)O",
+            ],
         );
     }
 
@@ -351,7 +353,11 @@ mod chiral_canonization_tests {
         for w in &group_s {
             assert_eq!(canon(w), canon(group_s[0]), "S writing {w} disagreed");
         }
-        assert_ne!(canon(group_r[0]), canon(group_s[0]), "enantiomers collapsed");
+        assert_ne!(
+            canon(group_r[0]),
+            canon(group_s[0]),
+            "enantiomers collapsed"
+        );
     }
 
     // ---- KNOWN GAPS (documented, currently failing) ----------------------
@@ -612,6 +618,54 @@ mod chiral_canonization_tests {
                 "S[Co@OH1](F)(I)(Cl)(C)Br",
                 "S[Co@OH2](F)(I)(Cl)(C)Br",
                 "S[Co@OH5](F)(I)(Cl)(C)Br",
+            ],
+        );
+    }
+
+    #[test]
+    fn a_labelled_hydrogen_on_a_stereocentre_keeps_its_tag() {
+        // The order a tag is read against has to be the order the writer uses,
+        // and a `[2H]` cannot fold into an `H` count -- it is written as its own
+        // atom, at the end of the branch list rather than at the front where a
+        // folded hydrogen goes. Reading it at the front is an odd permutation,
+        // so the tag flipped on every rewrite and the canonical form alternated
+        // between `@` and `@@` for ever. PubChem's CIDs 101060209 and 101060211
+        // are the deuterated silicon stereocentres that found it.
+        for smiles in [
+            "[2H][Si@](C)(N)O",
+            "[Si@]([2H])(C)(N)O",
+            "[2H][C@](C)(N)O",
+            "[3H][C@@](C)(N)O",
+            "[2H][Si@](C1=CC=CC=C1)(C2=CC=CC3=C2C(=CC=C3)N(C)C)OC(C)C",
+        ] {
+            let once = canon(smiles);
+            let twice = canon(&once);
+            assert_eq!(once, twice, "{smiles} was not stable: {once} then {twice}");
+        }
+    }
+
+    #[test]
+    fn several_copies_of_one_arm_do_not_leave_the_tags_to_the_input_order() {
+        // A canonical labelling is unique only up to the graph's automorphisms,
+        // and a chirality tag is not part of the graph. This tryptophan
+        // dendrimer (PubChem CID 129909078) carries nine copies of one arm with
+        // the tags spread across them, so nothing in the coloured graph says
+        // which copy belongs at which canonical position and the tags came out
+        // in whatever order the input held them. The two writings below are the
+        // same molecule -- the second is what the canonizer made of the first --
+        // and they used to canonicalize apart.
+        //
+        // Taking the smallest tag vector the automorphism group can produce is
+        // the other way to settle this, and it is what the canonizer does for
+        // symmetric molecules, but it has to walk the group and this one's runs
+        // to millions. A dendrimer is the case that needs the tag in the
+        // colouring rather than a truncated walk, which is why the test uses a
+        // real one instead of something shorter.
+        assert_invariant(
+            "tryptophan dendrimer, nine arms",
+            &[
+                "C1=CC=C2C(=C1)C(=CN2)C[C@H](C(=O)O)NC(=O)CCC(CCC(=O)N[C@H](CC3=CNC4=CC=CC=C43)C(=O)O)(CCC(=O)N[C@@H](CC5=CNC6=CC=CC=C65)C(=O)O)NC(=O)CCOCC(COCCC(=O)NC(CCC(=O)N[C@H](CC7=CNC8=CC=CC=C87)C(=O)O)(CCC(=O)N[C@H](CC9=CNC1=CC=CC=C19)C(=O)O)CCC(=O)N[C@@H](CC1=CNC2=CC=CC=C21)C(=O)O)(COCCC(=O)NC(CCC(=O)N[C@H](CC1=CNC2=CC=CC=C21)C(=O)O)(CCC(=O)N[C@@H](CC1=CNC2=CC=CC=C21)C(=O)O)CCC(=O)N[C@@H](CC1=CNC2=CC=CC=C21)C(=O)O)COCCC(=O)NC(CCC(=O)N[C@@H](CC1=CNC2=CC=CC=C21)C(=O)O)(CCC(=O)N[C@@H](CC1=CNC2=CC=CC=C21)C(=O)O)CCC(=O)N[C@@H](CC1=CNC2=CC=CC=C21)C(=O)O",
+                "OC(=O)[C@H](NC(=O)CCC(NC(=O)CCOCC(COCCC(=O)NC(CCC(=O)N[C@H](Cc1c[nH]c2ccccc21)C(O)=O)(CCC(=O)N[C@H](Cc3c[nH]c4ccccc43)C(O)=O)CCC(=O)N[C@@H](Cc5c[nH]c6ccccc65)C(O)=O)(COCCC(=O)NC(CCC(=O)N[C@H](Cc7c[nH]c8ccccc87)C(O)=O)(CCC(=O)N[C@H](Cc9c[nH]c%10ccccc%109)C(O)=O)CCC(=O)N[C@@H](Cc%11c[nH]c%12ccccc%12%11)C(O)=O)COCCC(=O)NC(CCC(=O)N[C@@H](Cc%13c[nH]c%14ccccc%14%13)C(O)=O)(CCC(=O)N[C@@H](Cc%15c[nH]c%16ccccc%16%15)C(O)=O)CCC(=O)N[C@@H](Cc%17c[nH]c%18ccccc%18%17)C(O)=O)(CCC(=O)N[C@@H](Cc%19c[nH]c%20ccccc%20%19)C(O)=O)CCC(=O)N[C@@H](Cc%21c[nH]c%22ccccc%22%21)C(O)=O)Cc%23c[nH]c%24ccccc%24%23",
             ],
         );
     }

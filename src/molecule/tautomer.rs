@@ -1788,6 +1788,16 @@ pub fn tautomer_key_from_smiles(
 /// amide over the imidic acid and 2-pyridone over 2-hydroxypyridine, which is
 /// the convention registries use.
 ///
+/// Several such orders are tried -- heteroatom bonds first, ring bonds first,
+/// the bonds of six-membered rings first, and with π forbidden on the bonds
+/// leaving all-carbon six-membered rings or every ring -- and the answer is
+/// the one with the fewest formal charges, then the most aromatic bonds. Two
+/// kinds of bond are decided before any of that: a nitro group's N–O bonds and
+/// a nitrile's C–N bond, so neither is traded for hydrogens taken from NH
+/// donors. A bond whose π would charge an atom that has no room as a neutral
+/// one -- an ether oxygen, a tertiary nitrogen -- is offered after every other,
+/// and a chalcogen gives back a positive charge before a nitrogen does.
+///
 /// The result is returned in canonical atom order, so `to_smiles()` on it is
 /// the canonical SMILES of the canonical tautomer.
 ///
@@ -2098,45 +2108,161 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
             .count();
         on_ring > 0 && on_ring < group.bonds.len()
     });
-    let mut candidates: Vec<(BondOrdering, &FxHashSet<(usize, usize)>, bool)> =
-        vec![(BondOrdering::HeteroatomFirst, &nothing, false)];
+    // Ring-first offers every ring bond alike, so the C=C of a lactone or a
+    // pyridone fused to or hung on a benzene ring can take the π the benzene
+    // needed: a phenol beside a lactone came back as a quinone methide, and
+    // closing the rings instead buys the benzene with a charge separation.
+    // Offering the six-membered rings' bonds first keeps the benzene whole, and
+    // so does closing only the all-carbon six-membered rings, which leaves a
+    // pyridone beside the benzene free to take its carbonyl. Ring membership is
+    // read from σ bonds alone, like everything else here, and is worked out only
+    // for a molecule the first candidate does not settle.
+    let six_rings = || {
+        let rings: Vec<Vec<usize>> = crate::molecule::topology::smallest_rings(&canonical)
+            .into_iter()
+            .filter(|ring| ring.len() == 6)
+            .collect();
+        let bonds: FxHashSet<(usize, usize)> = rings
+            .iter()
+            .flat_map(|ring| {
+                (0..6).map(|index| {
+                    let (first, second) = (ring[index], ring[(index + 1) % 6]);
+                    (first.min(second), first.max(second))
+                })
+            })
+            .collect();
+        let carbocyclic: FxHashSet<usize> = rings
+            .iter()
+            .filter(|ring| {
+                ring.iter()
+                    .all(|&atom| canonical.atomic_numbers()[atom] == 6)
+            })
+            .flatten()
+            .copied()
+            .collect();
+        let closable_carbocycles: FxHashSet<(usize, usize)> = closable
+            .iter()
+            .filter(|bond| carbocyclic.contains(&bond.0) || carbocyclic.contains(&bond.1))
+            .copied()
+            .collect();
+        // Worth a candidate only when a group holds both kinds of ring bond.
+        let mixed = groups.groups().iter().any(|group| {
+            group.bonds.iter().any(|bond| bonds.contains(bond))
+                && group
+                    .bonds
+                    .iter()
+                    .any(|bond| cyclic.contains(bond) && !bonds.contains(bond))
+        });
+        SixRings {
+            bonds,
+            closable_carbocycles,
+            mixed,
+        }
+    };
+    let mut six: Option<SixRings> = None;
+    let mut candidates: Vec<(BondOrdering, Rings, Closure, bool)> = vec![(
+        BondOrdering::HeteroatomFirst,
+        Rings::All,
+        Closure::Open,
+        false,
+    )];
     if mixed {
-        candidates.push((BondOrdering::RingFirst, &nothing, false));
+        candidates.push((BondOrdering::RingFirst, Rings::All, Closure::Open, false));
     }
+    candidates.push((
+        BondOrdering::RingFirst,
+        Rings::SixMembered,
+        Closure::Open,
+        false,
+    ));
     if !closable.is_empty() {
-        candidates.push((BondOrdering::HeteroatomFirst, &closable, false));
+        candidates.push((
+            BondOrdering::HeteroatomFirst,
+            Rings::All,
+            Closure::Carbocycles,
+            false,
+        ));
+        candidates.push((
+            BondOrdering::HeteroatomFirst,
+            Rings::All,
+            Closure::Every,
+            false,
+        ));
         if mixed {
-            candidates.push((BondOrdering::RingFirst, &closable, false));
+            candidates.push((BondOrdering::RingFirst, Rings::All, Closure::Every, false));
         }
     }
     // The pools-first ordering last, as the answer for a group the others leave
     // with its hydrogens and electrons piled on one atom.
-    candidates.push((BondOrdering::HeteroatomFirst, &nothing, true));
+    candidates.push((
+        BondOrdering::HeteroatomFirst,
+        Rings::All,
+        Closure::Open,
+        true,
+    ));
 
     // One instance for every candidate: they differ in the order the bonds are
     // offered their π, which is a pass over the instance rather than a reason
     // to build another.
     let mut instance = instance_for(&canonical, &pooled, &used_canonical)?;
-    let mut best: Option<(usize, M, bool, bool)> = None;
+    let mut best: Option<((std::cmp::Reverse<u32>, usize), M, bool, bool)> = None;
     // Two levers can lead to the same bond orders -- a molecule whose rings are
     // already satisfied does not care in which order its bonds were offered
     // their pi -- and scoring a candidate means canonizing it, which is what
     // the pass costs. So a candidate that has come out as one already scored is
     // dropped before it is paid for; it could only tie, and a tie never wins.
     let mut scored = FxHashSet::default();
-    for (ordering, closed, spread) in candidates {
+    // The most aromatic bonds any candidate can have: those the skeleton
+    // already has outside the groups, whose orders no candidate changes, and
+    // every ring bond a group owns. Counting every ring bond instead never
+    // settles a molecule with a saturated ring.
+    let most_aromatic = aromatic_bond_count(&canonical)
+        + pooled
+            .bonds
+            .iter()
+            .filter(|&&(first, second)| cyclic.contains(&(first.min(second), first.max(second))))
+            .count();
+    // The charge count of the first candidate scored, which has no closures
+    // and so separates no charge it can avoid.
+    let mut fewest = None;
+    for (ordering, rings, closure, spread) in candidates {
         // The last candidate exists for groups the others cannot write at all,
         // so it is not allowed to win a molecule that already has an answer.
         if spread && best.is_some() {
             break;
         }
+        if matches!(rings, Rings::SixMembered) || matches!(closure, Closure::Carbocycles) {
+            six.get_or_insert_with(six_rings);
+        }
+        let rings = match rings {
+            Rings::All => &cyclic,
+            Rings::SixMembered => match &six {
+                Some(six) if six.mixed => &six.bonds,
+                _ => continue,
+            },
+        };
+        let closed = match closure {
+            Closure::Open => &nothing,
+            Closure::Every => &closable,
+            // The same as closing every ring when every closable bond leaves a
+            // carbocycle, so not worth a pass of its own.
+            Closure::Carbocycles => match &six {
+                Some(six)
+                    if !six.closable_carbocycles.is_empty()
+                        && six.closable_carbocycles.len() < closable.len() =>
+                {
+                    &six.closable_carbocycles
+                }
+                _ => continue,
+            },
+        };
         let mut candidate = canonical.clone();
         if solve_group(
             &mut candidate,
             &pooled,
             &mut instance,
             ordering,
-            &cyclic,
+            rings,
             closed,
             &used_canonical,
             spread,
@@ -2158,19 +2284,26 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
         let unsettled =
             mirror_ambiguous || a_symmetry_moves_a_placement(&skeleton_symmetries, &candidate);
         let (candidate, already_canonical) = canonizer.perceive_for_scoring(candidate);
-        let aromatic = aromatic_bond_count(&candidate);
-        let settled = aromatic >= cyclic.len();
+        // Fewest charges first, then most aromatic bonds: a ring closure can
+        // buy aromaticity with a charge separation, and N-methyl-2-pyridone
+        // beside a phenol is not a pyridinium phenolate.
+        let score = (
+            std::cmp::Reverse(charge_count(&candidate)),
+            aromatic_bond_count(&candidate),
+        );
+        let fewest = *fewest.get_or_insert(score.0);
+        let settled = score.1 >= most_aromatic && score.0 == fewest;
         if best
             .as_ref()
-            .is_none_or(|(count, _, _, _)| aromatic > *count)
+            .is_none_or(|(best_score, _, _, _)| score > *best_score)
         {
-            best = Some((aromatic, candidate, unsettled, already_canonical));
+            best = Some((score, candidate, unsettled, already_canonical));
         }
-        // An aromatic bond is a ring bond, so a candidate that has made every
-        // ring bond in the molecule aromatic cannot be beaten and the remaining
-        // orderings are worth nothing. Most drug-like molecules reach that on
-        // the first pass, and each pass they skip is a full lexicographic solve
-        // -- one matching per edge, the dominant cost of `normalize`.
+        // A candidate as aromatic as any can be, with the fewest charges,
+        // cannot be beaten and the remaining orderings are worth nothing. Most
+        // drug-like molecules reach that on the first pass, and each pass they
+        // skip is a full lexicographic solve -- one matching per edge, the
+        // dominant cost of `normalize`.
         if settled {
             break;
         }
@@ -2284,12 +2417,23 @@ fn bond_order_signature<M: Molecule + ?Sized>(molecule: &M) -> Vec<u8> {
 
 /// How many aromatic bonds a molecule has, which is what separates the two bond
 /// orderings when both give a valid answer.
+/// The sum of the magnitudes of the formal charges.
+fn charge_count<M: Molecule + ?Sized>(molecule: &M) -> u32 {
+    (0..molecule.atomic_numbers().len())
+        .map(|atom| u32::from(molecule.get_atom_charge(atom).unsigned_abs()))
+        .sum()
+}
+
+/// Each bond is listed at both of its atoms, so the count is halved; compared
+/// with the number of ring bonds, the doubled count called a molecule fully
+/// aromatic with half its rings dearomatised.
 fn aromatic_bond_count<M: Molecule + ?Sized>(molecule: &M) -> usize {
     (0..molecule.atomic_numbers().len())
         .filter_map(|atom| molecule.get_atom_bonds(atom))
         .flatten()
         .filter(|bond| bond.bond_order() == BondOrder::Aromatic)
         .count()
+        / 2
 }
 
 /// Rewrites a group's atom indices through `position`, which sends an atom to
@@ -2423,6 +2567,30 @@ fn takes_positive_charge(atomic_number: u8) -> bool {
     matches!(atomic_number, 7 | 8 | 15 | 16 | 34 | 52)
 }
 
+/// Which ring bonds a ring-first candidate offers its π first.
+#[derive(Clone, Copy)]
+enum Rings {
+    All,
+    SixMembered,
+}
+
+/// Which bonds leaving a ring a candidate forbids π on.
+#[derive(Clone, Copy)]
+enum Closure {
+    Open,
+    /// Those at all-carbon six-membered rings.
+    Carbocycles,
+    Every,
+}
+
+/// The six-membered rings of a component's skeleton, for the candidates that
+/// read them.
+struct SixRings {
+    bonds: FxHashSet<(usize, usize)>,
+    closable_carbocycles: FxHashSet<(usize, usize)>,
+    mixed: bool,
+}
+
 /// Which bonds are offered a π bond first.
 ///
 /// Neither order is right on its own, and the difference is not one the
@@ -2460,6 +2628,70 @@ fn bond_priority(first_element: u8, second_element: u8) -> u8 {
         _ => 5,
     };
     rank(first_element).min(rank(second_element))
+}
+
+/// Where a bond stands in the order bonds are offered π units, earliest first.
+///
+/// The element ranks of [`bond_priority`] decide between bonds of one class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum BondClass {
+    /// A nitro group's N–O or a nitrile's C–N, offered before anything else
+    /// is decided.
+    Settled,
+    Ordinary,
+    /// A bond whose π unit would leave an atom charged that has no room as a
+    /// neutral one: an ether oxygen or a tertiary nitrogen. Offered last, so a
+    /// group's positive charge goes to such an atom only when nothing else
+    /// takes it -- which keeps a cyanine's charge on its nitrogen rather than
+    /// on the methoxy oxygen at the far end of the chromophore.
+    Charging,
+}
+
+/// The class of `bond`, read from σ degrees and neutral capacities alone, so
+/// that every tautomer of a compound classes its bonds the same way.
+fn bond_class<M: Molecule + ?Sized>(
+    molecule: &M,
+    (first, second): (usize, usize),
+    (first_slot, second_slot): (usize, usize),
+    capacity: &[i64],
+) -> BondClass {
+    let element = |atom: usize| molecule.atomic_numbers()[atom];
+    let is_nitrile = |carbon: usize, carbon_slot: usize, nitrogen: usize, nitrogen_slot: usize| {
+        element(carbon) == 6
+            && element(nitrogen) == 7
+            && heavy_degree(molecule, carbon) == 2
+            && heavy_degree(molecule, nitrogen) == 1
+            && capacity[carbon_slot] >= 2
+            && capacity[nitrogen_slot] >= 2
+    };
+    if is_nitro_oxygen(molecule, first, second)
+        || is_nitro_oxygen(molecule, second, first)
+        || is_nitrile(first, first_slot, second, second_slot)
+        || is_nitrile(second, second_slot, first, first_slot)
+    {
+        BondClass::Settled
+    } else if capacity[first_slot] <= 0 || capacity[second_slot] <= 0 {
+        BondClass::Charging
+    } else {
+        BondClass::Ordinary
+    }
+}
+
+/// Whether `oxygen` is a terminal oxygen of the nitro group on `nitrogen`:
+/// a nitrogen with three heavy neighbours, two of them terminal oxygens.
+fn is_nitro_oxygen<M: Molecule + ?Sized>(molecule: &M, oxygen: usize, nitrogen: usize) -> bool {
+    let terminal_oxygen =
+        |atom: usize| molecule.atomic_numbers()[atom] == 8 && heavy_degree(molecule, atom) == 1;
+    terminal_oxygen(oxygen)
+        && molecule.atomic_numbers()[nitrogen] == 7
+        && heavy_degree(molecule, nitrogen) == 3
+        && molecule.get_atom_bonds(nitrogen).is_some_and(|bonds| {
+            bonds
+                .iter()
+                .filter(|bond| terminal_oxygen(bond.target()))
+                .count()
+                >= 2
+        })
 }
 
 /// What one group's atoms should end up carrying.
@@ -2904,6 +3136,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
     }
 
     let mut bond_edges: Vec<(usize, usize, (usize, usize))> = Vec::new();
+    let mut bond_classes: Vec<BondClass> = Vec::new();
     for &(first, second) in &group.bonds {
         let (Some(&a), Some(&b)) = (index_of.get(&first), index_of.get(&second)) else {
             continue;
@@ -2913,6 +3146,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         let second_unit = edges.len();
         edges.push((a, b));
         bond_edges.push((single, second_unit, (first, second)));
+        bond_classes.push(bond_class(molecule, (first, second), (a, b), &raw_capacity));
     }
 
     // How many extra plus/minus pairs the group could possibly want. A pair
@@ -3050,6 +3284,17 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
             }
         }
     }
+    // A nitro oxygen is asked for the negative charge before any other atom,
+    // so the nitro group keeps its own and a carboxylic acid beside it keeps
+    // its proton, rather than the two trading for `[N+](O)=O` and `C(=O)[O-]`.
+    let nitro_oxygen = |atom: usize| {
+        molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+            bonds
+                .iter()
+                .any(|bond| is_nitro_oxygen(molecule, atom, bond.target()))
+        })
+    };
+    charge_edges.sort_by_key(|&(_, slot)| !nitro_oxygen(group.atoms[slot]));
 
     // One three-vertex chain per possible separation. `z` either takes the
     // negative pool -- the separation goes unused -- or pairs with `d`, which
@@ -3088,15 +3333,31 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
     // room for a π bond unless it is charged -- instead of moving it to an
     // oxime nitrogen that was managing perfectly well, and dearomatising the
     // ring to pay for it.
-    let mut offers: Vec<(usize, usize)> = positive_edges
+    //
+    // Chalcogens are asked before nitrogen and phosphorus whatever their room,
+    // so a cation that can be an ammonium is not written as an oxonium: an
+    // ester oxygen has no room either, and on room alone it kept the proton a
+    // benzimidazolium was carrying.
+    let gives_back_first = |slot: usize| {
+        u8::from(matches!(
+            molecule.atomic_numbers()[group.atoms[slot]],
+            8 | 16 | 34 | 52
+        ))
+    };
+    let mut offers: Vec<(u8, usize, usize)> = positive_edges
         .iter()
-        .map(|&(edge, slot)| (required[slot], edge))
+        .map(|&(edge, slot)| (gives_back_first(slot), required[slot], edge))
         .collect();
     offers.sort_unstable_by(|first, second| second.cmp(first));
+    let offers = offers
+        .into_iter()
+        .map(|(_, room, edge)| (room, edge))
+        .collect();
     Some(GroupInstance {
         solver,
         atoms: group.atoms.clone(),
         bond_edges,
+        bond_classes,
         hydrogen_rounds,
         hydrogen_edges,
         charge_edges,
@@ -3128,6 +3389,8 @@ struct GroupInstance {
     /// The atoms the slots name, in the order the instance numbers them.
     atoms: Vec<usize>,
     bond_edges: Vec<(usize, usize, (usize, usize))>,
+    /// How early each of `bond_edges` is offered its π units.
+    bond_classes: Vec<BondClass>,
     hydrogen_rounds: Vec<Vec<(usize, usize)>>,
     hydrogen_edges: Vec<(usize, usize)>,
     charge_edges: Vec<(usize, usize)>,
@@ -3155,10 +3418,12 @@ fn plan_from<M: Molecule + ?Sized>(
     // and hydrogens follow from them, and are named afterwards so that where a
     // choice does survive it is still made by position rather than by the
     // solver's numbering.
-    let mut ordered: Vec<(u8, u8, usize, usize, usize, usize)> = instance
+    let mut ordered: Vec<(u8, BondClass, u8, usize, usize, usize, usize)> = instance
         .bond_edges
         .iter()
-        .map(|&(single, second_unit, (first, second))| {
+        .zip(&instance.bond_classes)
+        .filter(|&(_, &class)| class != BondClass::Settled)
+        .map(|(&(single, second_unit, (first, second)), &class)| {
             let rank = bond_priority(
                 molecule.atomic_numbers()[first],
                 molecule.atomic_numbers()[second],
@@ -3170,6 +3435,7 @@ fn plan_from<M: Molecule + ?Sized>(
             };
             (
                 leading,
+                class,
                 rank,
                 first.min(second),
                 first.max(second),
@@ -3222,6 +3488,18 @@ fn plan_from<M: Molecule + ?Sized>(
             .filter(|(_, _, bond)| closed.contains(bond))
             .flat_map(|&(single, second_unit, _)| [(single, false), (second_unit, false)]),
     );
+    // Nitro groups and nitriles before the charge separations: both are
+    // written the one way whatever else the group does, and a separation left
+    // unused at their expense is how `[N+](=O)[O-]` beside two amide NH came
+    // back as `N(O)O`, and `N#CC=CN` as `N=CC=C=N`.
+    priority.extend(
+        instance
+            .bond_edges
+            .iter()
+            .zip(&instance.bond_classes)
+            .filter(|&(_, &class)| class == BondClass::Settled)
+            .flat_map(|(&(single, second_unit, _), _)| [(single, true), (second_unit, true)]),
+    );
     // A last-resort ordering that hands every endpoint one hydrogen and one
     // electron before any atom is allowed down its ladder.
     //
@@ -3251,8 +3529,8 @@ fn plan_from<M: Molecule + ?Sized>(
     );
     priority.extend(instance.rung_edges.iter().map(|&edge| (edge, true)));
     for entry in &ordered {
-        priority.push((entry.4, true));
         priority.push((entry.5, true));
+        priority.push((entry.6, true));
     }
     priority.extend(instance.charge_edges.iter().map(|&(edge, _)| (edge, true)));
     priority.extend(instance.offers.iter().map(|&(_, edge)| (edge, true)));

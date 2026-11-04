@@ -1,33 +1,82 @@
 # Oxidane Python bindings
 
-The standalone [`um-univie/molecules-py`](https://github.com/um-univie/molecules-py)
-bindings now live here and compile against the Rust library two directories up.
-The starting source and SDF/XYZ fixtures come from commit
-`0f1eaed5e592d00b131da387600146d733628262` (2026-02-06). No separate checkout of
-`molecules` or `stochsim` is needed. The old repository is not deleted or archived
-by this migration.
+Canonical SMILES, tautomer keys and canonical tautomers for millions of
+molecules, plus molecules, SMARTS queries, reactions and SVG display in
+Jupyter. The package is called `oxidane`; it needs nothing but Python 3.9 or
+newer.
 
-## Install from this checkout
+## Install
 
-From the repository root, with Rust and `uv` available:
-
-```sh
-uv venv bindings/python/.venv
-uv pip install --python bindings/python/.venv/bin/python './bindings/python[notebook]'
-```
-
-The package is named `oxidane`. This command builds the local source; no PyPI
-publication is required. Omit `[notebook]` if only using the chemistry API or
-exporting SVG strings. Select this environment in Jupyter and restart an existing
-kernel after rebuilding the native extension.
-
-For an editable development install, run inside `bindings/python`:
+With the wheel file, which runs on any x86-64 Linux with glibc 2.17 or newer
+and any Python from 3.9 on:
 
 ```sh
-uv sync --extra notebook
-uv run --with maturin maturin develop --uv
-uv run pytest
+uv venv && source .venv/bin/activate
+uv pip install oxidane-0.2.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 ```
+
+From the repository, on any platform, which builds the native module and so
+needs Rust (`curl https://sh.rustup.rs -sSf | sh`; compiling takes a few minutes)
+and, for the first line, read access to the repository on GitHub:
+
+```sh
+uv pip install "oxidane @ git+https://github.com/um-univie/oxidane-dev#subdirectory=bindings/python"
+uv pip install ./bindings/python             # or from a clone, at its root
+uv tool install ./bindings/python            # only the oxidane-normalize command, on PATH
+```
+
+`./bindings/python[notebook]` adds IPython and ipykernel for the Jupyter
+display. To build a wheel to hand on, see [Build and verification](#build-and-verification).
+
+## Normalize a SMILES file or database
+
+The `oxidane-normalize` command (also `python -m oxidane`) appends three
+columns to every row of a CSV, TSV or SMILES file, on every core, streaming, so
+memory stays small however large the file is:
+
+```sh
+oxidane-normalize molecules.smi molecules.tsv                 # SMILES in the first column
+oxidane-normalize data.csv data_out.csv --smiles-column smiles   # by header name
+oxidane-normalize CID-SMILES.gz keys.tsv.gz -s 1 -c tautomer_key # 2nd column, gzip, one result
+sqlite3 -tabs compounds.db "SELECT id, smiles FROM compounds" | oxidane-normalize - out.tsv -s 1
+oxidane-normalize --help
+```
+
+The three results are:
+
+| column | what it is | use it for |
+|---|---|---|
+| `canonical_smiles` | the input as canonical SMILES | exact duplicates, one spelling per structure |
+| `tautomer_key` | an identifier shared by every tautomer of a compound | grouping and joining; not a structure |
+| `canonical_tautomer` | the one tautomer every member of the class normalizes to, as canonical SMILES | the structure to store or compute on |
+
+Nothing else is changed: counterions, charges that no tautomer removes,
+isotopes and stereochemistry stay as written, and components of a salt are
+sorted, so `[Na+].CC([O-])=O` and `CC(=O)[O-].[Na+]` come out the same. Strip
+salts or neutralize first if the database should hold parent compounds.
+
+A SMILES that does not parse is written back unchanged in the result columns and
+reported on stderr (the first ten, then a count); `--errors none` leaves the
+fields empty instead, `--errors raise` stops. On 24 cores a file goes at about
+25,000 rows per second with all three columns; a single column is faster.
+
+In Python the same three functions take one SMILES or a whole column:
+
+```python
+import oxidane as ox
+import pandas
+
+df = pandas.read_parquet("compounds.parquet")      # or read_csv, read_sql, ...
+df["canonical_smiles"] = ox.canonical_smiles(df["smiles"])
+df["tautomer_key"] = ox.tautomer_key(df["smiles"])
+df["canonical_tautomer"] = ox.canonical_tautomer(df["smiles"], errors="none")
+duplicates = df[df.duplicated("tautomer_key", keep=False)]  # same compound, other tautomer
+```
+
+For a table in a database, read it in batches of row ids and SMILES, compute,
+and write back; [examples/normalize_sqlite.py](examples/normalize_sqlite.py)
+does this for SQLite in 40 lines (`python normalize_sqlite.py compounds.db
+compounds smiles`), and the loop is the same with any other driver.
 
 ## Canonical SMILES and tautomer keys
 
@@ -58,7 +107,7 @@ column with gaps goes through as it is, and whitespace around a SMILES is
 ignored. Lists are processed on every core by default, with the GIL
 released; `threads=n` limits that, and `RAYON_NUM_THREADS` sets the default.
 A SMILES that does not parse is given back unchanged and reported on stderr
-with its index; `errors="none"` gives `None` in its place instead, and
+with its index (the first ten of a call, then a count); `errors="none"` gives `None` in its place instead, and
 `errors="raise"` raises `ValueError`. Dot-separated components are handled one at a
 time and sorted, so a salt written either way round gives the same string.
 On a 24-core machine, 100,000 PubChem records take about 0.5 s for canonical
@@ -73,8 +122,8 @@ computes each chunk on every core, so memory stays bounded however large the
 file is; about 25,000 rows per second with all three columns on 24 cores. The
 delimiter follows the extension: `,` for `.csv`, tab for `.tsv`, whitespace for
 `.smi` and anything else (written back as tabs); `delimiter=` overrides it.
-CSV quoting is honoured, and a `.gz` suffix on either path compresses that
-side. `smiles_column` is a 0-based index or, with a header row, a column name;
+CSV quoting is honoured, a `.gz` suffix on either path compresses that
+side, and `-` stands for standard input or output. `smiles_column` is a 0-based index or, with a header row, a column name;
 `header=True` keeps a header with an index too. The same `errors` modes apply,
 reported with the input line number, and `carbon_endpoints`,
 `ionizable_endpoints` and `threads` are passed through. It returns
@@ -117,7 +166,11 @@ assert not Molecule("CC(=O)C").contains(alcohol)
 SMARTS raises `ValueError`; a valid absent pattern returns `False`. Dot-separated
 SMILES retain all components, including counterions.
 
-The old imports remain supported:
+The bindings started as the standalone
+[`um-univie/molecules-py`](https://github.com/um-univie/molecules-py) (commit
+`0f1eaed5e592d00b131da387600146d733628262`, 2026-02-06, with its SDF/XYZ
+fixtures) and now compile against the Rust library two directories up. The old
+imports remain supported:
 
 ```python
 from molecules import PyMolecule, PyMolecule3D, MolParser
@@ -172,11 +225,27 @@ See [the runnable notebook](examples/notebook_display.ipynb).
 ## Build and verification
 
 The binding has its own Cargo manifest and lockfile, so ordinary root Rust
-builds do not acquire Python dependencies. A wheel can be built from the root:
+builds do not acquire Python dependencies. For an editable development install,
+run inside `bindings/python`:
 
 ```sh
-uv run --project bindings/python --with maturin maturin build --manifest-path bindings/python/Cargo.toml
+uv sync --extra notebook
+uv run --with maturin maturin develop --uv --release
+uv run pytest
 ```
+
+A wheel uses Python's stable ABI, so one file serves every Python from 3.9 on.
+From the repository root, this builds one that runs on any x86-64 Linux with
+glibc 2.17 or newer (zig stands in for an old toolchain):
+
+```sh
+uv run --no-project --with 'maturin>=1.9,<2' --with ziglang maturin build --release \
+    --zig --compatibility manylinux2014 --manifest-path bindings/python/Cargo.toml --out dist
+```
+
+Without `--zig --compatibility manylinux2014` the wheel is for the building
+machine's platform (macOS and Windows included). Restart a Jupyter kernel
+after reinstalling the native module.
 
 Tests cover the legacy imports and canonicalization methods, batch canonical
 SMILES, tautomer keys and file processing, file parsing,

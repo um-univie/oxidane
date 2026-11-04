@@ -416,6 +416,10 @@ fn pool(threads: usize) -> PyResult<Arc<rayon::ThreadPool>> {
     Ok(pool)
 }
 
+/// How many unreadable SMILES one call names on stderr before only counting
+/// the rest; a wrong column would otherwise print a line for every row.
+const REPORTED: usize = 10;
+
 /// Applies `compute` to one SMILES or to every SMILES of an iterable.
 ///
 /// A single string gives back a string. Anything else is read as an iterable
@@ -423,8 +427,8 @@ fn pool(threads: usize) -> PyResult<Arc<rayon::ThreadPool>> {
 /// without it, so other Python threads keep running; the answers come back as
 /// a list in input order. Surrounding whitespace is ignored. A missing entry
 /// (`None`, NaN, `pandas.NA`) gives `None`. A SMILES that does not parse is
-/// handled as `errors` says: kept as it was with a line on stderr, replaced by
-/// None, or raised.
+/// handled as `errors` says: kept as it was with a line on stderr (the first
+/// [`REPORTED`] of a call, then a count), replaced by None, or raised.
 fn map_smiles(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -476,6 +480,7 @@ fn map_smiles(
         });
     let mut list = Vec::with_capacity(answers.len());
     let mut report = String::new();
+    let mut kept = 0;
     for (index, (answer, input)) in answers.into_iter().zip(inputs).enumerate() {
         match answer {
             None => list.push(None),
@@ -492,14 +497,23 @@ fn map_smiles(
                     OnError::Raise => return Err(PyValueError::new_err(message)),
                     OnError::Null => list.push(None),
                     OnError::Keep => {
-                        report.push_str("oxidane: ");
-                        report.push_str(&message);
-                        report.push_str(", kept as it was\n");
+                        if kept < REPORTED {
+                            report.push_str("oxidane: ");
+                            report.push_str(&message);
+                            report.push_str(", kept as it was\n");
+                        }
+                        kept += 1;
                         list.push(Some(input));
                     }
                 }
             }
         }
+    }
+    if kept > REPORTED {
+        report.push_str(&format!(
+            "oxidane: {} more SMILES could not be read and were kept as they were\n",
+            kept - REPORTED
+        ));
     }
     if !report.is_empty() {
         py.import("sys")?

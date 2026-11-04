@@ -223,6 +223,63 @@ def test_process_csv_with_header_and_gzip(tmp_path):
         ox.process_file(source, tmp_path / "x.csv", errors="raise")  # "id" read as SMILES
 
 
+def test_unreadable_smiles_are_counted_after_ten(tmp_path, capsys):
+    assert ox.canonical_smiles(["C1CC"] * 25 + ["CCO"])[-1] == ox.canonical_smiles("CCO")
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 11 and err[-1] == (
+        "oxidane: 15 more SMILES could not be read and were kept as they were")
+    source = tmp_path / "in.smi"
+    source.write_text("C1CC\n" * 25)
+    assert ox.process_file(source, tmp_path / "out.tsv", chunk_size=4)["unparsed"] == 25
+    err = capsys.readouterr().err.splitlines()
+    assert len(err) == 11 and "line 10" in err[9] and "15 more" in err[-1]
+
+
+def test_command_line(tmp_path, capsys):
+    from oxidane.__main__ import main
+    source = tmp_path / "in.csv"
+    source.write_text("id,smiles\n1,Oc1ccccn1\n2,\n3,C1CC\n")
+    assert main([str(source), str(tmp_path / "out.csv"), "-s", "smiles", "--errors", "none",
+                 "-c", "tautomer_key,canonical_tautomer"]) == 0
+    assert "3 rows, 1 unreadable" in capsys.readouterr().err
+    import csv
+    rows = list(csv.reader((tmp_path / "out.csv").open(newline="")))
+    assert rows[0] == ["id", "smiles", "tautomer_key", "canonical_tautomer"]
+    assert rows[1] == ["1", "Oc1ccccn1", ox.tautomer_key("Oc1ccccn1"),  # key has commas, quoted
+                       ox.canonical_tautomer("Oc1ccccn1")]
+    assert rows[2:] == [["2", "", "", ""], ["3", "C1CC", "", ""]]
+    with pytest.raises(SystemExit):
+        main([str(source), str(tmp_path / "x.csv"), "-s", "SMILES"])
+    assert "no column named" in capsys.readouterr().err
+
+
+def test_command_line_pipes():
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, "-m", "oxidane", "-", "-", "-c", "canonical_smiles"],
+                            input="OCC 1\nC(=O)O 2\n", capture_output=True, text=True, check=True)
+    ethanol, formic = ox.canonical_smiles(["OCC", "C(=O)O"])
+    assert result.stdout == f"OCC\t1\t{ethanol}\nC(=O)O\t2\t{formic}\n"
+
+
+def test_sqlite_example(tmp_path):
+    import runpy
+    import sqlite3
+    example = runpy.run_path(str(FIXTURES.parent / "examples" / "normalize_sqlite.py"))
+    path = tmp_path / "compounds.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE compounds (id INTEGER, smiles TEXT)")
+        connection.executemany("INSERT INTO compounds VALUES (?, ?)",
+                               [(1, "Oc1ccccn1"), (2, None), (3, "C1CC"), (4, "O=c1cccc[nH]1")])
+    assert example["normalize_table"](path, "compounds", batch_size=3) == 4
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT * FROM compounds ORDER BY id").fetchall()
+    assert rows[0][2:] == (ox.canonical_smiles("Oc1ccccn1"), ox.tautomer_key("Oc1ccccn1"),
+                           ox.canonical_tautomer("Oc1ccccn1"))
+    assert rows[1][2:] == rows[2][2:] == (None, None, None)
+    assert rows[3][3:] == rows[0][3:]
+
+
 def test_missing_values_and_whitespace():
     nan = float("nan")
     for function in (ox.canonical_smiles, ox.tautomer_key, ox.canonical_tautomer):

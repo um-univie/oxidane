@@ -41,7 +41,7 @@ ox.canonical_tautomer("CC(O)=N")       # 'O=C(N)C', the form stored for the clas
 
 df = pandas.read_csv("data.csv")
 smiles = df["smiles"]                                  # any iterable of strings
-df["canonical"] = ox.canonical_smiles(smiles)          # list, input order
+df["canonical"] = ox.canonical_smiles(smiles)          # list, input order; gaps stay None
 df["key"] = ox.tautomer_key(smiles)
 df["tautomer"] = ox.canonical_tautomer(smiles, threads=8)   # cap the threads used
 
@@ -53,14 +53,18 @@ ox.process_file("data.csv", "data_out.csv", smiles_column="smiles")  # header ro
 
 All three take a single SMILES string, which returns a string, or any iterable
 of strings (list, tuple, generator, pandas Series), which returns a list in
-input order. Lists are processed on every core by default, with the GIL
+input order. A missing entry (`None`, NaN or `pandas.NA`) gives `None`, so a
+column with gaps goes through as it is, and whitespace around a SMILES is
+ignored. Lists are processed on every core by default, with the GIL
 released; `threads=n` limits that, and `RAYON_NUM_THREADS` sets the default.
 A SMILES that does not parse is given back unchanged and reported on stderr
 with its index; `errors="none"` gives `None` in its place instead, and
 `errors="raise"` raises `ValueError`. Dot-separated components are handled one at a
 time and sorted, so a salt written either way round gives the same string.
 On a 24-core machine, 100,000 PubChem records take about 0.5 s for canonical
-SMILES, 0.7 s for tautomer keys and 1.9 s for canonical tautomers.
+SMILES, 0.7 s for tautomer keys and 2 s for canonical tautomers; on one core,
+a canonical tautomer takes about 0.2 ms, against about 20 ms for RDKit's
+`TautomerEnumerator.Canonicalize`.
 
 `process_file(input, output)` writes each input row followed by one field per
 entry of `columns` (default: `canonical_smiles`, `tautomer_key`,
@@ -84,14 +88,18 @@ reported with the input line number, and `carbon_endpoints`,
   not a structure to read back.
 - `canonical_tautomer` is a real structure: the one tautomer every member of
   the class normalizes to, as canonical SMILES. It has the same key as the
-  input.
+  input. Of the forms in a class it takes the one with the fewest charges,
+  then the most aromatic bonds, then the carbonyl over the enol; nitro groups
+  and nitriles stay nitro groups and nitriles, and a cation stays on nitrogen
+  rather than moving to an ether or ester oxygen.
 
 By default only heteroatoms (N, O, S, Se, Te) exchange hydrogens, as in InChI's
 mobile-H layer. `carbon_endpoints=True` also merges keto and enol forms;
 `ionizable_endpoints=True` also merges zwitterions with their neutral forms.
 Keys made that way start with `c/`, `i/` or `ci/`, so they cannot be confused
 with default keys. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
-give the same answers for a molecule already built.
+give the same answers for a molecule already built, as
+`Molecule.to_canonical_smiles()` does for `canonical_smiles`.
 
 ## Molecules and SMARTS
 

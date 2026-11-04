@@ -1,4 +1,8 @@
 #![doc = include_str!("../README.md")]
+/// Practical recipes, compiled and run as documentation tests.
+#[doc = include_str!("../docs/COOKBOOK.md")]
+pub mod cookbook {}
+
 pub mod atom;
 pub mod consts;
 pub mod graph_algorithms;
@@ -10,4 +14,3 @@ pub mod prelude;
 #[cfg(test)]
 mod tests;
 pub mod vector;
-

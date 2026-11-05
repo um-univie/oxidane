@@ -41,6 +41,9 @@ def main(argv=None):
     parser.add_argument("-j", "--threads", type=int, help="threads to use; default: every core")
     parser.add_argument("--errors", choices=("keep", "none", "raise"), default="keep",
                         help="unreadable SMILES: keep the input (default), leave empty, or stop")
+    parser.add_argument("--check-valence", action="store_true",
+                        help="also treat an atom with more bonds than its element allows as "
+                             "unreadable, as RDKit does")
     args = parser.parse_args(argv)
 
     column = args.smiles_column
@@ -56,6 +59,7 @@ def main(argv=None):
             ionizable_endpoints=args.ionizable_endpoints,
             threads=args.threads,
             errors=args.errors,
+            check_valence=args.check_valence,
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"oxidane-normalize: {error}\n")

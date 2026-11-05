@@ -891,7 +891,10 @@ mod subgraph_isomorphism_tests {
 
         let literal = MolecularGraph::from_smiles_single_with(
             "C=1C=CC=CC=1",
-            SmilesParseOptions { aromaticity: None },
+            SmilesParseOptions {
+                aromaticity: None,
+                ..Default::default()
+            },
         )
         .unwrap();
         let single_bond_pattern = MolecularGraph::from_smiles_single_raw("CC").unwrap();
@@ -1314,6 +1317,151 @@ mod malformed_smiles_tests {
             MolecularGraph::from_smiles("CC[C@"),
             Err(SMILESParseError::EOL)
         ));
+    }
+
+    #[test]
+    fn symbols_in_an_order_smiles_does_not_allow_are_rejected() {
+        // Each of these used to come back as some other molecule: the last of
+        // two bond symbols won, a dangling bond or parenthesis was dropped, a
+        // dot inside a branch joined the wrong atoms. RDKit rejects them all.
+        for smiles in [
+            "C==O", "C=#C", "C#=C", "C/=C", "C//C=C/C", "C=", "=C", "CC=", "C=.C", "C(=O", "C(C",
+            "C(C)(C", "CC)C", "C()C", "(C)C", "C((C))C", "C)(", "C=(O)C", "C(.C)C", "C(C.C)C",
+            ".C", "C.", ".", "C..C", "C%CC", "C%1CC", "C(1)CC1",
+        ] {
+            assert!(
+                matches!(
+                    MolecularGraph::from_smiles(smiles),
+                    Err(SMILESParseError::Syntax(_))
+                ),
+                "{smiles} was accepted"
+            );
+        }
+        // The same symbols where they are allowed.
+        for smiles in [
+            "C=O",
+            "C(=O)O",
+            "C(C)(C)C",
+            "C(C)=O",
+            "C=1CC1",
+            "C1CC=1",
+            "C1=CC=1",
+            "C%10CC%10",
+            "C%(100)CC%(100)",
+            "CC.O",
+            "C1CC.CC1",
+            "F/C=C\\\\F",
+            "",
+        ] {
+            assert!(
+                MolecularGraph::from_smiles(smiles).is_ok(),
+                "{smiles} was rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_leading_space_is_skipped() {
+        // Whitespace ends a SMILES, so it used to end before the first atom.
+        let molecule = MolecularGraph::from_smiles_single(" CCO").unwrap();
+        assert_eq!(molecule.to_smiles(), "CCO");
+    }
+
+    #[test]
+    fn an_aromatic_atom_outside_a_ring_is_rejected() {
+        for smiles in ["c", "cc", "n", "[nH]", "Cc", "c1ccccc1-c", "c1ccccc1.c"] {
+            assert!(
+                matches!(
+                    MolecularGraph::from_smiles(smiles),
+                    Err(SMILESParseError::InvalidAromatic(_))
+                ),
+                "{smiles} was accepted"
+            );
+        }
+        for smiles in [
+            "c1ccccc1",
+            "c1ccccc1-c1ccccc1",
+            "c1ccc2ccccc2c1",
+            "[nH]1cccc1",
+        ] {
+            assert!(
+                MolecularGraph::from_smiles(smiles).is_ok(),
+                "{smiles} was rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chirality_class_number_must_name_an_arrangement() {
+        for smiles in [
+            "[C@TH3](F)(Cl)(Br)I",
+            "[C@TH0](F)(Cl)(Br)I",
+            "[C@AL3]",
+            "[Pt@SP4](F)(Cl)(Br)I",
+            "[C@OH31]",
+            "[C@TH999](F)(Cl)(Br)I",
+        ] {
+            assert!(
+                matches!(
+                    MolecularGraph::from_smiles(smiles),
+                    Err(SMILESParseError::ChiralClass(_))
+                ),
+                "{smiles} was accepted"
+            );
+        }
+        assert!(MolecularGraph::from_smiles("[C@TH2](F)(Cl)(Br)I").is_ok());
+        assert!(MolecularGraph::from_smiles("[Pt@SP3](F)(Cl)(Br)I").is_ok());
+    }
+
+    fn parse_checked(smiles: &str) -> Result<Vec<MolecularGraph>, SMILESParseError> {
+        let options = crate::io::SmilesParseOptions {
+            check_valence: true,
+            ..Default::default()
+        };
+        crate::io::SMILESParser::parse_smiles_with(smiles, options)
+    }
+
+    #[test]
+    fn the_valence_check_refuses_what_rdkit_refuses() {
+        // Over 2.4 million PubChem SMILES the check and RDKit refuse exactly
+        // the same 335; these are its kinds, and the unusual valences next to
+        // them that both accept.
+        for smiles in [
+            "C(C)(C)(C)(C)C",
+            "[CH5]",
+            "N(C)(C)(C)C",
+            "O(C)(C)C",
+            "FF=F",
+            "C[Cl-]C",
+            "[B+](C)(C)(C)C",
+            "FCl(F)(F)(F)F",
+            "[C+5]",
+        ] {
+            assert!(
+                matches!(parse_checked(smiles), Err(SMILESParseError::Valence(_))),
+                "{smiles} was accepted"
+            );
+            // Off by default: the reader still takes it as written.
+            assert!(MolecularGraph::from_smiles(smiles).is_ok(), "{smiles}");
+        }
+        for smiles in [
+            "C[N+](C)(C)C",
+            "[BH4-]",
+            "CN(=O)=O",
+            "CS(=O)(=O)C",
+            "FS(F)(F)(F)(F)F",
+            "F[P-](F)(F)(F)(F)F",
+            "[O-]Cl(=O)(=O)=O",
+            "O=I(=O)c1ccccc1",
+            "F[Si-2](F)(F)(F)(F)F",
+            "O[S-](=O)=S",
+            "[S](C)(C)C",
+            "[Na+]C",
+            "Cl[Cu-2](Cl)(Cl)Cl",
+            "c1cc[nH]c1",
+        ] {
+            assert!(parse_checked(smiles).is_ok(), "{smiles} was rejected");
+        }
     }
 }
 

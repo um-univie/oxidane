@@ -25,7 +25,7 @@ fn main() {
     let rounds = 200;
     time("raw (tokenise + graph only)", &c, rounds, |s| { std::hint::black_box(MolecularGraph::from_smiles_raw(s).unwrap()); });
     time("no aromaticity perception", &c, rounds, |s| {
-        std::hint::black_box(MolecularGraph::from_smiles_single_with(s, SmilesParseOptions { aromaticity: None }).unwrap()); });
+        std::hint::black_box(MolecularGraph::from_smiles_single_with(s, SmilesParseOptions { aromaticity: None, ..Default::default() }).unwrap()); });
     time("full default", &c, rounds, |s| { std::hint::black_box(MolecularGraph::from_smiles_single(s).unwrap()); });
     time("parse_smiles (all fragments)", &c, rounds, |s| { std::hint::black_box(SMILESParser::parse_smiles(s).unwrap()); });
 }

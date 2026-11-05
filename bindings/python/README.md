@@ -16,10 +16,10 @@ uv pip install oxidane-0.2.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_6
 ```
 
 Wheels for every platform (Linux x86-64 and ARM64 with glibc or musl, macOS
-Intel and Apple silicon, Windows x64 and ARM64) are built by CI: open the
-latest "Build the Python wheels" run on `main` under the repository's Actions
-tab and download `oxidane-python-wheels`, then install the one for your system
-as above.
+Intel and Apple silicon, Windows x64 and ARM64) are built by CI: on the
+repository's Actions tab, open "Build the Python wheels", start it on `main`
+with "Run workflow" (or open its latest run), download `oxidane-python-wheels`,
+and run `uv pip install --no-index --find-links <unpacked folder> oxidane`.
 
 From the repository, on any platform, which builds the native module and so
 needs Rust (`curl https://sh.rustup.rs -sSf | sh`; compiling takes a few minutes)
@@ -275,8 +275,9 @@ uv run --no-project --with 'maturin>=1.9,<2' --with ziglang maturin build --rele
 Without `--zig --compatibility manylinux2014` the wheel is for the building
 machine's platform (macOS and Windows included).
 [`.github/workflows/wheels.yml`](../../.github/workflows/wheels.yml) builds and
-smoke-tests the wheels of every platform on each pull request and push to
-`main`. Restart a Jupyter kernel
+smoke-tests the wheels of every platform when started by hand, on a tag, or on
+a pull request labelled `full-ci`; `scripts/ci-local.sh wheels` cross-builds
+them locally (see [docs/CHECKS.md](../../docs/CHECKS.md)). Restart a Jupyter kernel
 after reinstalling the native module.
 
 Tests cover the legacy imports and canonicalization methods, batch canonical

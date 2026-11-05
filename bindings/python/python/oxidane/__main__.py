@@ -38,7 +38,8 @@ def main(argv=None):
                         help="also merge keto and enol forms (experimental: also merges "
                              "compounds that are not tautomers)")
     parser.add_argument("--ionizable-endpoints", action="store_true",
-                        help="also merge zwitterions with their neutral forms")
+                        help="canonical tautomer: also neutralize zwitterions by moving "
+                             "a proton (the key always does)")
     parser.add_argument("-j", "--threads", type=int, help="threads to use; default: every core")
     parser.add_argument("--errors", choices=("keep", "none", "raise"), default="keep",
                         help="unreadable SMILES: keep the input (default), leave empty, or stop")

@@ -234,12 +234,15 @@ fn perception_terminates_on_dense_conjugation() {
     }
 }
 
-/// An empty molecule and a lone atom have no group and must not panic.
+/// An empty molecule and a lone atom must not panic. A lone atom is a group
+/// only where the key pools a whole record, since a bare ion is where a salt's
+/// proton goes.
 #[test]
 fn degenerate_inputs_are_handled() {
     let rules = TautomerRules::new();
     let water = MolecularGraph::from_smiles_single("O").unwrap();
-    assert!(perceive(&water, &rules).is_empty());
+    assert!(perceive(&water, &TautomerRules::heteroatom_only()).is_empty());
+    assert_eq!(perceive(&water, &rules).groups().len(), 1);
     assert_eq!(key("O"), tautomer_key(&water, &rules));
 
     let empty = MolecularGraph::default();
@@ -657,9 +660,16 @@ fn ionizable_endpoints_merge_a_zwitterion_with_its_neutral_form() {
         ("OC(=O)CCCC[NH2]", "[O-]C(=O)CCCC[NH3+]"),
     ] {
         assert_eq!(ionized(neutral), ionized(zwitterion), "{neutral}");
-        // The default rules keep them apart: an aliphatic amine has no second
-        // endpoint in its own conjugated system, so its proton is not mobile.
-        assert_ne!(key(neutral), key(zwitterion), "{neutral}");
+        // So does the default key, which pools the whole record.
+        assert_eq!(key(neutral), key(zwitterion), "{neutral}");
+        // Heteroatom tautomers alone keep them apart: an aliphatic amine has
+        // no second endpoint in its own conjugated system.
+        let only = TautomerRules::heteroatom_only();
+        assert_ne!(
+            tautomer_key_from_smiles(neutral, &only).unwrap(),
+            tautomer_key_from_smiles(zwitterion, &only).unwrap(),
+            "{neutral}"
+        );
     }
     // The marker says which relation was asked for, so the two cannot be
     // compared against each other by accident.
@@ -849,11 +859,33 @@ fn a_bare_ion_is_its_own_compound() {
     }
 }
 
-/// Pooling stops at the component: a salt and its free acid are still two
-/// compounds, because each component is keyed on its own.""
+/// The default key pools the whole record, so a proton crosses from one
+/// component to another: benzoic acid beside ammonia is ammonium benzoate,
+/// and an amine beside hydrogen chloride its hydrochloride. Pooling each
+/// component on its own keeps them apart.
 #[test]
-fn a_proton_does_not_cross_between_components() {
-    assert_ne!(key("OC(=O)c1ccccc1.N"), key("[O-]C(=O)c1ccccc1.[NH4+]"));
+fn a_proton_crosses_between_components_only_when_the_record_is_pooled() {
+    for (first, second) in [
+        ("OC(=O)c1ccccc1.N", "[O-]C(=O)c1ccccc1.[NH4+]"),
+        ("CN.Cl", "C[NH3+].[Cl-]"),
+    ] {
+        assert_eq!(key(first), key(second), "{first}");
+        let apart = TautomerRules::with_ionizable_endpoints();
+        assert_ne!(
+            tautomer_key_from_smiles(first, &apart).unwrap(),
+            tautomer_key_from_smiles(second, &apart).unwrap(),
+            "{first}"
+        );
+    }
+    // Only moved, never added: the record keeps its formula and its charge.
+    for (first, second) in [
+        ("CC(=O)O", "CC(=O)[O-]"),
+        ("CN", "C[NH3+]"),
+        ("C.[Ti]", "[CH3-].[Ti]"),
+        ("CC(=O)O.[Na+]", "CC(=O)[O-].[Na+]"),
+    ] {
+        assert_ne!(key(first), key(second), "{first}");
+    }
 }
 
 /// The totals are written once, after the groups.
@@ -1162,14 +1194,14 @@ fn a_geometry_no_shift_can_reach_is_kept() {
 fn keys_say_which_rules_made_them() {
     let both = TautomerRules {
         carbon_endpoints: true,
-        ionizable_endpoints: true,
-        ..TautomerRules::new()
+        ..TautomerRules::with_ionizable_endpoints()
     };
     assert_eq!(key("c1ccccc1"), "c1ccccc1");
     for (rules, marker) in [
         (TautomerRules::with_carbon_endpoints(), "c/"),
         (TautomerRules::with_ionizable_endpoints(), "i/"),
         (TautomerRules::with_charge_reduction(), "p/"),
+        (TautomerRules::heteroatom_only(), "h/"),
         (both, "ci/"),
     ] {
         let marked = tautomer_key_from_smiles("CC(=O)N", &rules).expect("the SMILES parses");
@@ -1182,6 +1214,7 @@ fn keys_say_which_rules_made_them() {
         TautomerRules::with_carbon_endpoints(),
         TautomerRules::with_ionizable_endpoints(),
         TautomerRules::with_charge_reduction(),
+        TautomerRules::heteroatom_only(),
     ] {
         assert_eq!(
             tautomer_key_from_smiles("O=c1cccc[nH]1", &rules).unwrap(),

@@ -97,8 +97,11 @@ def process_file(
     functions = {
         "canonical_smiles": lambda batch: canonical_smiles(batch, threads=threads, errors="none",
                                                           check_valence=check_valence),
+        # The key always pools the whole record; `ionizable_endpoints` is
+        # about the canonical tautomer.
         "tautomer_key": lambda batch: tautomer_key(batch, threads=threads, errors="none",
-                                                  check_valence=check_valence, **rules),
+                                                  check_valence=check_valence,
+                                                  carbon_endpoints=carbon_endpoints),
         "canonical_tautomer": lambda batch: canonical_tautomer(
             batch, threads=threads, errors="none", check_valence=check_valence, **rules),
     }

@@ -53,7 +53,7 @@ The three results are:
 | column | what it is | use it for |
 |---|---|---|
 | `canonical_smiles` | the input as canonical SMILES | exact duplicates, one spelling per structure |
-| `tautomer_key` | an identifier shared by every tautomer of a compound | grouping and joining; not a structure |
+| `tautomer_key` | an identifier shared by every tautomer of a compound, and every way its protons can sit (zwitterions, salts) | grouping and joining; not a structure |
 | `canonical_tautomer` | the one tautomer every member of the class normalizes to, as canonical SMILES | the structure to store or compute on |
 
 Nothing else is changed: counterions, charges that no tautomer removes,
@@ -176,19 +176,29 @@ reported with the input line number, and `carbon_endpoints`,
   and nitriles stay nitro groups and nitriles, and a cation stays on nitrogen
   rather than moving to an ether or ester oxygen.
 
-By default only heteroatoms (N, O, S, Se, Te) exchange hydrogens, as in InChI's
-mobile-H layer. `ionizable_endpoints=True` also merges zwitterions with their
-neutral forms. `carbon_endpoints=True` also merges keto and enol forms, but is
-experimental: it lets every carbon exchange hydrogens, including those of
-alkyl groups, so it merges compounds that are not tautomers, and about a third
-of a PubChem sample comes back with an aromatic ring dearomatized. Use it for
-keys at most, not for structures to store.
-`tautomer_key(..., charge_reduced=True)` goes one step further and gives every
-protonation state of a compound one key: acetic acid and acetate, an amine and
-its hydrochloride, a zwitterion and its neutral form. It keeps only what a
-proton cannot change, so a quaternary ammonium, a counterion such as `[Na+]`
-and the skeleton itself still count. Keys made that way start with `c/`, `i/`,
-`p/` or `ci/`, so they cannot be confused with default keys. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
+`tautomer_key` only ever *moves* hydrogens, so the formula and net charge
+of the record stay as written, but it moves them anywhere a proton can go:
+between heteroatoms (N, O, S, Se, Te) as in a tautomer, from an acid to a base
+in the same molecule, and from one part of a salt to another. So a zwitterion
+and its neutral form share a key, and so do `CN.Cl` and `C[NH3+].[Cl-]`, while
+acetate and acetic acid do not (that would add a proton), and nor do
+`[CH3-]` and methane. Options:
+
+- `charge_reduced=True` also counts protons added or removed as no change, at
+  the same sites: acetic acid and acetate, an amine and its ammonium ion. Like
+  comparing InChIKeys without the protonation letter. Charges no proton can
+  change, such as a quaternary ammonium's or `[Na+]`, still count.
+- `ionizable_endpoints=False` gives the narrower key: heteroatom tautomers
+  only, each component on its own, as the key was before.
+- `carbon_endpoints=True` also merges keto and enol forms, but is
+  experimental: it lets every carbon exchange hydrogens, including those of
+  alkyl groups, so it merges compounds that are not tautomers, and about a
+  third of a PubChem sample comes back with an aromatic ring dearomatized.
+
+Keys made with options start with `p/`, `h/`, `c/` and so on, so they cannot be
+confused with default keys. `canonical_tautomer` normalizes heteroatom
+tautomers by default; `ionizable_endpoints=True` there also neutralizes a
+zwitterion by moving its proton. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
 give the same answers for a molecule already built, as
 `Molecule.to_canonical_smiles()` does for `canonical_smiles`.
 

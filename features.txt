@@ -1,7 +1,0 @@
-Features of the Molecules library:
-
-- Efficient subgraph matching using the VF2 algorithm.
-- Parsing of SMILES and XYZ into an internal graph representation.
-- Automatic determination of connectivity from molecular coordinates in XYZ files.
-- High‑performance, memory‑safe Rust implementation.
-- Planned support for additional formats: InChi, mol, sdf, pdb.

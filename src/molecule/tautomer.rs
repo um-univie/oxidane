@@ -139,6 +139,23 @@ pub struct TautomerRules {
     /// The formula is still conserved: pyridine and the pyridinium cation
     /// differ by a hydrogen, and the pooled totals say so.
     pub ionizable_endpoints: bool,
+    /// Whether the key counts a proton gained or lost as no change at all, so
+    /// that acetic acid and acetate, an amine and its ammonium salt, and
+    /// `CCN.Cl` and `CC[NH3+].[Cl-]` share one key.
+    ///
+    /// Adding a proton raises a group's hydrogens and its charge by one each,
+    /// so their difference is what every protonation state of the group has in
+    /// common, and that difference is all the key records of them. Charges no
+    /// proton can take away -- a quaternary nitrogen's, a metal's -- are not in
+    /// any group and stay in the skeleton. Implies
+    /// [`TautomerRules::ionizable_endpoints`], since a site that is not an
+    /// endpoint has no pool to give its proton to, and admits a free halide as
+    /// an endpoint, so a hydrohalide salt keys like the free base beside the
+    /// acid. Keys made this way start with `p/`.
+    ///
+    /// Only the key reads it. [`normalize`] still keeps the charges it was
+    /// given.
+    pub charge_reduced: bool,
     /// How many atoms a t-link path may pass through between its endpoints.
     ///
     /// One admits the 1,3-shift, three the 1,5-shift as well; three is the
@@ -153,6 +170,7 @@ impl Default for TautomerRules {
         Self {
             carbon_endpoints: false,
             ionizable_endpoints: false,
+            charge_reduced: false,
             max_intermediate_atoms: 3,
         }
     }
@@ -169,7 +187,14 @@ impl TautomerRules {
     /// nothing; the marker stops that from passing silently.
     fn key_prefix(&self) -> String {
         let carbon = if self.carbon_endpoints { "c" } else { "" };
-        let ionizable = if self.ionizable_endpoints { "i" } else { "" };
+        // Charge reduction implies ionizable endpoints, so `p` stands for both.
+        let ionizable = if self.charge_reduced {
+            "p"
+        } else if self.ionizable_endpoints {
+            "i"
+        } else {
+            ""
+        };
         if carbon.is_empty() && ionizable.is_empty() {
             String::new()
         } else {
@@ -187,6 +212,16 @@ impl TautomerRules {
     pub fn with_carbon_endpoints() -> Self {
         Self {
             carbon_endpoints: true,
+            ..Self::default()
+        }
+    }
+
+    /// The ionizable rules with protons gained or lost counted as no change:
+    /// one key for every protonation state of a compound.
+    pub fn with_charge_reduction() -> Self {
+        Self {
+            ionizable_endpoints: true,
+            charge_reduced: true,
             ..Self::default()
         }
     }
@@ -209,13 +244,33 @@ impl TautomerRules {
     /// the pool the hydrogen moves into is the whole component's and the site
     /// it came from need not have a partner of its own.
     fn endpoints_for_a_group(&self) -> usize {
-        if self.ionizable_endpoints { 1 } else { 2 }
+        if self.ionizable() { 1 } else { 2 }
+    }
+
+    /// The rules [`normalize`] works under: charge reduction is a property of
+    /// the key alone, and a structure keeps the charges it was given, so it
+    /// is read as the ionizable rules it implies.
+    fn for_structures(&self) -> Self {
+        Self {
+            ionizable_endpoints: self.ionizable(),
+            charge_reduced: false,
+            ..*self
+        }
+    }
+
+    fn ionizable(&self) -> bool {
+        self.ionizable_endpoints || self.charge_reduced
     }
 
     fn is_endpoint_element(&self, atomic_number: u8) -> bool {
         matches!(atomic_number, 7 | 8 | 16 | 34 | 52)
             || (self.carbon_endpoints && atomic_number == 6)
+            || (self.charge_reduced && is_halogen(atomic_number))
     }
+}
+
+fn is_halogen(atomic_number: u8) -> bool {
+    matches!(atomic_number, 9 | 17 | 35 | 53)
 }
 
 /// One set of atoms across which hydrogens and negative charges move.
@@ -604,8 +659,15 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
         return TautomericGroups::default();
     }
 
+    // A free halide is no part of any π system, but under charge reduction it
+    // is a site a proton comes and goes from, and a component of one atom.
     let capable: Vec<bool> = (0..atom_count)
-        .map(|atom| is_conjugatable_under(molecule, atom, rules.carbon_endpoints))
+        .map(|atom| {
+            is_conjugatable_under(molecule, atom, rules.carbon_endpoints)
+                || (rules.charge_reduced
+                    && is_halogen(molecule.atomic_numbers()[atom])
+                    && heavy_degree(molecule, atom) == 0)
+        })
         .collect();
 
     // The components, as a disjoint-set forest over the π-capable atoms.
@@ -712,12 +774,19 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
     // means a bond between them -- but under
     // [`TautomerRules::ionizable_endpoints`] one endpoint is enough, and then
     // every bare ion in a salt would be asked the question.
-    groups.retain(|group| {
-        group
-            .atoms
-            .iter()
-            .any(|&atom| heavy_degree(molecule, atom) > 0)
-    });
+    //
+    // The charge-reduced key keeps them: it only erases and counts, so the
+    // valence model is never asked, and a bare ion is exactly where a proton
+    // comes and goes -- `[NH4+]` and ammonia, `[Cl-]` and hydrogen chloride.
+    // `normalize` does not see this rule; see [`TautomerRules::for_structures`].
+    if !rules.charge_reduced {
+        groups.retain(|group| {
+            group
+                .atoms
+                .iter()
+                .any(|&atom| heavy_degree(molecule, atom) > 0)
+        });
+    }
     for group in groups.iter_mut() {
         adopt_component_endpoints(molecule, rules, group);
     }
@@ -1630,7 +1699,12 @@ pub fn tautomer_key_with<M: Molecule + Clone + ToSMILES>(
     // field list where it was, and a lone group has its endpoint set fixed by
     // the skeleton. Skipping the enumeration in those cases is most of the
     // molecules and about half the running time.
-    let suffix = totals_suffix(&groups, &position, canonizer.last_graph_automorphisms());
+    let suffix = totals_suffix(
+        &groups,
+        &position,
+        canonizer.last_graph_automorphisms(),
+        rules.charge_reduced,
+    );
 
     let mut key = rules.key_prefix();
     key.push_str(&smiles);
@@ -1673,6 +1747,7 @@ fn totals_suffix(
     groups: &TautomericGroups,
     position: &[usize],
     generators: &[Vec<usize>],
+    charge_reduced: bool,
 ) -> String {
     // Groups an automorphism can interchange are one group as far as the
     // compound is concerned, so which of them holds the charge is not a fact
@@ -1764,7 +1839,13 @@ fn totals_suffix(
         format!(":{radicals}")
     };
     key.push('/');
-    key.push_str(&format!("{hydrogens}:{charge}{electrons}"));
+    if charge_reduced {
+        // What every protonation state shares; see
+        // [`TautomerRules::charge_reduced`].
+        key.push_str(&format!("{}{electrons}", hydrogens as i64 - charge as i64));
+    } else {
+        key.push_str(&format!("{hydrogens}:{charge}{electrons}"));
+    }
     key
 }
 
@@ -2013,6 +2094,7 @@ pub fn try_normalize_with<M: Molecule + Clone + ToSMILES>(
     molecule: &M,
     rules: &TautomerRules,
 ) -> Result<M, NormalizationError> {
+    let rules = &rules.for_structures();
     // Asked before anything is built, because everything below assumes the
     // input is a feasible point of its own constraint system, and a structure
     // whose valences do not exist is not one.

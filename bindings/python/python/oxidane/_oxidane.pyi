@@ -11,7 +11,8 @@ class PyMolecule:
     def canonize(self) -> None: ...
     def to_canonical_smiles(self) -> str: ...
     def tautomer_key(self, *, carbon_endpoints: bool = False,
-                     ionizable_endpoints: bool = False) -> str: ...
+                     ionizable_endpoints: bool = False,
+                     charge_reduced: bool = False) -> str: ...
     def canonical_tautomer(self, *, carbon_endpoints: bool = False,
                            ionizable_endpoints: bool = False) -> str: ...
     def contains_smarts(self, smarts: str) -> bool: ...
@@ -64,17 +65,20 @@ def canonical_smiles(smiles: Iterable[Optional[str]], *, threads: Optional[int] 
 
 @overload
 def tautomer_key(smiles: str, *, carbon_endpoints: bool = False,
-                 ionizable_endpoints: bool = False, threads: Optional[int] = None,
+                 ionizable_endpoints: bool = False,
+                 charge_reduced: bool = False, threads: Optional[int] = None,
                  errors: Literal["keep", "none", "raise"] = "keep",
                  check_valence: bool = False) -> str: ...
 @overload
 def tautomer_key(smiles: None, *, carbon_endpoints: bool = False,
-                 ionizable_endpoints: bool = False, threads: Optional[int] = None,
+                 ionizable_endpoints: bool = False,
+                 charge_reduced: bool = False, threads: Optional[int] = None,
                  errors: Literal["keep", "none", "raise"] = "keep",
                  check_valence: bool = False) -> None: ...
 @overload
 def tautomer_key(smiles: Iterable[Optional[str]], *, carbon_endpoints: bool = False,
-                 ionizable_endpoints: bool = False, threads: Optional[int] = None,
+                 ionizable_endpoints: bool = False,
+                 charge_reduced: bool = False, threads: Optional[int] = None,
                  errors: Literal["keep", "none", "raise"] = "keep",
                  check_valence: bool = False) -> List[Optional[str]]: ...
 

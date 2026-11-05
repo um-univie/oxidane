@@ -1169,6 +1169,7 @@ fn keys_say_which_rules_made_them() {
     for (rules, marker) in [
         (TautomerRules::with_carbon_endpoints(), "c/"),
         (TautomerRules::with_ionizable_endpoints(), "i/"),
+        (TautomerRules::with_charge_reduction(), "p/"),
         (both, "ci/"),
     ] {
         let marked = tautomer_key_from_smiles("CC(=O)N", &rules).expect("the SMILES parses");
@@ -1180,6 +1181,7 @@ fn keys_say_which_rules_made_them() {
         TautomerRules::new(),
         TautomerRules::with_carbon_endpoints(),
         TautomerRules::with_ionizable_endpoints(),
+        TautomerRules::with_charge_reduction(),
     ] {
         assert_eq!(
             tautomer_key_from_smiles("O=c1cccc[nH]1", &rules).unwrap(),
@@ -1404,4 +1406,53 @@ fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
     }
     // An N-oxide has no double-bonded form to rewrite into.
     assert_eq!(normalized("[O-][n+]1ccccc1"), "[O-][n+]1ccccc1");
+}
+
+fn reduced_key(smiles: &str) -> String {
+    tautomer_key_from_smiles(smiles, &TautomerRules::with_charge_reduction())
+        .expect("the SMILES parses")
+}
+
+/// Every protonation state of a compound shares the charge-reduced key: a
+/// proton gained or lost raises a group's hydrogens and its charge together,
+/// and the key keeps only their difference.
+#[test]
+fn protonation_states_share_the_charge_reduced_key() {
+    for forms in [
+        &["CC(=O)O", "CC(=O)[O-]"][..],
+        &["CCN", "CC[NH3+]"],
+        &["CCN.Cl", "CC[NH3+].[Cl-]"],
+        &[
+            "NCC(=O)O",
+            "[NH3+]CC(=O)[O-]",
+            "[NH3+]CC(=O)O",
+            "NCC(=O)[O-]",
+        ],
+        &["c1ccncc1", "c1cc[nH+]cc1"],
+        &["OP(=O)(O)O", "OP(=O)([O-])[O-]", "[O-]P(=O)([O-])[O-]"],
+        &["N", "[NH4+]"],
+        &["O", "[OH-]"],
+        &["Cl", "[Cl-]"],
+        &["C[N+](C)(C)CC(=O)O", "C[N+](C)(C)CC(=O)[O-]"],
+        &["Oc1ccccn1", "O=c1cccc[nH]1", "[O-]c1cccc[nH+]1"],
+    ] {
+        for form in &forms[1..] {
+            assert_eq!(reduced_key(forms[0]), reduced_key(form), "{form}");
+        }
+    }
+}
+
+/// What no proton can change keeps the keys apart: a quaternary nitrogen's
+/// charge, a metal's, and a different number of heavy atoms or bonds.
+#[test]
+fn the_charge_reduced_key_keeps_what_protons_cannot_change() {
+    for (first, second) in [
+        ("C[N+](C)(C)C", "CN(C)C"),
+        ("CC(=O)[O-].[Na+]", "CC(=O)O"),
+        ("CC(=O)O", "CC(=O)OC"),
+        ("CC(=O)C", "CC(O)=C"),
+        ("Clc1ccccc1", "c1ccccc1.Cl"),
+    ] {
+        assert_ne!(reduced_key(first), reduced_key(second), "{first} {second}");
+    }
 }

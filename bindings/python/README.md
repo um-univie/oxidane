@@ -183,8 +183,12 @@ experimental: it lets every carbon exchange hydrogens, including those of
 alkyl groups, so it merges compounds that are not tautomers, and about a third
 of a PubChem sample comes back with an aromatic ring dearomatized. Use it for
 keys at most, not for structures to store.
-Keys made that way start with `c/`, `i/` or `ci/`, so they cannot be confused
-with default keys. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
+`tautomer_key(..., charge_reduced=True)` goes one step further and gives every
+protonation state of a compound one key: acetic acid and acetate, an amine and
+its hydrochloride, a zwitterion and its neutral form. It keeps only what a
+proton cannot change, so a quaternary ammonium, a counterion such as `[Na+]`
+and the skeleton itself still count. Keys made that way start with `c/`, `i/`,
+`p/` or `ci/`, so they cannot be confused with default keys. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
 give the same answers for a molecule already built, as
 `Molecule.to_canonical_smiles()` does for `canonical_smiles`.
 

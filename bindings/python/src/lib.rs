@@ -123,9 +123,17 @@ impl PyMolecule {
         canonicalize_and_sort_smiles(&self.inner.to_smiles(), true).map_err(value_error)
     }
     /// The same string `oxidane.tautomer_key` gives for this molecule's SMILES.
-    #[pyo3(signature = (*, carbon_endpoints=false, ionizable_endpoints=false))]
-    fn tautomer_key(&self, carbon_endpoints: bool, ionizable_endpoints: bool) -> PyResult<String> {
-        let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
+    #[pyo3(signature = (*, carbon_endpoints=false, ionizable_endpoints=false, charge_reduced=false))]
+    fn tautomer_key(
+        &self,
+        carbon_endpoints: bool,
+        ionizable_endpoints: bool,
+        charge_reduced: bool,
+    ) -> PyResult<String> {
+        let rules = TautomerRules {
+            charge_reduced,
+            ..tautomer_rules(carbon_endpoints, ionizable_endpoints)
+        };
         tautomer_key_from_smiles(&self.inner.to_smiles(), &rules).map_err(value_error)
     }
     /// The same string `oxidane.canonical_tautomer` gives for this molecule's SMILES.
@@ -572,17 +580,22 @@ fn canonical_smiles(
 
 /// A string every tautomer of the input shares.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep", check_valence=false))]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, charge_reduced=false, threads=None, errors="keep", check_valence=false))]
+#[allow(clippy::too_many_arguments)]
 fn tautomer_key(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
     carbon_endpoints: bool,
     ionizable_endpoints: bool,
+    charge_reduced: bool,
     threads: Option<usize>,
     errors: &str,
     check_valence: bool,
 ) -> PyResult<Py<PyAny>> {
-    let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
+    let rules = TautomerRules {
+        charge_reduced,
+        ..tautomer_rules(carbon_endpoints, ionizable_endpoints)
+    };
     map_smiles(py, smiles, threads, errors, check_valence, |smiles| {
         tautomer_key_from_smiles(smiles, &rules)
     })

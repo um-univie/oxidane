@@ -368,3 +368,12 @@ def test_valence_check_is_opt_in(tmp_path, capsys):
     source.write_text("CCO\nFF=F\n")
     assert main([str(source), str(tmp_path / "out.tsv"), "--check-valence", "--errors", "none"]) == 0
     assert "2 rows, 1 unreadable" in capsys.readouterr().err
+
+
+def test_charge_reduced_key():
+    keys = ox.tautomer_key(["CCN.Cl", "CC[NH3+].[Cl-]", "NCC(=O)O", "[NH3+]CC(=O)[O-]"],
+                           charge_reduced=True)
+    assert keys[0] == keys[1] and keys[2] == keys[3] and keys[0].startswith("p/")
+    assert ox.tautomer_key("CC(=O)O") != ox.tautomer_key("CC(=O)[O-]")
+    assert ox.Molecule("CC(=O)[O-]").tautomer_key(charge_reduced=True) == ox.tautomer_key(
+        "CC(=O)O", charge_reduced=True)

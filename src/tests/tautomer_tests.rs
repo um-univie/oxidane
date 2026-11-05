@@ -1310,3 +1310,98 @@ fn a_carbon_endpoint_loses_its_stereocentre_to_the_shift() {
     );
     assert_ne!(key(forms[0]), key(forms[1]));
 }
+
+/// With carbon endpoints a ring carbon's hydrogens are mobile, and the solver,
+/// placing π before hydrogens, used to give a ring bond both its π units or a
+/// ring carbon π on both sides: phenol came back as `O=C1CCCC#C1` and
+/// pyridinium as `[N+]#1C=CCCC#1`. Pyridinium still comes back with a
+/// cumulated ring nitrogen, `[N+]=1=CCC=CC=1`, so it is held to the first rule
+/// only.
+#[test]
+fn carbon_endpoints_write_no_ring_triple_bonds_or_ring_allenes() {
+    let rules = TautomerRules::with_carbon_endpoints();
+    let ring_bond_orders = |smiles: &str| {
+        let normalized = normalized_smiles(smiles, &rules).unwrap();
+        let molecule = MolecularGraph::from_smiles(&normalized).unwrap().remove(0);
+        let (_, ring_bonds) = molecule.find_cyclic_bonds_and_atoms();
+        let order = |first: usize, second: usize| {
+            molecule
+                .get_atom_bonds(first)
+                .unwrap()
+                .iter()
+                .find(|bond| bond.target() == second)
+                .unwrap()
+                .bond_order()
+        };
+        let triple = ring_bonds
+            .iter()
+            .any(|&(first, second)| order(first, second) == BondOrder::Triple);
+        let cumulated = (0..molecule.atomic_numbers().len()).any(|atom| {
+            ring_bonds
+                .iter()
+                .filter(|&&(first, second)| {
+                    (first == atom || second == atom) && order(first, second) == BondOrder::Double
+                })
+                .count()
+                >= 2
+        });
+        (normalized, triple, cumulated)
+    };
+    for smiles in ["Oc1ccccc1", "C[n+]1ccccc1", "c1ccncc1", "c1cc[nH+]cc1"] {
+        let (normalized, triple, cumulated) = ring_bond_orders(smiles);
+        assert!(!triple, "{smiles} -> {normalized}");
+        assert!(
+            smiles == "c1cc[nH+]cc1" || !cumulated,
+            "{smiles} -> {normalized}"
+        );
+    }
+    assert_eq!(normalized_smiles("Oc1ccccc1", &rules).unwrap(), "Oc1ccccc1");
+}
+
+/// An N-oxide keeps its own negative charge, and an acid beside it its
+/// proton: nicotinic acid N-oxide came back as `O[n+]1cccc(c1)C(=O)[O-]`. A
+/// hydroxamic acid, with the same σ shape, still gives its proton up to a
+/// carboxylate before an N-oxide would.
+#[test]
+fn an_n_oxide_keeps_its_charge_beside_an_acid() {
+    assert_eq!(
+        normalized("OC(=O)c1ccc[n+]([O-])c1"),
+        normalized("[O-]C(=O)c1ccc[n+](O)c1")
+    );
+    assert_eq!(
+        normalized("OC(=O)c1ccc[n+]([O-])c1"),
+        "OC(=O)c1ccc[n+]([O-])c1"
+    );
+    assert_eq!(normalized("[O-]C(=O)CCC(=O)N(O)C"), "ON(C)C(=O)CCC(=O)[O-]");
+}
+
+/// An acylamino group on an aromatic ring is written as the amide, not as the
+/// acyl imine on a ring that has taken the hydrogen; an imine on a saturated
+/// ring, as in clonidine, is left as the major form it is.
+#[test]
+fn an_aminoheteroarene_is_written_as_the_amine() {
+    assert_eq!(
+        normalized("CC(=O)Nc1cc[nH]n1"),
+        normalized("CC(=O)N=c1cc[nH][nH]1")
+    );
+    assert!(!normalized("CC(=O)Nc1cc[nH]n1").contains("N=c"));
+    assert!(!normalized("CC(=O)Nc1nccs1").contains("N=c"));
+    assert!(normalized("Clc1cccc(Cl)c1NC1=NCCN1").contains("N=C"));
+}
+
+/// `S=O` and `[S+][O-]` are one sulfoxide, and the bond between them is
+/// frozen, so the charge-separated writing is rewritten before erasure.
+#[test]
+fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
+    for (double, separated) in [
+        ("CS(C)=O", "C[S+](C)[O-]"),
+        ("CS(C)(=O)=O", "C[S+2](C)([O-])[O-]"),
+        ("CP(C)(C)=O", "C[P+](C)(C)[O-]"),
+        ("C[S@](=O)c1ccccc1", "C[S@+]([O-])c1ccccc1"),
+    ] {
+        assert_eq!(key(double), key(separated), "{double}");
+        assert_eq!(normalized(double), normalized(separated), "{double}");
+    }
+    // An N-oxide has no double-bonded form to rewrite into.
+    assert_eq!(normalized("[O-][n+]1ccccc1"), "[O-][n+]1ccccc1");
+}

@@ -81,9 +81,9 @@ rules 1a through 6 with auxiliary descriptors.
 
 **Canonizes, including stereochemistry and tautomers.** Every way of writing a
 molecule gives one canonical SMILES, and two stereoisomers give two. A
-tautomer key is shared by every tautomer of a compound, so keto and enol forms
-deduplicate to one row, and a canonical tautomer picks one structure to stand
-for them all.
+tautomer key is shared by every tautomer of a compound, so 2-pyridone and
+2-hydroxypyridine deduplicate to one row, and a canonical tautomer picks one
+structure to stand for them all.
 
 **Matches.** CxSMARTS patterns with the full atom expression language, ring
 and degree constraints, recursion, and chirality as part of the query. The

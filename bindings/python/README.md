@@ -177,8 +177,12 @@ reported with the input line number, and `carbon_endpoints`,
   rather than moving to an ether or ester oxygen.
 
 By default only heteroatoms (N, O, S, Se, Te) exchange hydrogens, as in InChI's
-mobile-H layer. `carbon_endpoints=True` also merges keto and enol forms;
-`ionizable_endpoints=True` also merges zwitterions with their neutral forms.
+mobile-H layer. `ionizable_endpoints=True` also merges zwitterions with their
+neutral forms. `carbon_endpoints=True` also merges keto and enol forms, but is
+experimental: it lets every carbon exchange hydrogens, including those of
+alkyl groups, so it merges compounds that are not tautomers, and about a third
+of a PubChem sample comes back with an aromatic ring dearomatized. Use it for
+keys at most, not for structures to store.
 Keys made that way start with `c/`, `i/` or `ci/`, so they cannot be confused
 with default keys. `Molecule.tautomer_key()` and `Molecule.canonical_tautomer()`
 give the same answers for a molecule already built, as

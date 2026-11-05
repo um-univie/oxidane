@@ -426,6 +426,53 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
 /// be written with: asking whether it is *double* would make a sulfonic acid's
 /// three oxygens answer differently depending on which of them was carrying the
 /// hydrogen, and the same compound would key two ways.
+/// A copy of `molecule` with every charge-separated oxide on a phosphorus,
+/// sulfur, arsenic, selenium, antimony or tellurium written double-bonded
+/// instead: `C[S+](C)[O-]` as `CS(C)=O`, `[S+2]([O-])([O-])` as `S(=O)=O`,
+/// `C[P+](C)(C)[O-]` as `CP(C)(C)=O`. `None` when there is none to rewrite.
+///
+/// The two writings are one compound, but the bond between such an oxygen and
+/// its centre is frozen -- see [`is_chalcogen_oxide`] -- so its order survives
+/// erasure, and DMSO written either way had two keys and two canonical
+/// tautomers. Nitrogen is left alone: it has no valence of five to rewrite an
+/// N-oxide into.
+fn with_chalcogen_oxides_double<M: Molecule + Clone + ?Sized>(molecule: &M) -> Option<M> {
+    let centre =
+        |atom: usize| matches!(molecule.atomic_numbers()[atom], 15 | 16 | 33 | 34 | 51 | 52);
+    let oxide = |atom: usize| {
+        molecule.atomic_numbers()[atom] == 8
+            && molecule.get_atom_charge(atom) == -1
+            && heavy_degree(molecule, atom) == 1
+    };
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for atom in 0..molecule.atomic_numbers().len() {
+        let charge = molecule.get_atom_charge(atom);
+        if charge <= 0 || !centre(atom) {
+            continue;
+        }
+        let Some(bonds) = molecule.get_atom_bonds(atom) else {
+            continue;
+        };
+        pairs.extend(
+            bonds
+                .iter()
+                .filter(|bond| bond.bond_order() == BondOrder::Single && oxide(bond.target()))
+                .take(charge as usize)
+                .map(|bond| (atom, bond.target())),
+        );
+    }
+    if pairs.is_empty() {
+        return None;
+    }
+    let mut copy = molecule.clone();
+    for (centre, oxygen) in pairs {
+        set_bond_order(&mut copy, centre, oxygen, BondOrder::Double);
+        *copy.get_atom_charge_mut(centre) -= 1;
+        *copy.get_atom_charge_mut(oxygen) = 0;
+    }
+    Some(copy)
+}
+
 fn is_chalcogen_oxide<M: Molecule + ?Sized>(molecule: &M, atom: usize, target: usize) -> bool {
     let is_centre = |index: usize| {
         matches!(
@@ -1008,6 +1055,14 @@ pub fn erased_skeleton<M: Molecule + Clone + ToSMILES>(
     // same question of both writings; the per-atom pi count is the same for
     // every Kekule structure a ring has, so which one localization picks does
     // not matter.
+    let rewritten;
+    let molecule = match with_chalcogen_oxides_double(molecule) {
+        Some(copy) => {
+            rewritten = copy;
+            &rewritten
+        }
+        None => molecule,
+    };
     // A group needs two endpoint elements even before conjugation is tested.
     // Avoid localization, valence measurement and a second molecule clone
     // when no assignment can possibly be made.
@@ -2205,7 +2260,12 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
     // offered their π, which is a pass over the instance rather than a reason
     // to build another.
     let mut instance = instance_for(&canonical, &pooled, &used_canonical)?;
-    let mut best: Option<((std::cmp::Reverse<u32>, usize), M, bool, bool)> = None;
+    let mut best: Option<(
+        (std::cmp::Reverse<u32>, usize, std::cmp::Reverse<usize>),
+        M,
+        bool,
+        bool,
+    )> = None;
     // Two levers can lead to the same bond orders -- a molecule whose rings are
     // already satisfied does not care in which order its bonds were offered
     // their pi -- and scoring a candidate means canonizing it, which is what
@@ -2286,13 +2346,17 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
         let (candidate, already_canonical) = canonizer.perceive_for_scoring(candidate);
         // Fewest charges first, then most aromatic bonds: a ring closure can
         // buy aromaticity with a charge separation, and N-methyl-2-pyridone
-        // beside a phenol is not a pyridinium phenolate.
+        // beside a phenol is not a pyridinium phenolate. Then fewest imines
+        // hung off a ring, which only breaks ties: an imino ring such as
+        // `N=c1[nH][nH]cc1` is as aromatic to this count as the amino ring
+        // it is a tautomer of, and the amino form is the one written.
         let score = (
             std::cmp::Reverse(charge_count(&candidate)),
             aromatic_bond_count(&candidate),
+            std::cmp::Reverse(exocyclic_imine_count(&candidate)),
         );
         let fewest = *fewest.get_or_insert(score.0);
-        let settled = score.1 >= most_aromatic && score.0 == fewest;
+        let settled = score.1 >= most_aromatic && score.0 == fewest && score.2.0 == 0;
         if best
             .as_ref()
             .is_none_or(|(best_score, _, _, _)| score > *best_score)
@@ -2422,6 +2486,38 @@ fn charge_count<M: Molecule + ?Sized>(molecule: &M) -> u32 {
     (0..molecule.atomic_numbers().len())
         .map(|atom| u32::from(molecule.get_atom_charge(atom).unsigned_abs()))
         .sum()
+}
+
+/// The double bonds from an aromatic ring atom to a nitrogen outside every
+/// ring: the imino form of an aminoheteroarene, `N=c1[nH][nH]cc1` for
+/// 3-aminopyrazole. A ring carbonyl is not counted -- 2-pyridone is the form
+/// written -- and nor is an imine on a saturated ring, where the imino form
+/// of a 2-amino-oxazoline or of clonidine is the one that predominates.
+fn exocyclic_imine_count<M: Molecule + ?Sized>(molecule: &M) -> usize {
+    let element = |atom: usize| molecule.atomic_numbers()[atom];
+    let candidates: Vec<(usize, usize)> = (0..molecule.atomic_numbers().len())
+        .flat_map(|atom| {
+            molecule
+                .get_atom_bonds(atom)
+                .into_iter()
+                .flatten()
+                .filter(move |bond| {
+                    bond.bond_order() == BondOrder::Double
+                        && element(atom) == 7
+                        && element(bond.target()) != 7
+                        && molecule.is_atom_aromatic(bond.target())
+                })
+                .map(move |bond| (atom, bond.target()))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return 0;
+    }
+    let (cyclic_atoms, _) = molecule.find_cyclic_bonds_and_atoms();
+    candidates
+        .into_iter()
+        .filter(|&(nitrogen, _)| !cyclic_atoms.contains(nitrogen))
+        .count()
 }
 
 /// Each bond is listed at both of its atoms, so the count is halved; compared
@@ -3294,7 +3390,41 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
                 .any(|bond| is_nitro_oxygen(molecule, atom, bond.target()))
         })
     };
-    charge_edges.sort_by_key(|&(_, slot)| !nitro_oxygen(group.atoms[slot]));
+    // Then any other oxygen whose only neighbour is a nitrogen with three: an
+    // N-oxide's or a nitrone's, for the same reason. Nicotinic acid N-oxide
+    // came back as `O[n+]1cccc(c1)C(=O)[O-]`, the acid's proton moved onto
+    // the N-oxide. A hydroxamic acid's oxygen has the same σ shape but is a
+    // far weaker acid than a carboxylic one, so a nitrogen beside an acyl or
+    // sulfonyl atom -- one carrying a terminal oxygen or sulfur -- is left
+    // out; the nitro oxygens are asked first for the same reason.
+    let terminal_chalcogen = |atom: usize| {
+        matches!(molecule.atomic_numbers()[atom], 8 | 16) && heavy_degree(molecule, atom) == 1
+    };
+    let acyl = |atom: usize| {
+        molecule
+            .get_atom_bonds(atom)
+            .is_some_and(|bonds| bonds.iter().any(|bond| terminal_chalcogen(bond.target())))
+    };
+    let n_oxide_oxygen = |atom: usize| {
+        molecule.atomic_numbers()[atom] == 8
+            && heavy_degree(molecule, atom) == 1
+            && molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+                bonds.iter().any(|bond| {
+                    let nitrogen = bond.target();
+                    molecule.atomic_numbers()[nitrogen] == 7
+                        && heavy_degree(molecule, nitrogen) == 3
+                        && molecule.get_atom_bonds(nitrogen).is_some_and(|around| {
+                            around
+                                .iter()
+                                .all(|other| other.target() == atom || !acyl(other.target()))
+                        })
+                })
+            })
+    };
+    charge_edges.sort_by_key(|&(_, slot)| {
+        let atom = group.atoms[slot];
+        (!nitro_oxygen(atom), !n_oxide_oxygen(atom))
+    });
 
     // One three-vertex chain per possible separation. `z` either takes the
     // negative pool -- the separation goes unused -- or pairs with `d`, which
@@ -3353,6 +3483,33 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         .into_iter()
         .map(|(_, room, edge)| (room, edge))
         .collect();
+    // Read from σ bonds alone, like everything else here, so every tautomer
+    // of a compound names the same edges.
+    // Only where a carbon is an endpoint: elsewhere a ring triple bond can only
+    // have come with the input (an aryne), and avoiding it there writes the
+    // ring as a cumulene instead, which is no better a reading of it.
+    let carbon_endpoint = (0..atom_count)
+        .any(|slot| is_endpoint[slot] && molecule.atomic_numbers()[group.atoms[slot]] == 6);
+    let (cyclic_atoms, cyclic_bonds) = molecule.find_cyclic_bonds_and_atoms();
+    let ring_second_units = bond_edges
+        .iter()
+        .filter(|&&(_, _, (first, second))| {
+            carbon_endpoint && cyclic_bonds.contains(&(first.min(second), first.max(second)))
+        })
+        .map(|&(_, second_unit, _)| second_unit)
+        .collect();
+    let ring_carbon_hydrogens = hydrogen_rounds.first().map_or_else(Vec::new, |round| {
+        round
+            .iter()
+            .filter(|&&(_, slot)| {
+                let atom = group.atoms[slot];
+                molecule.atomic_numbers()[atom] == 6
+                    && cyclic_atoms.contains(atom)
+                    && heavy_degree(molecule, atom) == 2
+            })
+            .map(|&(edge, _)| edge)
+            .collect()
+    });
     Some(GroupInstance {
         solver,
         atoms: group.atoms.clone(),
@@ -3367,6 +3524,8 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         rung_edges,
         unused_separation_edges,
         offers,
+        ring_second_units,
+        ring_carbon_hydrogens,
     })
 }
 
@@ -3401,6 +3560,10 @@ struct GroupInstance {
     unused_separation_edges: Vec<usize>,
     /// The positive offers, roomiest atom first.
     offers: Vec<(usize, usize)>,
+    /// The second π unit of every ring bond.
+    ring_second_units: Vec<usize>,
+    /// A first hydrogen for every ring carbon with two heavy neighbours.
+    ring_carbon_hydrogens: Vec<usize>,
 }
 
 /// Works out what the component's atoms should carry, for one order of
@@ -3499,6 +3662,23 @@ fn plan_from<M: Molecule + ?Sized>(
             .zip(&instance.bond_classes)
             .filter(|&(_, &class)| class == BondClass::Settled)
             .flat_map(|(&(single, second_unit, _), _)| [(single, true), (second_unit, true)]),
+    );
+    // No triple bond in a ring, and no ring carbon left with π on both sides,
+    // where the group can be written any other way. Neither is something a
+    // proton shift leads to in practice, but both are what π-before-hydrogens
+    // produces once a ring carbon's own hydrogens are mobile: every bond is
+    // offered both its units before the next is offered any, and a ring
+    // carbon stripped of its hydrogen has room for two. With carbon endpoints
+    // that turned phenol into `O=C1CCCC#C1`, pyridinium into
+    // `[N+]#1C=CCCC#1` and put an allene in omeprazole's benzene ring -- 40%
+    // of a PubChem sample came back with a ring triple bond. A ring carbon
+    // keeping one hydrogen has room for one π bond and no more.
+    priority.extend(instance.ring_second_units.iter().map(|&edge| (edge, false)));
+    priority.extend(
+        instance
+            .ring_carbon_hydrogens
+            .iter()
+            .map(|&edge| (edge, true)),
     );
     // A last-resort ordering that hands every endpoint one hydrogen and one
     // electron before any atom is allowed down its ladder.

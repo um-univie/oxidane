@@ -35,7 +35,8 @@ def main(argv=None):
     parser.add_argument("-d", "--delimiter",
                         help="field delimiter for both files; default: from the extension")
     parser.add_argument("--carbon-endpoints", action="store_true",
-                        help="also merge keto and enol forms")
+                        help="also merge keto and enol forms (experimental: also merges "
+                             "compounds that are not tautomers)")
     parser.add_argument("--ionizable-endpoints", action="store_true",
                         help="also merge zwitterions with their neutral forms")
     parser.add_argument("-j", "--threads", type=int, help="threads to use; default: every core")

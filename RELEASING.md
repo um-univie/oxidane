@@ -18,5 +18,6 @@ source archive from the tag and compiles the extracted archive with every
 feature and target enabled. Only then does it create a **draft** GitHub release with the archive and its SHA-256
 checksum. A maintainer reviews and publishes the draft separately.
 
-Pull requests run the same platform tests without creating a release. None
-of these jobs expect a binary or cross-compile Apple/Windows targets on Linux.
+Pull requests run the tests on Linux only, unless labelled `full-ci`; see
+[docs/CHECKS.md](docs/CHECKS.md), which also covers running every check
+locally with `scripts/ci-local.sh`.

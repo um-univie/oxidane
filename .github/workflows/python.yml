@@ -1,27 +1,34 @@
 name: Test the Python bindings
 
+# Linux only by default; macOS and Windows too when run by hand, on a tag, or
+# on a pull request labelled full-ci. scripts/ci-local.sh runs the same tests.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore: ['**.md', 'docs/**', 'assets/**', 'LICENSE']
   push:
     branches: [main]
+    tags: ['v*']
+    paths-ignore: ['**.md', 'docs/**', 'assets/**', 'LICENSE']
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   python:
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python: "3.9"
-          - os: ubuntu-latest
-            python: "3.14"
-          - os: macos-latest
-            python: "3.12"
-          - os: windows-latest
-            python: "3.12"
+        include: >-
+          ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+          && '[{"os":"ubuntu-latest","python":"3.9"},{"os":"ubuntu-latest","python":"3.14"},{"os":"macos-latest","python":"3.12"},{"os":"windows-latest","python":"3.12"}]'
+          || '[{"os":"ubuntu-latest","python":"3.9"},{"os":"ubuntu-latest","python":"3.14"}]') }}
     runs-on: ${{ matrix.os }}
     env:
       CARGO_BUILD_JOBS: "1"

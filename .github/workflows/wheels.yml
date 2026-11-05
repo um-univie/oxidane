@@ -1,15 +1,21 @@
 name: Build the Python wheels
 
+# Only when run by hand (Actions tab, "Run workflow"), on a tag, or on a pull
+# request labelled full-ci; scripts/ci-local.sh builds the same wheels locally.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
-    branches: [main]
     tags:
       - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -18,6 +24,10 @@ defaults:
 jobs:
   wheel:
     name: Wheel for ${{ matrix.name }}
+    if: >-
+      github.event_name != 'pull_request'
+      || (contains(github.event.pull_request.labels.*.name, 'full-ci')
+          && (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -75,6 +85,7 @@ jobs:
 
   sdist:
     name: Source distribution
+    needs: wheel
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

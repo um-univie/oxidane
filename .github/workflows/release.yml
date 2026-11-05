@@ -1,13 +1,23 @@
 name: Test and package the library
 
+# Linux only on pull requests; macOS and Windows too when run by hand, on a
+# tag, or on a pull request labelled full-ci. scripts/ci-local.sh runs the same
+# checks.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore: ['**.md', 'docs/**', 'assets/**', 'LICENSE']
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -16,11 +26,14 @@ defaults:
 jobs:
   test:
     name: Test on ${{ matrix.os }}
+    if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: >-
+          ${{ fromJSON((github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || contains(github.event.pull_request.labels.*.name, 'full-ci'))
+          && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest"]') }}
     env:
       # Debug info in every example and test binary fills the Linux runner's disk.
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -31,6 +44,7 @@ jobs:
           persist-credentials: false
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
       - name: Check every target
         run: cargo +stable check --locked --all-features --all-targets
       - name: Run library, regression and documentation tests

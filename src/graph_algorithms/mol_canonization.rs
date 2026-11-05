@@ -1989,8 +1989,8 @@ mod tests {
     /// crates.io). Drop a larger file in at the same path to run against it.
     ///
     /// `#[ignore]`d even at 1000 molecules, since it is a benchmark rather
-    /// than a regression test; run it with `./test.sh` or
-    /// `cargo test --release <name> -- --ignored --nocapture`.
+    /// than a regression test; run it with
+    /// `cargo test --release benchmark_canonization_from_file -- --ignored --nocapture`.
     ///
     /// As of 2026-07-13 the full 100k corpus has exactly 2 known-failing writings out
     /// of ~8.4M comparisons (down from 10: the fused polycyclic aromatic
@@ -2021,7 +2021,6 @@ mod tests {
             .take(limit)
             .collect::<Vec<_>>();
         let wrong_smiles_file = Mutex::new(File::create("tests/wrong_smiles.txt").unwrap());
-        let _log_file = Mutex::new(File::create("tests/canonization_log.txt").unwrap());
 
         // Record the start time
         let start_time = Instant::now();

@@ -19,10 +19,27 @@ conformers and relaxes them with MMFF94 or UFF.
 
 Oxidane is the IUPAC name for water.
 
+## Install
+
+Oxidane is not on crates.io. Add the checkout to another Rust project's
+`Cargo.toml` (adjust the path):
+
 ```toml
 [dependencies]
-oxidane = "0.2"
+oxidane = { path = "../oxidane" }
 ```
+
+Enable the optional neural-network modules with `features = ["ml"]`. Parsing,
+descriptors, featurization and dataset splitting do not need it. From the
+checkout, check the library and run its documentation examples with:
+
+```sh
+cargo check --locked --all-features
+cargo test --locked --doc
+```
+
+There is no `oxidane` command-line binary. See [RELEASING.md](RELEASING.md) for
+source releases.
 
 ## Five minutes
 

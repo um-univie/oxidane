@@ -4,6 +4,8 @@ git_pusher.sh
 __pycache__/
 .DS_Store
 flamegraph.sh
+# Written by the ignored canonicalization benchmark
+tests/wrong_smiles.txt
 
 # Local working notes, not for publication
 notes/

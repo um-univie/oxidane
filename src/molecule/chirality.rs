@@ -794,7 +794,7 @@ impl ChiralClass {
             ChiralClass::AL(1) => ChiralClass::AL(2),
             ChiralClass::AL(2) => ChiralClass::AL(1),
             // TODO: Handle other chiral classes
-            _ => self.clone(),
+            _ => *self,
         }
     }
 
@@ -1208,12 +1208,10 @@ impl ChiralClassifier for Molecule3D {
 
         for (i, &v1) in vectors_and_indices.iter().enumerate() {
             for (j, &v2) in vectors_and_indices.iter().enumerate() {
-                if i < j {
-                    if v1.0.is_opposite(&v2.0, 0.1) {
-                        // If two vectors are nearly opposite (180 degrees apart), they form the axis
-                        axial_indices.push((i, vectors_and_indices[i].1));
-                        axial_indices.push((j, vectors_and_indices[j].1));
-                    }
+                if i < j && v1.0.is_opposite(&v2.0, 0.1) {
+                    // If two vectors are nearly opposite (180 degrees apart), they form the axis
+                    axial_indices.push((i, vectors_and_indices[i].1));
+                    axial_indices.push((j, vectors_and_indices[j].1));
                 }
             }
         }
@@ -1359,7 +1357,7 @@ impl ChiralClassifier for Molecule3D {
         viewing_axis: &(Vector3D, usize, usize),
         winding: WindingDirection,
     ) -> u8 {
-        let (axis_direction, axis_orientation) = self.determine_axis_direction(&viewing_axis);
+        let (axis_direction, axis_orientation) = self.determine_axis_direction(viewing_axis);
         let mut winding = winding;
         if axis_orientation == AxisOrientation::Reversed {
             winding = winding.reverse();

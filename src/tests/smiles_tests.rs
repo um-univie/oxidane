@@ -56,7 +56,7 @@ mod kekulize_tests {
         let atom1 = Atom::new(6).with_position((1.7, 0.0, 0.0));
         let atom2 = Atom::new(6).with_position((0.0, 0.0, 0.0));
         let atom3 = Atom::new(6).with_position((0.0, 0.0, 1.7));
-        let molecule = Molecule3D::from_atoms(&vec![atom1, atom2, atom3]);
+        let molecule = Molecule3D::from_atoms(&[atom1, atom2, atom3]);
         let angles = molecule.find_angles();
         println!("{:?}", angles);
         for bonds in molecule.atom_bonds.iter() {
@@ -73,7 +73,7 @@ mod kekulize_tests {
         let atom2 = Atom::new(6).with_position((0.0, 0.0, 0.0));
         let atom3 = Atom::new(6).with_position((0.0, 0.0, 1.7));
         let molecule = Molecule3D::from_atoms_alternate_covalent_radii(
-            &vec![atom1, atom2, atom3],
+            &[atom1, atom2, atom3],
             &COVALENT_RADII,
         );
         let angles = molecule.find_angles();
@@ -354,8 +354,7 @@ mod aromatization_tests {
     }
 
     fn diff_smiles(smiles: &str) -> String {
-        let molecule = parse_smiles_and_aromatize(smiles);
-        molecule
+        parse_smiles_and_aromatize(smiles)
     }
 
     fn autoencode(smiles: &str) -> bool {

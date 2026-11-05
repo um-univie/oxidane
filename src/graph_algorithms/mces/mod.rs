@@ -111,11 +111,10 @@ fn to_heavy_atom_graph<T: Molecule>(mol: &T) -> McesGraph {
         };
         for bond in bonds {
             let target = bond.target();
-            if index < target {
-                if let Some(&target_node) = compact_of.get(&target) {
+            if index < target
+                && let Some(&target_node) = compact_of.get(&target) {
                     graph.add_edge(source, target_node, bond.bond_order());
                 }
-            }
         }
     }
 

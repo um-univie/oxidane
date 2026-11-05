@@ -527,51 +527,6 @@ pub(crate) fn normalize_tetrahedral_references(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Expected values are RDKit `rdCIPLabeler` ground truth for each SMILES.
-
-    #[test]
-    fn l_alanine_is_s() {
-        let mol = MolecularGraph::from_smiles_single("N[C@@H](C)C(=O)O").unwrap();
-        assert_eq!(mol.assign_cip_configs()[1], CipConfig::S);
-    }
-
-    #[test]
-    fn d_alanine_is_r() {
-        let mol = MolecularGraph::from_smiles_single("N[C@H](C)C(=O)O").unwrap();
-        assert_eq!(mol.assign_cip_configs()[1], CipConfig::R);
-    }
-
-    #[test]
-    fn r_bromochlorofluoromethane() {
-        let mol = MolecularGraph::from_smiles_single("F[C@H](Cl)Br").unwrap();
-        assert_eq!(mol.assign_cip_configs()[1], CipConfig::R);
-    }
-
-    #[test]
-    fn s_bromochlorofluoromethane() {
-        let mol = MolecularGraph::from_smiles_single("F[C@@H](Cl)Br").unwrap();
-        assert_eq!(mol.assign_cip_configs()[1], CipConfig::S);
-    }
-
-    #[test]
-    fn trans_2_butene_is_e() {
-        let mol = MolecularGraph::from_smiles_single("C/C=C/C").unwrap();
-        let cip = mol.assign_cip_configs();
-        assert!(cip.iter().any(|&c| c == CipConfig::E), "{cip:?}");
-    }
-
-    #[test]
-    fn cis_2_butene_is_z() {
-        let mol = MolecularGraph::from_smiles_single(r"C/C=C\C").unwrap();
-        let cip = mol.assign_cip_configs();
-        assert!(cip.iter().any(|&c| c == CipConfig::Z), "{cip:?}");
-    }
-}
-
 /// Converts freshly parsed allene tags into the canonical carrier reference
 /// used throughout the crate.
 ///
@@ -667,4 +622,49 @@ fn written_allene_carriers(
         carriers.extend(order);
     }
     Some(carriers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Expected values are RDKit `rdCIPLabeler` ground truth for each SMILES.
+
+    #[test]
+    fn l_alanine_is_s() {
+        let mol = MolecularGraph::from_smiles_single("N[C@@H](C)C(=O)O").unwrap();
+        assert_eq!(mol.assign_cip_configs()[1], CipConfig::S);
+    }
+
+    #[test]
+    fn d_alanine_is_r() {
+        let mol = MolecularGraph::from_smiles_single("N[C@H](C)C(=O)O").unwrap();
+        assert_eq!(mol.assign_cip_configs()[1], CipConfig::R);
+    }
+
+    #[test]
+    fn r_bromochlorofluoromethane() {
+        let mol = MolecularGraph::from_smiles_single("F[C@H](Cl)Br").unwrap();
+        assert_eq!(mol.assign_cip_configs()[1], CipConfig::R);
+    }
+
+    #[test]
+    fn s_bromochlorofluoromethane() {
+        let mol = MolecularGraph::from_smiles_single("F[C@@H](Cl)Br").unwrap();
+        assert_eq!(mol.assign_cip_configs()[1], CipConfig::S);
+    }
+
+    #[test]
+    fn trans_2_butene_is_e() {
+        let mol = MolecularGraph::from_smiles_single("C/C=C/C").unwrap();
+        let cip = mol.assign_cip_configs();
+        assert!(cip.contains(&CipConfig::E), "{cip:?}");
+    }
+
+    #[test]
+    fn cis_2_butene_is_z() {
+        let mol = MolecularGraph::from_smiles_single(r"C/C=C\C").unwrap();
+        let cip = mol.assign_cip_configs();
+        assert!(cip.contains(&CipConfig::Z), "{cip:?}");
+    }
 }

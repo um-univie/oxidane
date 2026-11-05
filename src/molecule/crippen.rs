@@ -396,7 +396,7 @@ impl<'a, M: MoleculeCore + ?Sized> View<'a, M> {
                     }
                 }
                 if neighbour.double()
-                    && matches!(neighbour.atomic_number, 6 | 7 | 8)
+                    && matches!(neighbour.atomic_number, 6..=8)
                     && !neighbour.aromatic
                 {
                     return C25;
@@ -682,15 +682,14 @@ impl<'a, M: MoleculeCore + ?Sized> View<'a, M> {
         {
             return O12;
         }
-        if connections == 1 && charge < 0 {
-            if let Some(neighbour) = self.neighbours(atom).next() {
-                if neighbour.atomic_number != 1
-                    && !neighbour.aliphatic(7)
-                    && !neighbour.aliphatic(16)
-                {
-                    return O7;
-                }
-            }
+        if connections == 1
+            && charge < 0
+            && let Some(neighbour) = self.neighbours(atom).next()
+            && neighbour.atomic_number != 1
+            && !neighbour.aliphatic(7)
+            && !neighbour.aliphatic(16)
+        {
+            return O7;
         }
 
         // O8 to O11: a carbonyl oxygen, by what the carbon carries.

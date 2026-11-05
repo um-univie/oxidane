@@ -400,8 +400,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             52 => self.handle_tellurium_aromaticity(atom_index),
             _ => 0,
         };
-        //#[cfg(debug_assertions)]
-        //println!("Index: {}, Lookup index: {}", atom_index, index);
         Self::lookup_model(index as usize, aromaticity_model)
     }
 
@@ -455,9 +453,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     return 2;
                 }
 
-                //if valency == 2 && bond_count == 2 {
-                //    lookup_index = 2;
-                //}
                 if valency == 4 && bond_count == 3 {
                     return 2;
                 }
@@ -703,10 +698,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     }
                 }
 
-                if number_of_aromatic_bonds == 2 {
-                    if number_of_single_bonds == 1 {
-                        return 15;
-                    }
+                if number_of_aromatic_bonds == 2 && number_of_single_bonds == 1 {
+                    return 15;
                 }
 
                 for bond in bonds {
@@ -945,22 +938,18 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     return 18;
                 }
 
-                if valency != 2 {
-                    if (bond_count == 3 && valency == 4)
-                        || (bond_count == 3 && number_of_aromatic_bonds == 2)
-                    {
-                        for bond in bonds {
-                            let bond_in_ring = Self::bond_hashset_contains(
-                                bonds_in_rings,
-                                atom_index,
-                                bond.target(),
-                            );
-                            if bond.bond_order() == BondOrder::Double
-                                && !bond_in_ring
-                                && self.get_atomic_number(bond.target()) == 8
-                            {
-                                return 20;
-                            }
+                if valency != 2
+                    && ((bond_count == 3 && valency == 4)
+                        || (bond_count == 3 && number_of_aromatic_bonds == 2))
+                {
+                    for bond in bonds {
+                        let bond_in_ring =
+                            Self::bond_hashset_contains(bonds_in_rings, atom_index, bond.target());
+                        if bond.bond_order() == BondOrder::Double
+                            && !bond_in_ring
+                            && self.get_atomic_number(bond.target()) == 8
+                        {
+                            return 20;
                         }
                     }
                 }
@@ -1080,10 +1069,8 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     }
                 }
 
-                if number_of_aromatic_bonds == 2 && bond_count == 3 {
-                    if number_of_single_bonds == 1 {
-                        return 33;
-                    }
+                if number_of_aromatic_bonds == 2 && bond_count == 3 && number_of_single_bonds == 1 {
+                    return 33;
                 }
 
                 if valency == 4 && bond_count == 3 {
@@ -1543,15 +1530,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         // Basically we want to be able to limit how far we can travel
         let path_length = path_length_limit.unwrap_or(AROMATIC_PATH_DEPTH);
 
-        // let mut reduced_path_length = path_length;
-        // if 31 < reduced_path_length {
-        //     // reduced_path_length = self.reduce_path_length(
-        //     //     path_length,
-        //     //     atoms_in_rings_placeholder,
-        //     //     bonds_in_rings_placeholder,
-        //     // )
-        // }
-
         self.find_the_aromatic_system(
             model_kind,
             ring_finder,
@@ -1828,9 +1806,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             }
         }
 
-        // #[cfg(debug_assertions)]
-        // println!("Root atoms after initial check: {:?}", visited);
-
         // Find 5 membered rings
         for atom_index in 0..self.len() {
             if visited[atom_index] != 2 {
@@ -1887,9 +1862,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     break;
                 }
 
-                //#[cfg(debug_assertions)]
-                //println!("Identified additional root atoms: {:?}", visited);
-
                 let mut new_aromatic = false;
 
                 for atom_index in 0..self.len() {
@@ -1908,8 +1880,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                             //println!("Electrons for atom: {} {}", electron_count, atom_index);
 
                             if is_bond_in_ring && !aromatic_bonds.contains(&atom_order) {
-                                // #[cfg(debug_assertions)]
-                                // println!("Checking bond: {:?}", atom_order);
                                 new_aromatic = self.check_long_aromatic_path(
                                     atom_index,
                                     neighbor_index,
@@ -1924,9 +1894,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                                         == AromaticityFlag::PotentiallyAromaticOneElectron,
                                     9,
                                 );
-
-                                // #[cfg(debug_assertions)]
-                                // println!("New aromatic: {}", new_aromatic);
 
                                 if new_aromatic {
                                     aromatic_bonds.insert(atom_order);
@@ -1958,9 +1925,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     break;
                 }
 
-                // #[cfg(debug_assertions)]
-                // println!("Identified additional root atoms: {:?}", visited);
-
                 let mut new_aromatic = false;
                 for atom_index in 0..self.len() {
                     // If additional root atom
@@ -1976,8 +1940,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                             let is_not_already_aromatic = !aromatic_bonds.contains(&atom_order);
 
                             if is_bond_in_ring && is_not_already_aromatic {
-                                // #[cfg(debug_assertions)]
-                                // println!("Checking bond: {:?}", atom_order);
                                 new_aromatic = self.check_long_aromatic_path(
                                     atom_index,
                                     neighbor_index,
@@ -1994,8 +1956,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                                 );
 
                                 if new_aromatic {
-                                    // #[cfg(debug_assertions)]
-                                    // println!("New aromatic: {}", new_aromatic);
                                     aromatic_bonds.insert(atom_order);
                                 }
                             }
@@ -2074,10 +2034,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 continue;
             }
 
-            // #[cfg(debug_assertions)]
-            // println!("Checking bond in long path: {:?}", order);
-            // #[cfg(debug_assertions)]
-            // println!("Electron count: {}", new_electron_count);
             if self.check_long_aromatic_path(
                 start_atom_index,
                 neighbor_index,
@@ -2095,8 +2051,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 aromatic_atoms[current_atom_index] = true;
 
                 visited[current_atom_index] = previous_visit_state;
-                // #[cfg(debug_assertions)]
-                // println!("Aromatic bonds {:?}", order);
                 return true;
             }
         }
@@ -2213,8 +2167,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
         let result = number_of_atoms_in_rings.min(path_length_limit);
 
         if result < 50 {
-            // #[cfg(debug_assertions)]
-            // println!("Reduced path length to {}", result);
             return result;
         }
 
@@ -2234,8 +2186,6 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             result
         } else if cyclomatic_number > 29 {
             if self.is_fullerene_like(atoms_in_rings, bonds_in_ring) {
-                // #[cfg(debug_assertions)]
-                // println!("Found fullerene-like molecule, reducing path length to 30");
                 return 30;
             }
             50

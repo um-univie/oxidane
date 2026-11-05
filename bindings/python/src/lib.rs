@@ -3,7 +3,10 @@ use oxidane::atom::Atom;
 use oxidane::graph_algorithms::mol_canonization::{
     canonicalize_and_sort_smiles, canonize_mol, canonize_mol_inplace,
 };
-use oxidane::io::{CxSMARTSPattern, SDFParseError, SMILESParseError, ToSMILES, parse_cxsmarts};
+use oxidane::io::{
+    CxSMARTSPattern, SDFParseError, SMILESParseError, SMILESParser, SmilesParseOptions, ToSMILES,
+    parse_cxsmarts,
+};
 use oxidane::molecule::base::MoleculeCore;
 use oxidane::molecule::draw::Draw;
 use oxidane::molecule::reaction::ReactionSmarts as RustReaction;
@@ -19,6 +22,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 fn value_error(error: impl std::fmt::Debug) -> PyErr {
     PyValueError::new_err(format!("{error:?}"))
+}
+
+/// Refuses a SMILES with an atom bonded past every valence its element has;
+/// see `oxidane::io::check_valences`.
+fn check_valence(smiles: &str) -> Result<(), SMILESParseError> {
+    let options = SmilesParseOptions {
+        check_valence: true,
+        ..Default::default()
+    };
+    SMILESParser::parse_smiles_with(smiles, options).map(|_| ())
 }
 
 fn svg(py: Python<'_>, raw: String, width: u32, height: u32) -> PyResult<String> {
@@ -79,7 +92,11 @@ struct PyMolecule {
 #[pymethods]
 impl PyMolecule {
     #[new]
-    fn new(smiles: &str) -> PyResult<Self> {
+    #[pyo3(signature = (smiles, *, check_valence=false))]
+    fn new(smiles: &str, check_valence: bool) -> PyResult<Self> {
+        if check_valence {
+            self::check_valence(smiles.trim()).map_err(value_error)?;
+        }
         // Keep every dot-separated component, including counterions.
         let molecules = MolecularGraph::from_smiles(smiles.trim()).map_err(value_error)?;
         if molecules.is_empty() {
@@ -429,11 +446,14 @@ const REPORTED: usize = 10;
 /// (`None`, NaN, `pandas.NA`) gives `None`. A SMILES that does not parse is
 /// handled as `errors` says: kept as it was with a line on stderr (the first
 /// [`REPORTED`] of a call, then a count), replaced by None, or raised.
+/// `check_valence` makes an atom bonded past its element's valences count as
+/// not parsing.
 fn map_smiles(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
     threads: Option<usize>,
     errors: &str,
+    check_valence: bool,
     compute: impl Fn(&str) -> Result<String, SMILESParseError> + Sync,
 ) -> PyResult<Py<PyAny>> {
     let on_error = OnError::parse(errors)?;
@@ -471,7 +491,15 @@ fn map_smiles(
         Some(count) if count > 1 => Some(pool(count)?),
         _ => None,
     };
-    let answer = |smiles: &Option<String>| smiles.as_deref().map(|smiles| compute(smiles.trim()));
+    let answer = |smiles: &Option<String>| {
+        smiles.as_deref().map(|smiles| {
+            let smiles = smiles.trim();
+            if check_valence {
+                self::check_valence(smiles)?;
+            }
+            compute(smiles)
+        })
+    };
     let answers: Vec<Option<Result<String, SMILESParseError>>> =
         py.detach(|| match (threads, pool) {
             (Some(1), _) => inputs.iter().map(answer).collect(),
@@ -529,21 +557,22 @@ fn map_smiles(
 
 /// Canonical SMILES; components are canonized separately and sorted.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, threads=None, errors="keep"))]
+#[pyo3(signature = (smiles, *, threads=None, errors="keep", check_valence=false))]
 fn canonical_smiles(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
     threads: Option<usize>,
     errors: &str,
+    check_valence: bool,
 ) -> PyResult<Py<PyAny>> {
-    map_smiles(py, smiles, threads, errors, |smiles| {
+    map_smiles(py, smiles, threads, errors, check_valence, |smiles| {
         canonicalize_and_sort_smiles(smiles, true)
     })
 }
 
 /// A string every tautomer of the input shares.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep"))]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep", check_valence=false))]
 fn tautomer_key(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -551,9 +580,10 @@ fn tautomer_key(
     ionizable_endpoints: bool,
     threads: Option<usize>,
     errors: &str,
+    check_valence: bool,
 ) -> PyResult<Py<PyAny>> {
     let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
-    map_smiles(py, smiles, threads, errors, |smiles| {
+    map_smiles(py, smiles, threads, errors, check_valence, |smiles| {
         tautomer_key_from_smiles(smiles, &rules)
     })
 }
@@ -561,7 +591,7 @@ fn tautomer_key(
 /// The canonical SMILES of the one tautomer every tautomer of the input
 /// normalizes to.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep"))]
+#[pyo3(signature = (smiles, *, carbon_endpoints=false, ionizable_endpoints=false, threads=None, errors="keep", check_valence=false))]
 fn canonical_tautomer(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
@@ -569,9 +599,10 @@ fn canonical_tautomer(
     ionizable_endpoints: bool,
     threads: Option<usize>,
     errors: &str,
+    check_valence: bool,
 ) -> PyResult<Py<PyAny>> {
     let rules = tautomer_rules(carbon_endpoints, ionizable_endpoints);
-    map_smiles(py, smiles, threads, errors, |smiles| {
+    map_smiles(py, smiles, threads, errors, check_valence, |smiles| {
         normalized_smiles(smiles, &rules)
     })
 }

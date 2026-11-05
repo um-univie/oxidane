@@ -63,7 +63,10 @@ salts or neutralize first if the database should hold parent compounds.
 
 A SMILES that does not parse is written back unchanged in the result columns and
 reported on stderr (the first ten, then a count); `--errors none` leaves the
-fields empty instead, `--errors raise` stops. On 24 cores a file goes at about
+fields empty instead, `--errors raise` stops. The reader takes any valence a
+SMILES writes, so a typo such as `FF=F` goes through; `--check-valence` treats
+an atom with more bonds than its element allows as unreadable, refusing the
+same strings RDKit does. On 24 cores a file goes at about
 25,000 rows per second with all three columns; a single column is faster.
 
 In Python the same three functions take one SMILES or a whole column:
@@ -138,7 +141,9 @@ ignored. Lists are processed on every core by default, with the GIL
 released; `threads=n` limits that, and `RAYON_NUM_THREADS` sets the default.
 A SMILES that does not parse is given back unchanged and reported on stderr
 with its index (the first ten of a call, then a count); `errors="none"` gives `None` in its place instead, and
-`errors="raise"` raises `ValueError`. Dot-separated components are handled one at a
+`errors="raise"` raises `ValueError`. `check_valence=True` counts an atom bonded
+past its element's valences (`C(C)(C)(C)(C)C`, `FF=F`) as not parsing; the
+same flag is on `ox.Molecule`. Dot-separated components are handled one at a
 time and sorted, so a salt written either way round gives the same string.
 Timings are in the table above; on one core, a canonical tautomer takes
 about 0.25 ms, against about 20 ms for RDKit's
@@ -155,7 +160,7 @@ CSV quoting is honoured, a `.gz` suffix on either path compresses that
 side, and `-` stands for standard input or output. `smiles_column` is a 0-based index or, with a header row, a column name;
 `header=True` keeps a header with an index too. The same `errors` modes apply,
 reported with the input line number, and `carbon_endpoints`,
-`ionizable_endpoints` and `threads` are passed through. It returns
+`ionizable_endpoints`, `threads` and `check_valence` are passed through. It returns
 `{"rows": ..., "unparsed": ...}`.
 
 - `canonical_smiles` is invariant under atom order.

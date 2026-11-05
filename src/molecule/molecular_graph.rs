@@ -326,7 +326,7 @@ impl MolecularGraph {
     /// // Asking for no perception keeps the bonds exactly as written.
     /// let literal = MolecularGraph::from_smiles_single_with(
     ///     "C1=CC=CC=C1",
-    ///     SmilesParseOptions { aromaticity: None },
+    ///     SmilesParseOptions { aromaticity: None, ..Default::default() },
     /// )
     /// .unwrap();
     /// assert_eq!(literal.to_smiles(), "C1=CC=CC=C1");

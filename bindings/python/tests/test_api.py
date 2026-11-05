@@ -351,3 +351,20 @@ def test_every_writing_of_a_compound_agrees(forms):
 ])
 def test_preferred_forms_are_kept(smiles):
     assert ox.canonical_tautomer(smiles) == ox.canonical_smiles(smiles)
+
+
+def test_valence_check_is_opt_in(tmp_path, capsys):
+    assert ox.canonical_smiles("FF=F", errors="raise")  # off by default
+    assert ox.canonical_smiles(["FF=F", "CCO"], check_valence=True, errors="none") == [
+        None, ox.canonical_smiles("CCO")]
+    with pytest.raises(ValueError, match="more than the 4"):
+        ox.canonical_tautomer("C(C)(C)(C)(C)C", check_valence=True, errors="raise")
+    assert ox.tautomer_key("[O-]Cl(=O)(=O)=O", check_valence=True, errors="raise")
+    with pytest.raises(ValueError, match="Valence"):
+        ox.Molecule("C[N](C)(C)C", check_valence=True)
+    assert ox.Molecule("C[N+](C)(C)C", check_valence=True).to_smiles()
+    from oxidane.__main__ import main
+    source = tmp_path / "in.smi"
+    source.write_text("CCO\nFF=F\n")
+    assert main([str(source), str(tmp_path / "out.tsv"), "--check-valence", "--errors", "none"]) == 0
+    assert "2 rows, 1 unreadable" in capsys.readouterr().err

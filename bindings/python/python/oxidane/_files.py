@@ -59,6 +59,7 @@ def process_file(
     ionizable_endpoints: bool = False,
     threads: Optional[int] = None,
     errors: str = "keep",
+    check_valence: bool = False,
     chunk_size: int = 100_000,
 ) -> Dict[str, int]:
     """Append canonical SMILES, tautomer keys and/or canonical tautomers to every
@@ -78,8 +79,9 @@ def process_file(
     A SMILES that does not parse is handled as `errors` says: "keep" (default)
     writes the input SMILES unchanged in each result field and reports the line
     on stderr (the first ten, then a count), "none" leaves the fields empty
-    silently, "raise" stops with ValueError. Returns counts of rows written and
-    SMILES that did not parse.
+    silently, "raise" stops with ValueError. With `check_valence`, a SMILES with
+    an atom bonded past its element's valences counts as not parsing. Returns
+    counts of rows written and SMILES that did not parse.
     """
     unknown = [name for name in columns if name not in COLUMNS]
     if unknown:
@@ -93,10 +95,12 @@ def process_file(
     rules = {"carbon_endpoints": carbon_endpoints,
              "ionizable_endpoints": ionizable_endpoints}
     functions = {
-        "canonical_smiles": lambda batch: canonical_smiles(batch, threads=threads, errors="none"),
-        "tautomer_key": lambda batch: tautomer_key(batch, threads=threads, errors="none", **rules),
+        "canonical_smiles": lambda batch: canonical_smiles(batch, threads=threads, errors="none",
+                                                          check_valence=check_valence),
+        "tautomer_key": lambda batch: tautomer_key(batch, threads=threads, errors="none",
+                                                  check_valence=check_valence, **rules),
         "canonical_tautomer": lambda batch: canonical_tautomer(
-            batch, threads=threads, errors="none", **rules),
+            batch, threads=threads, errors="none", check_valence=check_valence, **rules),
     }
     read_delimiter = delimiter if delimiter is not None else _delimiter(input)
     write_delimiter = delimiter if delimiter is not None else (_delimiter(output) or "\t")

@@ -183,7 +183,7 @@ fn aromaticity_is_perceived_by_default_and_can_be_turned_off() {
     // has plain double bonds and no aromatic ones.
     let literal = MolecularGraph::from_smiles_single_with(
         "C1=CC=CC=C1",
-        SmilesParseOptions { aromaticity: None },
+        SmilesParseOptions { aromaticity: None, ..Default::default() },
     )
     .unwrap();
     assert_eq!(find_cxsmarts_matches(&literal, "c1ccccc1").unwrap().len(), 0);

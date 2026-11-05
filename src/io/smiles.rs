@@ -39,6 +39,14 @@ pub enum SMILESParseError {
     /// alternating single and double ones, so the string does not describe a
     /// molecule. See [`crate::molecule::aromaticity::KekulizationError`].
     Kekulization(String),
+    /// The symbols are all SMILES, but not in an order SMILES allows: two
+    /// bonds in a row, a bond with no atom after it, an unclosed or empty
+    /// branch, an empty fragment. Says what was wrong and where.
+    Syntax(String),
+    /// An atom has more bonds than any valence its element and charge allow,
+    /// e.g. a five-bonded carbon. Only checked when
+    /// [`SmilesParseOptions::check_valence`] asks for it.
+    Valence(String),
 }
 
 /// What to perceive after the atoms and bonds have been read.
@@ -57,12 +65,21 @@ pub struct SmilesParseOptions {
     /// exactly as it was written, or when the input is already Kekulé and the
     /// distinction matters.
     pub aromaticity: Option<AromaticityModel>,
+    /// Refuse an atom with more bonds than its element allows: a carbon with
+    /// five, a neutral nitrogen with four, a fluorine with two. See
+    /// [`check_valences`].
+    ///
+    /// Off by default. The reader otherwise takes what a string says, which
+    /// is what a structure that is meant to be unusual needs, and lets a typo
+    /// such as `FF=F` through as a molecule.
+    pub check_valence: bool,
 }
 
 impl Default for SmilesParseOptions {
     fn default() -> Self {
         Self {
             aromaticity: Some(default_aromaticity_model()),
+            check_valence: false,
         }
     }
 }
@@ -251,6 +268,11 @@ impl<'a> SMILESParser<'a> {
                 molecule
                     .localize_aromatic_bonds()
                     .map_err(|failure| SMILESParseError::Kekulization(failure.to_string()))?;
+                // Bonds are whole now, so an atom's count is exact; after
+                // perception an aromatic bond only counts as one and a half.
+                if options.check_valence {
+                    check_valences(molecule, smiles)?;
+                }
                 // A ring written in Kekulé form describes the same molecule as
                 // one written in lower case, so without this the two parse to
                 // graphs that answer aromaticity questions differently:
@@ -259,6 +281,13 @@ impl<'a> SMILESParser<'a> {
                 // which leaves the bonds exactly as written — the same result
                 // as not asking for it.
                 let _ = molecule.aromatize(model, None, false);
+            } else if options.check_valence {
+                // The bonds stay as written, so count them on a Kekulé copy.
+                let mut localized = molecule.clone();
+                localized
+                    .localize_aromatic_bonds()
+                    .map_err(|failure| SMILESParseError::Kekulization(failure.to_string()))?;
+                check_valences(&localized, smiles)?;
             }
         }
         Ok(molecules)
@@ -343,6 +372,10 @@ impl<'a> SMILESParser<'a> {
     fn parse_fragments(
         smiles: &str,
     ) -> Result<(Vec<MolecularGraph>, Vec<IntMap<usize, SmilesWriteOrder>>), SMILESParseError> {
+        // Whitespace ends a SMILES, so a leading space used to end it before
+        // its first atom and hand back an empty molecule. RDKit skips it.
+        let smiles = smiles.trim_start();
+        check_syntax(smiles)?;
         let mut parser = SMILESParser::default();
         parser.smiles = smiles;
         // One atom per two bytes is a generous upper bound for SMILES and
@@ -414,6 +447,7 @@ impl<'a> SMILESParser<'a> {
                         .iter()
                         .any(|(_, (a, b, _))| a.is_none() || b.is_none())
                     {
+                        parser.check_aromatic_atoms_are_in_rings()?;
                         let mut molecule = MolecularGraph::from_atoms(&parser.atoms);
                         assign_radicals(&parser.atoms, &mut molecule);
                         molecules.push(molecule);
@@ -532,6 +566,7 @@ impl<'a> SMILESParser<'a> {
         }
 
         parser.add_all_bonds()?;
+        parser.check_aromatic_atoms_are_in_rings()?;
 
         let mut molecule = MolecularGraph::from_atoms(&parser.atoms);
         assign_radicals(&parser.atoms, &mut molecule);
@@ -732,6 +767,70 @@ impl<'a> SMILESParser<'a> {
             atom2.add_bond(BondTarget::new(bond.0, bond_order));
         }
         Ok(())
+    }
+
+    /// Refuses an atom written in lower case that is not in a ring.
+    ///
+    /// Aromaticity belongs to rings, so `c`, `cc`, `[nH]` and the last atom
+    /// of `c1ccccc1-c` describe nothing; they used to be read as the aliphatic
+    /// atom, `c` as methane. An atom is in a ring when one of its bonds is not
+    /// a bridge, which one depth-first search with low links finds.
+    fn check_aromatic_atoms_are_in_rings(&self) -> Result<(), SMILESParseError> {
+        if !self.atoms.iter().any(|atom| atom.aromatic) {
+            return Ok(());
+        }
+        let count = self.atoms.len();
+        let mut discovered = vec![usize::MAX; count];
+        let mut low = vec![0; count];
+        let mut in_ring = vec![false; count];
+        let mut time = 0;
+        // (atom, the atom it was reached from, the next bond to follow)
+        let mut stack: Vec<(usize, usize, usize)> = Vec::new();
+        for root in 0..count {
+            if discovered[root] != usize::MAX {
+                continue;
+            }
+            discovered[root] = time;
+            low[root] = time;
+            time += 1;
+            stack.push((root, usize::MAX, 0));
+            while let Some(&(atom, parent, next)) = stack.last() {
+                let bonds = self.atoms[atom].bonds();
+                if next < bonds.len() {
+                    stack.last_mut().unwrap().2 += 1;
+                    let target = bonds[next].target();
+                    if target == parent {
+                        continue;
+                    }
+                    if discovered[target] == usize::MAX {
+                        discovered[target] = time;
+                        low[target] = time;
+                        time += 1;
+                        stack.push((target, atom, 0));
+                    } else {
+                        low[atom] = low[atom].min(discovered[target]);
+                    }
+                } else {
+                    stack.pop();
+                    if parent != usize::MAX {
+                        low[parent] = low[parent].min(low[atom]);
+                        // Not a bridge: the subtree below reaches back above.
+                        if low[atom] <= discovered[parent] {
+                            in_ring[parent] = true;
+                            in_ring[atom] = true;
+                        }
+                    }
+                }
+            }
+        }
+        match (0..count).find(|&atom| self.atoms[atom].aromatic && !in_ring[atom]) {
+            Some(atom) => Err(SMILESParseError::InvalidAromatic(format!(
+                "atom {} is written aromatic but is not in a ring in {}",
+                atom + 1,
+                self.smiles
+            ))),
+            None => Ok(()),
+        }
     }
 
     fn handle_branch(&mut self) -> Result<(), SMILESParseError> {
@@ -1142,29 +1241,273 @@ fn byte_to_number(byte: u8) -> u8 {
     byte - b'0'
 }
 
+/// Refuses an atom whose bonds exceed every valence its element has.
+///
+/// The rules are RDKit's, so that what this refuses is what RDKit refuses:
+///
+/// - The valences are RDKit's table, as `chemistry_consts` carries it: carbon
+///   4; nitrogen 3; oxygen 2; the halogens 1, iodine also 3 and 5; phosphorus
+///   3, 5 and 7; sulfur 2, 4 and 6. Only the highest is held to: an atom
+///   between two, like a three-bonded sulfur, is a radical and was given its
+///   unpaired electron already.
+/// - A charged atom may have whichever is more: the valences of the element
+///   in its period it is isoelectronic with, or its own moved by the charge
+///   as the hydrogen count moves them. `[N+]` may have 4, `[O-]` 1, `[Si-2]` 6 (as
+///   sulfur), `[S-]` 5 (sulfur's 6 less one) and `[Cl-]` none.
+/// - A neutral chlorine, bromine or iodine bonded only to oxygens counts each
+///   double bond to oxygen as a charge-separated single one, as RDKit's
+///   clean-up rewrites it before checking. Perchlorate `[O-]Cl(=O)(=O)=O` is
+///   then `[Cl+3]` with four bonds, which silicon's valence allows. Bonded to
+///   anything else the halogen keeps its 1, so `FCl(F)(F)(F)F` is refused,
+///   as RDKit refuses it.
+///
+/// Hydrogens count, being atoms by now. Elements with no table entry, the
+/// transition metals among them, are not checked; their bonds in a SMILES are
+/// as often dative as covalent. Nor are those RDKit lets have any valence,
+/// the alkali and alkaline earth metals. The table is an older RDKit's, so
+/// it still allows silicon 6 and aluminium 6 where RDKit now allows 4 and 3.
+pub fn check_valences(molecule: &MolecularGraph, smiles: &str) -> Result<(), SMILESParseError> {
+    for atom in 0..molecule.atomic_numbers().len() {
+        let atomic_number = molecule.atomic_numbers()[atom];
+        let mut charge = molecule.charges()[atom];
+        let mut bonded = molecule.actual_valency(atom);
+        if matches!(atomic_number, 17 | 35 | 53) && charge == 0 {
+            let bonds = &molecule.atom_bonds()[atom];
+            let only_oxygen = bonds
+                .iter()
+                .all(|bond| molecule.atomic_numbers()[bond.target()] == 8);
+            if only_oxygen {
+                let oxo = bonds
+                    .iter()
+                    .filter(|bond| bond.bond_order() == BondOrder::Double)
+                    .count() as i8;
+                bonded -= oxo;
+                charge += oxo;
+            }
+        }
+        // RDKit's table marks an element that may have any valence, the
+        // alkali and alkaline earth metals among them, with a -1.
+        if atomic_number
+            .valencies()
+            .is_none_or(|mut valences| valences.any(|valence| valence < 0))
+        {
+            continue;
+        }
+        let highest = |element: u8| element.valencies()?.filter(|valence| *valence >= 0).max();
+        let Some(own) = highest(atomic_number) else {
+            continue;
+        };
+        let shifted = own + crate::molecule::base::charge_valency_shift(atomic_number, charge);
+        // Only within the period: `[C+5]` is not hydrogen.
+        let isoelectronic = u8::try_from(atomic_number as i16 - charge as i16)
+            .ok()
+            .filter(|&element| element > 0 && period(element) == period(atomic_number))
+            .and_then(highest);
+        let allowed = isoelectronic.map_or(shifted, |valence| valence.max(shifted));
+        if bonded > allowed {
+            let symbol = atomic_number.atomic_symbol().unwrap_or("?");
+            let written = molecule.charges()[atom];
+            let atom_name = match written {
+                0 => format!("atom {} ({symbol})", atom + 1),
+                c => format!("atom {} ({symbol}{c:+})", atom + 1),
+            };
+            let what = if allowed < 0 {
+                format!("{atom_name} cannot carry a charge of {written:+}")
+            } else {
+                format!(
+                    "{atom_name} has {} bonds, more than the {allowed} it can have",
+                    molecule.actual_valency(atom)
+                )
+            };
+            return Err(SMILESParseError::Valence(format!("{what}, in {smiles:?}")));
+        }
+    }
+    Ok(())
+}
+
+/// The row of the periodic table `atomic_number` is in.
+fn period(atomic_number: u8) -> u8 {
+    match atomic_number {
+        0..=2 => 1,
+        3..=10 => 2,
+        11..=18 => 3,
+        19..=36 => 4,
+        37..=54 => 5,
+        55..=86 => 6,
+        _ => 7,
+    }
+}
+
+/// What the previous token of a SMILES was, for [`check_syntax`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Token {
+    Start,
+    Atom,
+    Bond,
+    Ring,
+    Open,
+    Close,
+    Dot,
+}
+
+/// Checks the order of the symbols outside brackets against the SMILES
+/// grammar, before any atom is built.
+///
+/// The parser reads token by token and keeps only what it needs to build
+/// bonds, so it took a great deal it should have refused, each time as some
+/// other molecule: every bond symbol overwrote the one before it (`C=#C` was
+/// acetylene, `C#=C` ethylene), a bond with nothing after it vanished (`C=`),
+/// parentheses were counted but never matched (`C(=O` was formaldehyde,
+/// `C()C` and `(C)C` ethane), a `.` inside a branch joined the wrong atoms
+/// (`C(C.C)C`), and `C.`, `.C` and `C..C` held empty molecules. What a
+/// bracket atom says inside its brackets is left to `handle_complex_atom`,
+/// and characters that are not SMILES at all to the parser's own error.
+fn check_syntax(smiles: &str) -> Result<(), SMILESParseError> {
+    let bytes = smiles.as_bytes();
+    let fail = |what: &str, at: usize| {
+        Err(SMILESParseError::Syntax(format!(
+            "{what} at position {} of {smiles:?}",
+            at + 1
+        )))
+    };
+    let mut previous = Token::Start;
+    // The token before the last bond, since a ring-closure digit may carry a
+    // bond (`C=1CC1`) but must still follow an atom.
+    let mut before_bond = Token::Start;
+    let mut depth = 0usize;
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        let token = match byte {
+            b' ' | b'\t' | b'\n' | b'\r' => break,
+            b'[' => {
+                match bytes[at..].iter().position(|&b| b == b']') {
+                    Some(close) => at += close,
+                    // Unterminated: the parser says so in its own words.
+                    None => return Ok(()),
+                }
+                Token::Atom
+            }
+            b'A'..=b'Z' | b'a'..=b'z' | b'*' => Token::Atom,
+            // A doubled backslash is one `\` escaped once too often, as a
+            // SMILES copied out of a string literal often is; RDKit reads it
+            // as one, and so does the parser.
+            b'\\'
+                if previous == Token::Bond
+                    && bytes[at - 1] == b'\\'
+                    && at >= 2
+                    && bytes[at - 2] != b'\\' =>
+            {
+                at += 1;
+                continue;
+            }
+            b'-' | b'=' | b'#' | b'$' | b':' | b'/' | b'\\' => {
+                match previous {
+                    Token::Bond => return fail("two bond symbols in a row", at),
+                    Token::Start | Token::Dot => return fail("a bond with no atom before it", at),
+                    _ => {}
+                }
+                before_bond = previous;
+                Token::Bond
+            }
+            b'0'..=b'9' | b'%' => {
+                let ring_atom = if previous == Token::Bond {
+                    before_bond
+                } else {
+                    previous
+                };
+                if !matches!(ring_atom, Token::Atom | Token::Ring) {
+                    return fail("a ring-closure label that does not follow an atom", at);
+                }
+                if byte == b'%' {
+                    match bytes.get(at + 1) {
+                        // `%(nnn)`: the parser reads and checks the digits.
+                        Some(b'(') => match bytes[at..].iter().position(|&b| b == b')') {
+                            Some(close) => at += close,
+                            None => return fail("an unclosed %(", at),
+                        },
+                        Some(a)
+                            if a.is_ascii_digit()
+                                && bytes.get(at + 2).is_some_and(u8::is_ascii_digit) =>
+                        {
+                            at += 2
+                        }
+                        _ => return fail("a % not followed by two digits", at),
+                    }
+                }
+                Token::Ring
+            }
+            b'(' => {
+                match previous {
+                    Token::Atom | Token::Ring | Token::Close => {}
+                    Token::Open => return fail("a branch opened at the start of a branch", at),
+                    Token::Bond => return fail("a bond before a branch", at),
+                    Token::Start | Token::Dot => {
+                        return fail("a branch with no atom before it", at);
+                    }
+                }
+                depth += 1;
+                Token::Open
+            }
+            b')' => {
+                match previous {
+                    Token::Atom | Token::Ring | Token::Close => {}
+                    Token::Open => return fail("an empty branch", at),
+                    Token::Bond => return fail("a bond with no atom after it", at),
+                    _ => return fail("a ) with no branch to close", at),
+                }
+                if depth == 0 {
+                    return fail("a ) with no branch to close", at);
+                }
+                depth -= 1;
+                Token::Close
+            }
+            b'.' => {
+                match previous {
+                    Token::Atom | Token::Ring | Token::Close => {}
+                    Token::Bond => return fail("a bond with no atom after it", at),
+                    _ => return fail("an empty fragment", at),
+                }
+                if depth > 0 {
+                    return fail("a . inside a branch", at);
+                }
+                Token::Dot
+            }
+            // Not SMILES: left to the parser, which names the character.
+            _ => return Ok(()),
+        };
+        previous = token;
+        at += 1;
+    }
+    let end = at.min(bytes.len().saturating_sub(1));
+    match previous {
+        Token::Bond => fail("a bond with no atom after it", end),
+        Token::Dot => fail("an empty fragment", end),
+        Token::Open => fail("an unclosed branch", end),
+        _ if depth > 0 => fail("an unclosed branch", end),
+        _ => Ok(()),
+    }
+}
+
 fn parse_chiral_class(slice: &[u8]) -> Result<ChiralClass, SMILESParseError> {
+    // OpenSMILES numbers each class's arrangements from one: two tetrahedral,
+    // two allenal, three square planar, twenty trigonal bipyramidal and thirty
+    // octahedral. A number outside that names no arrangement.
+    let numbered = |s: &[u8], highest: u8, class: fn(u8) -> ChiralClass| {
+        match parse_number_on_end_of_chiral_class(s) {
+            Some(number) if (1..=highest).contains(&number) => Ok(class(number)),
+            _ => Err(SMILESParseError::ChiralClass(
+                String::from_utf8_lossy(s).to_string(),
+            )),
+        }
+    };
     match slice {
         s if s.starts_with(b"@@") => Ok(ChiralClass::Clockwise),
-        s if s.starts_with(b"@TH") => {
-            let number = parse_number_on_end_of_chiral_class(s);
-            Ok(ChiralClass::TH(number))
-        }
-        s if s.starts_with(b"@AL") => {
-            let number = parse_number_on_end_of_chiral_class(s);
-            Ok(ChiralClass::AL(number))
-        }
-        s if s.starts_with(b"@SP") => {
-            let number = parse_number_on_end_of_chiral_class(s);
-            Ok(ChiralClass::SP(number))
-        }
-        s if s.starts_with(b"@TB") => {
-            let number = parse_number_on_end_of_chiral_class(s);
-            Ok(ChiralClass::TB(number))
-        }
-        s if s.starts_with(b"@OH") => {
-            let number = parse_number_on_end_of_chiral_class(s);
-            Ok(ChiralClass::OH(number))
-        }
+        s if s.starts_with(b"@TH") => numbered(s, 2, ChiralClass::TH),
+        s if s.starts_with(b"@AL") => numbered(s, 2, ChiralClass::AL),
+        s if s.starts_with(b"@SP") => numbered(s, 3, ChiralClass::SP),
+        s if s.starts_with(b"@TB") => numbered(s, 20, ChiralClass::TB),
+        s if s.starts_with(b"@OH") => numbered(s, 30, ChiralClass::OH),
         s if s.starts_with(b"@") => Ok(ChiralClass::Counterclockwise),
         _ => Err(SMILESParseError::ChiralClass(
             String::from_utf8_lossy(slice).to_string(),
@@ -1172,11 +1515,18 @@ fn parse_chiral_class(slice: &[u8]) -> Result<ChiralClass, SMILESParseError> {
     }
 }
 
-fn parse_number_on_end_of_chiral_class(chiral_class: &[u8]) -> u8 {
-    let mut number = 0;
+/// The number at the end of a chirality class, or `None` when there is none
+/// or it does not fit a `u8` (`@TH999` used to overflow).
+fn parse_number_on_end_of_chiral_class(chiral_class: &[u8]) -> Option<u8> {
+    let mut number: Option<u8> = None;
     for &byte in chiral_class {
         if byte.is_ascii_digit() {
-            number = number * 10 + byte_to_number(byte);
+            number = Some(
+                number
+                    .unwrap_or(0)
+                    .checked_mul(10)?
+                    .checked_add(byte_to_number(byte))?,
+            );
         }
     }
     number
@@ -3295,7 +3645,10 @@ mod tests {
         // phenyls are substituent bonds, not bonds of a ring of marks.
         let molecule = SMILESParser::parse_smiles_single_with(
             "N=P(/c1ccccc1)(\\c2ccccc2)C",
-            SmilesParseOptions { aromaticity: None },
+            SmilesParseOptions {
+                aromaticity: None,
+                ..Default::default()
+            },
         )
         .unwrap();
         let phosphorus = 1;

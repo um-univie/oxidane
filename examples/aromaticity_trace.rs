@@ -70,7 +70,7 @@ fn main() {
         // structure as written rather than off one perception's output.
         let mut molecule = oxidane::io::SMILESParser::parse_smiles_single_with(
             &smiles,
-            oxidane::io::SmilesParseOptions { aromaticity: None },
+            oxidane::io::SmilesParseOptions { aromaticity: None, ..Default::default() },
         )
         .unwrap();
 

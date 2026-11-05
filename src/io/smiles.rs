@@ -3140,8 +3140,6 @@ mod tests {
     #[test]
     fn test_parse_smiles_with_complex_atom_and_isotope() {
         let molecules = SMILESParser::parse_smiles("C[C@](F)(Cl)[13C](Br)").unwrap();
-        println!("{:?}", molecules);
-        println!("{:?}", molecules[0].get_edges());
         assert_eq!(molecules[0].atomic_numbers.len(), 9);
         assert_eq!(molecules[0].get_atom_isotope(4).unwrap(), 13);
         assert_eq!(molecules[0].get_chiral_class(1), ChiralClass::TH(1));
@@ -3166,15 +3164,8 @@ mod tests {
     fn parse_test_file() {
         let smiles = std::fs::read_to_string("tests/smiles.txt").unwrap();
         for smile in smiles.lines() {
-            println!("Parsing: {}", smile);
-            match SMILESParser::parse_smiles(smile) {
-                Ok(_molecules) => {
-                    // println!("{:?}", molecules);
-                }
-                Err(e) => {
-                    println!("Error: {:?}", e);
-                    panic!();
-                }
+            if let Err(e) = SMILESParser::parse_smiles(smile) {
+                panic!("{smile}: {e:?}");
             }
         }
     }
@@ -3194,7 +3185,6 @@ mod tests {
         // for that). The C-C-C chain therefore matches C(C(C))COCCl.
         let molecule = SMILESParser::parse_smiles_single("C(C(C))COCCl").unwrap();
         let pattern = SMILESParser::parse_smiles_raw_single("[C][C][C]").unwrap();
-        println!("Pattern: {}", pattern.to_smiles());
         let submolecule = molecule.match_submolecule(&pattern);
         assert!(
             submolecule.is_some_and(|mappings| !mappings.is_empty()),
@@ -3206,8 +3196,6 @@ mod tests {
     fn test_ring_closure_with_charge() {
         let molecules =
             SMILESParser::parse_smiles("c1ccc2c(c1)=[NH+]C(=O)C=2Nc1ccc(C(OCCC)=O)cc1").unwrap();
-
-        println!("Molecule: {}", molecules[0].to_smiles());
         assert_eq!(molecules[0].atomic_numbers.len(), 40);
     }
 

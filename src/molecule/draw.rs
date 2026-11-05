@@ -116,11 +116,10 @@ pub trait Draw<M: Molecule> {
         let mut stack = vec![false; self.len()];
 
         for start in 0..self.len() {
-            if !visited[start] {
-                if self.has_cycle_dfs(start, None, &mut visited, &mut stack) {
+            if !visited[start]
+                && self.has_cycle_dfs(start, None, &mut visited, &mut stack) {
                     return true;
                 }
-            }
         }
         false
     }

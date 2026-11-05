@@ -105,19 +105,6 @@ impl AdjacencyMatrix {
         let bit_index = target_index % bits_per_word;
         self.matrix[word_index] |= 1 << (bits_per_word - 1 - bit_index);
     }
-    pub fn print(&self) {
-        for i in 0..self.number_of_vertices {
-            for j in 0..self.words_per_vertex {
-                let word = self.matrix[i * self.words_per_vertex + j];
-                for i in 0..self.number_of_vertices {
-                    let bit_index = 1 << (64 - 1 - i);
-                    let bit = (word & bit_index) != 0;
-                    print!("{:} ", bit as u8);
-                }
-            }
-            println!();
-        }
-    }
 }
 
 impl AdjacencyMatrix {
@@ -444,7 +431,7 @@ pub trait MoleculeGraph: MoleculeCore {
     fn adjacency_matrix(&self) -> AdjacencyMatrix {
         let number_of_atoms = self.len();
         let bits_per_word = usize::BITS as usize;
-        let words_per_atom = (number_of_atoms + bits_per_word - 1) / bits_per_word;
+        let words_per_atom = number_of_atoms.div_ceil(bits_per_word);
         let mut matrix: Vec<usize> = vec![0; words_per_atom * number_of_atoms];
         for index in 0..number_of_atoms {
             let Some(bonds) = self.get_atom_bonds(index) else {
@@ -499,7 +486,7 @@ pub trait MoleculeGraph: MoleculeCore {
         }
         let number_of_vertices = number_of_heavy_atoms + number_of_non_single_bonds;
         let bits_per_word = usize::BITS as usize;
-        let words_per_vertex = (number_of_vertices + bits_per_word - 1) / bits_per_word;
+        let words_per_vertex = number_of_vertices.div_ceil(bits_per_word);
 
         // nauty colouring (`ptn` format): a cell boundary (0) is placed after the
         // last vertex of each colour class; all other entries are 1. Heavy atoms
@@ -536,10 +523,10 @@ pub trait MoleculeGraph: MoleculeCore {
                 matrix.set(bond_vertex, source_index);
                 matrix.set(target_index, bond_vertex);
                 matrix.set(bond_vertex, target_index);
-                if let Some(order) = last_order {
-                    if order != bond_order {
-                        partition[bond_vertex - 1] = 0;
-                    }
+                if let Some(order) = last_order
+                    && order != bond_order
+                {
+                    partition[bond_vertex - 1] = 0;
                 }
                 last_order = Some(bond_order);
                 bond_vertex += 1;
@@ -916,8 +903,8 @@ pub trait MoleculeGraph: MoleculeCore {
                 continue;
             }
             let label = self.get_atom_label_with_hydrogens(index);
-            if !unique_labels.contains_key(&label) {
-                unique_labels.insert(label, next_id);
+            if let std::collections::hash_map::Entry::Vacant(e) = unique_labels.entry(label) {
+                e.insert(next_id);
                 next_id += 1;
             }
         }
@@ -938,8 +925,10 @@ pub trait MoleculeGraph: MoleculeCore {
                             ChiralType::None,
                             0,
                         );
-                        if !unique_labels.contains_key(&bond_label) {
-                            unique_labels.insert(bond_label, next_id);
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            unique_labels.entry(bond_label)
+                        {
+                            e.insert(next_id);
                             next_id += 1;
                         }
                     }
@@ -1041,8 +1030,8 @@ pub trait MoleculeGraph: MoleculeCore {
                 continue;
             }
             let label = self.get_atom_label_with_hydrogens(index);
-            if !unique_labels.contains_key(&label) {
-                unique_labels.insert(label, next_id);
+            if let std::collections::hash_map::Entry::Vacant(e) = unique_labels.entry(label) {
+                e.insert(next_id);
                 next_id += 1;
             }
         }
@@ -1063,8 +1052,10 @@ pub trait MoleculeGraph: MoleculeCore {
                             ChiralType::None,
                             0,
                         );
-                        if !unique_labels.contains_key(&bond_label) {
-                            unique_labels.insert(bond_label, next_id);
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            unique_labels.entry(bond_label)
+                        {
+                            e.insert(next_id);
                             next_id += 1;
                         }
                     }
@@ -1325,7 +1316,7 @@ pub trait MoleculeGraph: MoleculeCore {
         let (graph, atom_map, wrapper_map) = self.to_fully_indexed_graph_generic(
             |idx| self.get_atom_label_with_hydrogens(idx),
             |idx| self.atomic_numbers()[idx] == 1, // Skip explicit hydrogens
-            |bond_order| BondOrderWrapper::from(bond_order), // Use wrapper for Hash implementation
+            BondOrderWrapper::from,                // Use wrapper for Hash implementation
         );
 
         let bond_map = wrapper_map
@@ -1424,8 +1415,8 @@ pub trait MoleculeGraph: MoleculeCore {
                 continue;
             }
             let label = get_atom_label(index);
-            if !atom_label_to_id.contains_key(&label) {
-                atom_label_to_id.insert(label, atom_next_id);
+            if let std::collections::hash_map::Entry::Vacant(e) = atom_label_to_id.entry(label) {
+                e.insert(atom_next_id);
                 id_to_atom_label.insert(atom_next_id, label);
                 atom_next_id += 1;
             }
@@ -1551,8 +1542,8 @@ pub trait MoleculeGraph: MoleculeCore {
                 continue;
             }
             let label = get_atom_label(index);
-            if !atom_label_to_id.contains_key(&label) {
-                atom_label_to_id.insert(label, atom_next_id);
+            if let std::collections::hash_map::Entry::Vacant(e) = atom_label_to_id.entry(label) {
+                e.insert(atom_next_id);
                 id_to_atom_label.insert(atom_next_id, label);
                 atom_next_id += 1;
             }

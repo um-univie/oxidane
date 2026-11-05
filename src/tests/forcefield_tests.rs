@@ -255,14 +255,14 @@ mod tests {
         let mut phosphonium =
             MolecularGraph::from_smiles_single("C[P+](C)(C)C").expect("should parse");
         phosphonium.add_hydrogens();
-        assert_eq!(label_for(&phosphonium, 1).as_deref(), Some("P_3+q"));
+        assert_eq!(label_for(&phosphonium, 1), Some("P_3+q"));
 
         let mut phosphine = MolecularGraph::from_smiles_single("CP(C)C").expect("should parse");
         phosphine.add_hydrogens();
-        assert_eq!(label_for(&phosphine, 1).as_deref(), Some("P_3+3"));
+        assert_eq!(label_for(&phosphine, 1), Some("P_3+3"));
 
         let mut oxide = MolecularGraph::from_smiles_single("O=P(C)(C)C").expect("should parse");
         oxide.add_hydrogens();
-        assert_eq!(label_for(&oxide, 1).as_deref(), Some("P_3+5"));
+        assert_eq!(label_for(&oxide, 1), Some("P_3+5"));
     }
 }

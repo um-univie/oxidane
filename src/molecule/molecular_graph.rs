@@ -98,10 +98,10 @@ impl MoleculeCore for MolecularGraph {
     }
 
     fn remove_atom_extras(&mut self, atom_index: usize) {
-        if let Some(partial_charges) = self.partial_charges.as_mut() {
-            if atom_index < partial_charges.len() {
-                partial_charges.remove(atom_index);
-            }
+        if let Some(partial_charges) = self.partial_charges.as_mut()
+            && atom_index < partial_charges.len()
+        {
+            partial_charges.remove(atom_index);
         }
     }
 
@@ -199,7 +199,7 @@ impl MoleculeCore for MolecularGraph {
             .iter()
             .any(|atom| atom.chiral_class != ChiralClass::None)
         {
-            chiral_classes = Some(atoms.into_iter().map(|atom| atom.chiral_class).collect());
+            chiral_classes = Some(atoms.iter().map(|atom| atom.chiral_class).collect());
         }
 
         MolecularGraph {
@@ -445,15 +445,15 @@ impl MolecularGraph {
             if let Some(&group_idx) = atom_to_group.get(&atom_idx) {
                 for bond in bonds {
                     let target_atom = bond.target();
-                    if let Some(&target_group_idx) = atom_to_group.get(&target_atom) {
-                        if group_idx != target_group_idx {
-                            // This bond crosses group boundaries, which would break it
-                            return Err(SplitError::BondWouldBreak {
-                                atom1: atom_idx,
-                                atom2: target_atom,
-                                bond_order: bond.bond_order(),
-                            });
-                        }
+                    if let Some(&target_group_idx) = atom_to_group.get(&target_atom)
+                        && group_idx != target_group_idx
+                    {
+                        // This bond crosses group boundaries, which would break it
+                        return Err(SplitError::BondWouldBreak {
+                            atom1: atom_idx,
+                            atom2: target_atom,
+                            bond_order: bond.bond_order(),
+                        });
                     }
                 }
             }

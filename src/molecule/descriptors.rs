@@ -356,7 +356,7 @@ pub trait MolecularDescriptors: MoleculeCore {
                 _ => (),
             }
         }
-        halogens.iter().any(|&count| count == 3) || methyls == 3
+        halogens.contains(&3) || methyls == 3
     }
 
     /// Whether an atom is one end of an amide-like bond: a three-connected

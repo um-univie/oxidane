@@ -249,7 +249,7 @@ fn normalization_scales_the_quantities_and_leaves_the_indicators_alone() {
 
     for (row, (before, after)) in batch
         .atom_features
-        .chunks_exact(ATOM_FEATURE_WIDTH)
+        .as_chunks::<ATOM_FEATURE_WIDTH>().0.iter()
         .zip(scaled.chunks_exact(ATOM_FEATURE_WIDTH))
         .enumerate()
     {
@@ -264,7 +264,7 @@ fn normalization_scales_the_quantities_and_leaves_the_indicators_alone() {
     // The mass column now has mean zero and unit deviation.
     let mass = ATOM_CONTINUOUS_COLUMNS[0];
     let masses: Vec<f32> = scaled
-        .chunks_exact(ATOM_FEATURE_WIDTH)
+        .as_chunks::<ATOM_FEATURE_WIDTH>().0.iter()
         .map(|row| row[mass])
         .collect();
     let mean = masses.iter().sum::<f32>() / masses.len() as f32;
@@ -888,7 +888,7 @@ fn descriptor_scaling_centres_every_column() {
     stats.apply(&mut scaled);
     for column in 0..MOLECULE_FEATURE_WIDTH {
         let values: Vec<f32> = scaled
-            .chunks_exact(MOLECULE_FEATURE_WIDTH)
+            .as_chunks::<MOLECULE_FEATURE_WIDTH>().0.iter()
             .map(|row| row[column])
             .collect();
         let mean = values.iter().sum::<f32>() / values.len() as f32;
@@ -1066,7 +1066,7 @@ fn bond_feature_scaling_centres_the_distance_column_and_leaves_indicators_alone(
     stats.apply(&mut scaled);
     for (edge, (before, after)) in batch
         .bond_features
-        .chunks_exact(BOND_FEATURE_WIDTH)
+        .as_chunks::<BOND_FEATURE_WIDTH>().0.iter()
         .zip(scaled.chunks_exact(BOND_FEATURE_WIDTH))
         .enumerate()
     {
@@ -1080,7 +1080,7 @@ fn bond_feature_scaling_centres_the_distance_column_and_leaves_indicators_alone(
 
     let distance = BOND_CONTINUOUS_COLUMNS[0];
     let distances: Vec<f32> = scaled
-        .chunks_exact(BOND_FEATURE_WIDTH)
+        .as_chunks::<BOND_FEATURE_WIDTH>().0.iter()
         .map(|row| row[distance])
         .collect();
     let mean = distances.iter().sum::<f32>() / distances.len() as f32;

@@ -119,7 +119,7 @@ pub fn maximum_matching_from(
             continue;
         }
         if let Some(last) = state.find_augmenting_path(root, &matched) {
-            augment(&mut matched, &state.parent, last);
+            augment(&mut matched, state.parent, last);
         }
     }
     matched
@@ -1020,7 +1020,7 @@ impl Factor {
                     continue;
                 }
                 if let Some(last) = state.find_augmenting_path(root, &matched) {
-                    augment(&mut matched, &state.parent, last);
+                    augment(&mut matched, state.parent, last);
                 }
             }
         }
@@ -1171,7 +1171,7 @@ impl Factor {
             let mut state = self.search();
             match state.find_augmenting_path(root, &matched) {
                 Some(last) => {
-                    augment(&mut matched, &state.parent, last);
+                    augment(&mut matched, state.parent, last);
                     true
                 }
                 None => false,

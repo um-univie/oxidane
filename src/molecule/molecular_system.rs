@@ -111,17 +111,6 @@ impl MolecularSystem {
             .iter_mut()
             .for_each(|molecule| molecule.add_hydrogens())
     }
-
-    // pub fn find_dihedrals(&mut self) {
-    //     self.molecules
-    //         .iter_mut()
-    //         .for_each(|molecule| molecule.find_dihedrals())
-    // }
-    // pub fn par_find_dihedrals(&mut self) {
-    //     self.molecules
-    //         .par_iter_mut()
-    //         .for_each(|molecule| molecule.par_find_dihedrals())
-    // }
 }
 
 /// Extracts atom information and coordinates from a PDB record line.

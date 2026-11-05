@@ -528,7 +528,8 @@ pub trait MoleculeCore {
 
     fn get_chiral_type(&self, atom_index: usize) -> ChiralType {
         let chiral_class = self.get_chiral_class(atom_index);
-        let chiral_type = match chiral_class {
+
+        match chiral_class {
             ChiralClass::None => ChiralType::None,
             ChiralClass::Clockwise => ChiralType::TH,
             ChiralClass::Counterclockwise => ChiralType::TH,
@@ -539,8 +540,7 @@ pub trait MoleculeCore {
             ChiralClass::TH(_) => ChiralType::TH,
             ChiralClass::CisTransClockwise => ChiralType::CisTrans,
             ChiralClass::CisTransCounterclockwise => ChiralType::CisTrans,
-        };
-        chiral_type
+        }
     }
 
     fn get_atom_bonds(&self, atom_index: usize) -> Option<&[BondTarget]> {
@@ -656,9 +656,8 @@ pub trait MoleculeCore {
     /// assert_eq!(molecule.has_stereochemistry(), true);
     /// ```
     fn has_stereochemistry(&self) -> bool {
-        self.chiral_classes().map_or(false, |classes| {
-            classes.iter().any(|class| class != &ChiralClass::None)
-        })
+        self.chiral_classes()
+            .is_some_and(|classes| classes.iter().any(|class| class != &ChiralClass::None))
     }
 
     fn molecular_formula(&self) -> MolecularFormula
@@ -669,9 +668,8 @@ pub trait MoleculeCore {
     }
 
     fn is_chiral(&self) -> bool {
-        self.chiral_classes().map_or(false, |classes| {
-            classes.iter().any(|class| class != &ChiralClass::None)
-        })
+        self.chiral_classes()
+            .is_some_and(|classes| classes.iter().any(|class| class != &ChiralClass::None))
     }
 
     /// Gets the path of atoms in the order they would be visited during SMILES string generation
@@ -974,7 +972,7 @@ pub trait MoleculeCore {
 
     /// Returns true if the molecule contains explicitly defined hydrogen atoms
     fn has_explicit_hydrogens(&self) -> bool {
-        self.atomic_numbers().iter().any(|&num| num == 1)
+        self.atomic_numbers().contains(&1)
     }
 
     fn get_aromatic_atoms(&self) -> Vec<usize> {
@@ -1032,34 +1030,6 @@ pub trait MoleculeCore {
                 21..=30 | 39..=48 | 57..=80 | 89..=112
             )
         })
-    }
-
-    fn aromatize_metallocenic_system(&mut self, _system: &BitSet) {
-        // // First, identify the metal center
-        // let metal_center = system.iter()
-        //     .flat_map(|cycle| cycle.iter())
-        //     .find(|&&atom_idx| {
-        //         let atomic_number = self.atomic_numbers()[atom_idx];
-        //         matches!(atomic_number, 21..=30 | 39..=48 | 57..=80 | 89..=112)
-        //     });
-
-        // if let Some(&metal_idx) = metal_center {
-        //     // Convert all bonds in cyclopentadienyl rings to aromatic
-        //     for cycle in system {
-        //         if cycle.len() == 5 { // Cp rings are typically 5-membered
-        //             for i in 0..cycle.len() {
-        //                 let atom1 = cycle[i];
-        //                 let atom2 = cycle[(i + 1) % cycle.len()];
-        //                 self.change_bond_order(atom1, atom2, BondOrder::Aromatic);
-
-        //                 // Add coordinate bond from metal to ring atoms
-        //                 if atom1 != metal_idx {
-        //                     self.change_bond_order(metal_idx, atom1, BondOrder::Coordinate);
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
     }
 
     fn number_of_bond_order(&self, atom_idx: usize, bond_order: BondOrder) -> usize {

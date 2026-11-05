@@ -2610,7 +2610,7 @@ fn a_sharded_step_is_the_step_one_thread_takes() {
         let molecule = parse(one);
         let features = graph_features(&molecule);
         let atom_targets: Vec<Option<f64>> = (0..features.atom_count)
-            .map(|row| (row % 3 != 0).then(|| row as f64 * 0.1))
+            .map(|row| (row % 3 != 0).then_some(row as f64 * 0.1))
             .collect();
         let targets = [
             Some(index as f64),

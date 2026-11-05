@@ -715,7 +715,7 @@ impl Molecule3D {
                     .collect(),
             );
         }
-        let atom_bonds = atoms.iter().map(|atom| atom.bonds().clone()).collect();
+        let atom_bonds = atoms.iter().map(|atom| *atom.bonds()).collect();
         let positions: Vec<Vector3D> = atoms
             .iter()
             .map(|atom| atom.position_vector.unwrap_or_default())
@@ -726,7 +726,7 @@ impl Molecule3D {
             .iter()
             .any(|atom| atom.chiral_class != ChiralClass::None)
         {
-            chirals = Some(atoms.into_iter().map(|atom| atom.chiral_class).collect());
+            chirals = Some(atoms.iter().map(|atom| atom.chiral_class).collect());
         }
         Molecule3D {
             atomic_numbers,

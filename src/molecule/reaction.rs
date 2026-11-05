@@ -1579,23 +1579,23 @@ impl ReactionSmarts {
                 continue;
             };
             let expression = &self.products.pattern.atoms[pattern_atom];
-            if let Some(atomic_number) = element_of(expression) {
-                if product.atomic_numbers()[atom] != atomic_number {
-                    product.atomic_numbers_mut()[atom] = atomic_number;
-                    touched.push(atom);
-                    // RDKit copies an atom whose element the template changes
-                    // from the template, so a charge it does not state is
-                    // none: `[O:1]>>[S:1]` makes a methoxide a thiol.
-                    if self.semantics == Semantics::Rdkit && charge_of(expression).is_none() {
-                        product.charges_mut()[atom] = 0;
-                    }
+            if let Some(atomic_number) = element_of(expression)
+                && product.atomic_numbers()[atom] != atomic_number
+            {
+                product.atomic_numbers_mut()[atom] = atomic_number;
+                touched.push(atom);
+                // RDKit copies an atom whose element the template changes
+                // from the template, so a charge it does not state is
+                // none: `[O:1]>>[S:1]` makes a methoxide a thiol.
+                if self.semantics == Semantics::Rdkit && charge_of(expression).is_none() {
+                    product.charges_mut()[atom] = 0;
                 }
             }
-            if let Some(charge) = charge_of(expression) {
-                if product.charges()[atom] != charge {
-                    product.charges_mut()[atom] = charge;
-                    touched.push(atom);
-                }
+            if let Some(charge) = charge_of(expression)
+                && product.charges()[atom] != charge
+            {
+                product.charges_mut()[atom] = charge;
+                touched.push(atom);
             }
             if let Some(isotope) = isotope_of(expression) {
                 let atom_count = product.atomic_numbers().len();

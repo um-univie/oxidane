@@ -139,7 +139,7 @@ impl Restraints<'_> {
         scratch.fill(Vector3D::default());
         let energy = CHIRALITY_WEIGHT * self.stereo.energy_and_gradient(&projection, &mut scratch);
         for slot in scratch.iter_mut() {
-            *slot = *slot * CHIRALITY_WEIGHT;
+            *slot *= CHIRALITY_WEIGHT;
         }
         if let Some(gradient) = gradient {
             for (slot, part) in gradient.iter_mut().zip(scratch.iter()) {

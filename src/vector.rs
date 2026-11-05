@@ -145,7 +145,7 @@ impl Default for Vector3D {
         Vector3D::new(0.0, 0.0, 0.0)
     }
 }
-impl<'a> Mul<f64> for &'a Vector3D {
+impl Mul<f64> for &Vector3D {
     type Output = Vector3D;
 
     fn mul(self, scalar: f64) -> Vector3D {
@@ -157,7 +157,7 @@ impl<'a> Mul<f64> for &'a Vector3D {
     }
 }
 
-impl<'a> Div<f64> for &'a Vector3D {
+impl Div<f64> for &Vector3D {
     type Output = Vector3D;
 
     fn div(self, scalar: f64) -> Vector3D {
@@ -320,7 +320,7 @@ pub(crate) fn cap_derivatives<const N: usize>(mut derivatives: [Vector3D; N]) ->
     if largest > MAX_GEOMETRIC_DERIVATIVE {
         let scale = MAX_GEOMETRIC_DERIVATIVE / largest;
         for derivative in &mut derivatives {
-            *derivative = *derivative * scale;
+            *derivative *= scale;
         }
     }
     derivatives
@@ -778,7 +778,7 @@ impl Vector3D {
             ],
         ];
 
-        let rotated_vector = Vector3D {
+        Vector3D {
             x: self.x * rotation_matrix[0][0]
                 + self.y * rotation_matrix[0][1]
                 + self.z * rotation_matrix[0][2],
@@ -788,9 +788,7 @@ impl Vector3D {
             z: self.x * rotation_matrix[2][0]
                 + self.y * rotation_matrix[2][1]
                 + self.z * rotation_matrix[2][2],
-        };
-
-        rotated_vector
+        }
     }
 
     pub fn rotate_around_x(&self, angle: f64) -> Vector3D {

@@ -458,13 +458,7 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
             }
             count += match bond.bond_order() {
                 BondOrder::Double => 2,
-                BondOrder::Aromatic => {
-                    if atomic_number == 6 {
-                        1
-                    } else {
-                        0
-                    }
-                }
+                BondOrder::Aromatic if atomic_number == 6 => 1,
                 _ => 0,
             };
         }
@@ -605,9 +599,9 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
             let aromaticity_type = self.determine_aromaticity_type(&system);
             match aromaticity_type {
                 AromaticityType::Aromatic => self.aromatize_system(&system),
-                AromaticityType::MoebiusAromatic => (), //self.aromatize_moebius_system(&system),
+                AromaticityType::MoebiusAromatic => (),
                 AromaticityType::AntiAromatic => continue,
-                AromaticityType::Metallocenic => (), //self.aromatize_metallocenic_system(&system),
+                AromaticityType::Metallocenic => (),
                 AromaticityType::NonAromatic => continue,
             }
         }

@@ -513,6 +513,137 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
     molecule.atomic_numbers()[atom] == 1 && molecule.get_isotope(atom).is_none()
 }
 
+/// A copy of `molecule` with every oxide on a phosphorus, sulfur, arsenic,
+/// selenium, antimony or tellurium written the one way it is conventionally
+/// drawn, or `None` when every one already is.
+///
+/// That is double-bonded -- `C[S+](C)[O-]` as `CS(C)=O`, `[S+2]([O-])([O-])`
+/// as `S(=O)=O`, `C[P+](C)(C)[O-]` as `CP(C)(C)=O` -- except on a
+/// phosphorus, arsenic or antimony that already has a double bond to something
+/// other than an oxide, where it is charge-separated: `CC=P(C)=O` as
+/// `CC=[P+](C)[O-]`.
+///
+/// The two writings are one compound, but the bond between such an oxygen and
+/// its centre is frozen -- see [`is_chalcogen_oxide`] -- so its order survives
+/// erasure, and DMSO written either way had two keys and two canonical
+/// tautomers. Nitrogen is left alone: it has no valence of five to rewrite an
+/// N-oxide into.
+///
+/// The exception is there for the other double bond. An atom with two double
+/// bonds is no end of a cis/trans bond, so `CC=P(C)=O` cannot say which side
+/// of the `C=P` its methyl is on, while `C/C=[P+](/C)[O-]` can. Writing that
+/// oxide double dropped the geometry PubChem gave, or turned it over
+/// depending on the order the atoms came in; and in a ring it made a
+/// phosphinine oxide aromatic as `p1(=O)ccccc1`, which the SMILES reader
+/// cannot kekulize. RDKit separates the same oxides, but only where the other
+/// double bond goes to an atom with substituents, which is where a geometry
+/// can be; here it is any, because the double bond is a tautomer's to move. In
+/// `NC(=O)CC(O)=C[P+](=N)[O-]` it moves from the `=NH` to the `=C`, and a test
+/// that asked which of them held it answered differently for the input and for
+/// its canonical tautomer.
+fn with_chalcogen_oxides_conventional<M: Molecule + Clone + ?Sized>(molecule: &M) -> Option<M> {
+    let centre =
+        |atom: usize| matches!(molecule.atomic_numbers()[atom], 15 | 16 | 33 | 34 | 51 | 52);
+    let oxygen =
+        |atom: usize| molecule.atomic_numbers()[atom] == 8 && heavy_degree(molecule, atom) == 1;
+    // Asked of a Kekule form. An aromatic bond does not say which side of the
+    // phosphorus the π bond is on: `[p+]1([O-])ccccc1` has it in the ring, and
+    // the `[P+](=O)` of a dibenzoxaphosphinine, which perception also calls
+    // aromatic, has it on the oxygen.
+    let localized;
+    let kekule = if (0..molecule.atomic_numbers().len()).any(|atom| {
+        matches!(molecule.atomic_numbers()[atom], 15 | 33 | 51)
+            && molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+                bonds
+                    .iter()
+                    .any(|bond| bond.bond_order() == BondOrder::Aromatic)
+            })
+    }) {
+        let mut copy = molecule.clone();
+        let _ = copy.localize_aromatic_bonds();
+        localized = copy;
+        &localized
+    } else {
+        molecule
+    };
+    let ylide = |atom: usize| {
+        matches!(kekule.atomic_numbers()[atom], 15 | 33 | 51)
+            && kekule.get_atom_bonds(atom).is_some_and(|bonds| {
+                bonds
+                    .iter()
+                    .any(|bond| bond.bond_order() == BondOrder::Double && !oxygen(bond.target()))
+            })
+    };
+    let mut doubled: Vec<(usize, usize)> = Vec::new();
+    let mut separated: Vec<(usize, usize)> = Vec::new();
+    for atom in 0..molecule.atomic_numbers().len() {
+        if !centre(atom) {
+            continue;
+        }
+        let Some(bonds) = molecule.get_atom_bonds(atom) else {
+            continue;
+        };
+        let charge = molecule.get_atom_charge(atom);
+        if ylide(atom) {
+            // A charged one stays as it is. `C#[P+]O` has the tautomer
+            // `C=[P+]=O`, and separating that oxide makes a dication of it.
+            if charge != 0 {
+                continue;
+            }
+            separated.extend(
+                bonds
+                    .iter()
+                    .filter(|bond| {
+                        bond.bond_order() == BondOrder::Double
+                            && oxygen(bond.target())
+                            && molecule.get_atom_charge(bond.target()) == 0
+                    })
+                    .map(|bond| (atom, bond.target())),
+            );
+            continue;
+        }
+        if charge <= 0 {
+            continue;
+        }
+        // Which oxides take the double bonds has to be the molecule's choice,
+        // not the input's order: with `[17O-]` and `[18O-]` on one centre the
+        // label landed on whichever came first, and the canonical SMILES,
+        // which lists them the other way round, keyed differently. Oxygens
+        // alike in all but position are equivalent, so the lightest go first.
+        let mut oxides: Vec<usize> = bonds
+            .iter()
+            .filter(|bond| {
+                bond.bond_order() == BondOrder::Single
+                    && oxygen(bond.target())
+                    && molecule.get_atom_charge(bond.target()) == -1
+            })
+            .map(|bond| bond.target())
+            .collect();
+        oxides.sort_by_key(|&oxygen| molecule.get_isotope(oxygen));
+        doubled.extend(
+            oxides
+                .into_iter()
+                .take(charge as usize)
+                .map(|oxygen| (atom, oxygen)),
+        );
+    }
+    if doubled.is_empty() && separated.is_empty() {
+        return None;
+    }
+    let mut copy = molecule.clone();
+    for (centre, oxygen) in doubled {
+        set_bond_order(&mut copy, centre, oxygen, BondOrder::Double);
+        *copy.get_atom_charge_mut(centre) -= 1;
+        *copy.get_atom_charge_mut(oxygen) = 0;
+    }
+    for (centre, oxygen) in separated {
+        set_bond_order(&mut copy, centre, oxygen, BondOrder::Single);
+        *copy.get_atom_charge_mut(centre) += 1;
+        *copy.get_atom_charge_mut(oxygen) = -1;
+    }
+    Some(copy)
+}
+
 /// Whether the bond is a sulfonyl, sulfinyl or phosphoryl oxygen's.
 ///
 /// `S=O` on a sulfur with three σ bonds already does not become `S-OH` under
@@ -521,53 +652,6 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
 /// be written with: asking whether it is *double* would make a sulfonic acid's
 /// three oxygens answer differently depending on which of them was carrying the
 /// hydrogen, and the same compound would key two ways.
-/// A copy of `molecule` with every charge-separated oxide on a phosphorus,
-/// sulfur, arsenic, selenium, antimony or tellurium written double-bonded
-/// instead: `C[S+](C)[O-]` as `CS(C)=O`, `[S+2]([O-])([O-])` as `S(=O)=O`,
-/// `C[P+](C)(C)[O-]` as `CP(C)(C)=O`. `None` when there is none to rewrite.
-///
-/// The two writings are one compound, but the bond between such an oxygen and
-/// its centre is frozen -- see [`is_chalcogen_oxide`] -- so its order survives
-/// erasure, and DMSO written either way had two keys and two canonical
-/// tautomers. Nitrogen is left alone: it has no valence of five to rewrite an
-/// N-oxide into.
-fn with_chalcogen_oxides_double<M: Molecule + Clone + ?Sized>(molecule: &M) -> Option<M> {
-    let centre =
-        |atom: usize| matches!(molecule.atomic_numbers()[atom], 15 | 16 | 33 | 34 | 51 | 52);
-    let oxide = |atom: usize| {
-        molecule.atomic_numbers()[atom] == 8
-            && molecule.get_atom_charge(atom) == -1
-            && heavy_degree(molecule, atom) == 1
-    };
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
-    for atom in 0..molecule.atomic_numbers().len() {
-        let charge = molecule.get_atom_charge(atom);
-        if charge <= 0 || !centre(atom) {
-            continue;
-        }
-        let Some(bonds) = molecule.get_atom_bonds(atom) else {
-            continue;
-        };
-        pairs.extend(
-            bonds
-                .iter()
-                .filter(|bond| bond.bond_order() == BondOrder::Single && oxide(bond.target()))
-                .take(charge as usize)
-                .map(|bond| (atom, bond.target())),
-        );
-    }
-    if pairs.is_empty() {
-        return None;
-    }
-    let mut copy = molecule.clone();
-    for (centre, oxygen) in pairs {
-        set_bond_order(&mut copy, centre, oxygen, BondOrder::Double);
-        *copy.get_atom_charge_mut(centre) -= 1;
-        *copy.get_atom_charge_mut(oxygen) = 0;
-    }
-    Some(copy)
-}
-
 fn is_chalcogen_oxide<M: Molecule + ?Sized>(molecule: &M, atom: usize, target: usize) -> bool {
     let is_centre = |index: usize| {
         matches!(
@@ -1166,7 +1250,7 @@ pub fn erased_skeleton<M: Molecule + Clone + ToSMILES>(
     // every Kekule structure a ring has, so which one localization picks does
     // not matter.
     let rewritten;
-    let molecule = match with_chalcogen_oxides_double(molecule) {
+    let molecule = match with_chalcogen_oxides_conventional(molecule) {
         Some(copy) => {
             rewritten = copy;
             &rewritten

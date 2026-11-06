@@ -1439,6 +1439,46 @@ fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
     }
     // An N-oxide has no double-bonded form to rewrite into.
     assert_eq!(normalized("[O-][n+]1ccccc1"), "[O-][n+]1ccccc1");
+    // Oxides that differ only in their labels are rewritten the same way
+    // whichever order they are listed in.
+    assert_eq!(key("C[P+](C)([17O-])[18O-]"), key("C[P+](C)([18O-])[17O-]"));
+}
+
+/// A phosphorus that already has a double bond keeps its oxide charge-separated.
+/// Written double, it has two, and an atom with two double bonds is no end of
+/// a cis/trans bond: the geometry of `C/C=[P+](/C)\[O-]` came back dropped or
+/// turned over depending on atom order, and a phosphinine oxide came back as
+/// `p1(=O)`, which the SMILES reader cannot kekulize.
+#[test]
+fn a_phosphorus_with_a_double_bond_keeps_its_oxide_separated() {
+    let (z, e) = ("C/C=[P+](/C)\\[O-]", "C/C=[P+](\\C)\\[O-]");
+    assert_ne!(normalized(z), normalized(e));
+    for smiles in [z, e] {
+        let once = normalized(smiles);
+        assert_eq!(normalized(&once), once, "{smiles}");
+        assert_eq!(key(&once), key(smiles), "{smiles}");
+    }
+    for (double, separated) in [
+        ("CC=P(C)=O", "CC=[P+](C)[O-]"),
+        ("C=P(C)=O", "C=[P+](C)[O-]"),
+        ("O=P1=CC=CC=C1", "[O-][P+]1=CC=CC=C1"),
+    ] {
+        assert_eq!(key(double), key(separated), "{double}");
+        assert_eq!(normalized(double), normalized(separated), "{double}");
+    }
+    let ring = normalized("C1=CC=C2C(=C1)N=C3C=C(C=CC3=[P+]2[O-])Br");
+    assert!(MolecularGraph::from_smiles_single(&ring).is_ok(), "{ring}");
+    // A `[P+](=O)` whose ring perception calls aromatic has its π bond on the
+    // oxygen, and keeps it there.
+    let oxaphosphinine = normalized("C1=CC=C2C(=C1)C3=CC=CC=C3[P+](=O)O2");
+    assert!(
+        MolecularGraph::from_smiles_single(&oxaphosphinine).is_ok(),
+        "{oxaphosphinine}"
+    );
+    // The double bond is a tautomer's to move, from the `=NH` to the `=C`
+    // here, and the oxide is written the same way either side of the move.
+    let moved = normalized("NC(=O)C/C(O)=C/[P+](=N)[O-]");
+    assert_eq!(normalized(&moved), moved);
 }
 
 fn reduced_key(smiles: &str) -> String {

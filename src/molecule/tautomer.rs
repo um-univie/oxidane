@@ -1214,6 +1214,15 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
 /// bring is their measured valence, which is what stops the solver putting π
 /// through a sulfone's sulfur or a fifth bond on that phosphorus.
 ///
+/// An atom is reachable when it is in the group or two of its ring neighbours
+/// are. It used to be reachable from one, with the carbons beside it, when it
+/// had four heavy neighbours and a π bond in the ring as written, and that read
+/// the writing: `C1C(=O)NC(=O)C=S1(=O)O` pulled its sulfur in and normalized to
+/// the sulfone `S1(=O)(=O)CC(=O)NC(O)=C1`, whose sulfur has no ring π bond to
+/// be pulled in by, so the two had two keys. A hub conducts to no carbon (see
+/// [`is_hub`]), and pulling one in for every ring instead let the solver write
+/// a plain cyclic sulfone as `S(O)(=O)=C`.
+///
 /// Cheap to skip, and skipped for nearly every molecule: a group has to own a
 /// ring bond and touch a ring bond it does not own before the ring set is worth
 /// computing. An aromatic ring whose atoms all conduct is owned entire, so a
@@ -1252,47 +1261,24 @@ fn close_over_rings<M: Molecule + ?Sized>(
     // Work in the induced graph of chemically reachable atoms, rather than
     // choosing one shortest cycle per bond (shortest paths can tie). Cyclic
     // connectivity of this graph is independent of atom and neighbour order.
-    let demands_pi: Vec<bool> = (0..molecule.len())
-        .map(|atom| {
-            heavy_degree(molecule, atom) >= 4
-                && molecule
-                    .get_atom_bonds(atom)
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|bond| {
-                        cyclic.contains(&crate::molecule::utils::order_tuple(atom, bond.target()))
-                            && !matches!(
-                                bond.bond_order(),
-                                BondOrder::Single | BondOrder::Up | BondOrder::Down
-                            )
-                    })
-        })
-        .collect();
     for group in &mut groups {
         let members: FxHashSet<usize> = group.atoms.iter().copied().collect();
         let eligible: Vec<bool> = (0..molecule.len())
             .map(|atom| {
-                if members.contains(&atom) {
-                    return true;
-                }
-                let neighbours: Vec<usize> = molecule
-                    .get_atom_bonds(atom)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|bond| bond.target())
-                    .filter(|&target| {
-                        cyclic.contains(&crate::molecule::utils::order_tuple(atom, target))
-                    })
-                    .collect();
-                let reached = neighbours
-                    .iter()
-                    .filter(|target| members.contains(target))
-                    .count();
-                reached >= 2
-                    || (demands_pi[atom] && reached > 0)
-                    || (molecule.atomic_numbers()[atom] == 6
-                        && heavy_degree(molecule, atom) <= 3
-                        && neighbours.iter().any(|&target| demands_pi[target]))
+                members.contains(&atom)
+                    || molecule
+                        .get_atom_bonds(atom)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|bond| {
+                            members.contains(&bond.target())
+                                && cyclic.contains(&crate::molecule::utils::order_tuple(
+                                    atom,
+                                    bond.target(),
+                                ))
+                        })
+                        .count()
+                        >= 2
             })
             .collect();
         let mut reachable = crate::molecule::MolecularGraph::default();

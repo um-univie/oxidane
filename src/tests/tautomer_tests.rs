@@ -461,6 +461,25 @@ fn a_hypervalent_ring_centre_keeps_one_group() {
     );
 }
 
+/// A ring through a hub closes the same way whichever writing it arrives in.
+/// PubChem CID 90962358 draws a glutarimide's sulfone as `C=S1(=O)O`, and CID
+/// 145219779 a trithiole's as `S(=S=S(=O)N)(=O)N`. A ring bond written double
+/// pulled the hub into the group, and the normal form, which writes it single,
+/// did not, so each came out with a key its own normal form did not share.
+#[test]
+fn a_ring_hub_closes_the_same_whichever_bond_is_written_double() {
+    for smiles in [
+        "C1C(=O)NC(=O)C=S1(=O)O",
+        "S1(=O)(=O)CC(=O)NC(O)=C1",
+        "C1=CC(=NC=C1C2=C(C3=C(C=C2)S(=S=S3(=O)N)(=O)NCCCO)C4=NNN=N4)N",
+        "CC1=CP2(=C(C(=C(C(=C(C2C(=O)OC)C(=O)OC)C(=O)OC)C(=O)OC)C(=O)OC)C(=O)OC)C=C1C",
+    ] {
+        let normal = normalized(smiles);
+        assert_eq!(normalized(&normal), normal, "{smiles}");
+        assert_eq!(key(&normal), key(smiles), "{smiles} gave {normal}");
+    }
+}
+
 /// The two halves have to agree: a molecule and its normalization are the same
 /// compound, so they share a key.
 #[test]

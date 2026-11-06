@@ -1613,6 +1613,16 @@ fn a_hub_charge_is_the_compound_s_not_the_writing_s() {
         assert_eq!(key(charged), key(neutral), "{charged}");
         assert_eq!(normalized(charged), normalized(neutral), "{charged}");
     }
+    // Where neutral the hub's π would spill onto a bridge, `normalize` keeps
+    // the charge where it is written, and writings that put it on the hub and
+    // on a ligand normalize apart. They key together all the same.
+    for (charged, neutral) in [
+        ("C[S+](C)(O)=NC", "CS(C)(=O)=[NH+]C"),
+        ("CS(C)(=[OH+])=NC", "CS(C)(=O)=[NH+]C"),
+        ("[P+](OC)(OC)=O", "P(=[O+]C)(OC)=O"),
+    ] {
+        assert_eq!(key(charged), key(neutral), "{charged}");
+    }
     for smiles in [
         "CC[P+](=O)O",
         "C[P+](C)(C)O",
@@ -1621,6 +1631,7 @@ fn a_hub_charge_is_the_compound_s_not_the_writing_s() {
         "CCCCCCC(O)(P(=O)(O)O)[32P](=O)(O)O",
         "C1=CC=C2C(=C1)O[P-]3(O2)(OC4=CC=CC=C4O3)(O)Cl",
         "C#[S-](N)O",
+        "C1=CC2=CC=C1O[P+](=O)O[P+](=O)O2",
     ] {
         let normal = normalized(smiles);
         assert!(
@@ -1629,6 +1640,20 @@ fn a_hub_charge_is_the_compound_s_not_the_writing_s() {
         );
         assert_eq!(normalized(&normal), normal, "{smiles}");
         assert_eq!(key(&normal), key(smiles), "{smiles}");
+    }
+    // PubChem's H-phosphonates come back as drawn, not as `P(=[O+]C)`, and an
+    // onium the solver puts beside such a hub, written back onto it, does not
+    // move the key, which pools the hub's charge either way.
+    for smiles in [
+        "[P+](OC)(OC)=O",
+        "CCCCCCCC=CCCC1=CC=C(C=C1)O[P+](=O)O",
+        "C[OH+]C1=CC(=CC(=C1)C2=CC=CC=C2)O[SH+](=O)C(F)(F)F",
+        "C1=CC=C(C=C1)[SH+](=S(=O)=O)C2=CC=CC=C2",
+    ] {
+        let normal = normalized(smiles);
+        assert!(!normal.contains("[O+]"), "{smiles} gave {normal}");
+        assert_eq!(normalized(&normal), normal, "{smiles}");
+        assert_eq!(key(&normal), key(smiles), "{smiles} gave {normal}");
     }
     // A phosphonous and a phosphinic acid on one carbon are the same atom
     // once erased, but for the valence each is held to; which of them holds

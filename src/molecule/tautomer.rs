@@ -1490,6 +1490,17 @@ pub fn erased_skeleton<M: Molecule + Clone + ToSMILES>(
     molecule: &M,
     rules: &TautomerRules,
 ) -> (M, TautomericGroups) {
+    erase(molecule, rules, false)
+}
+
+/// [`erased_skeleton`], or with `for_a_structure` the erasure [`normalize`]
+/// places its totals on, which leaves one more kind of hub its charge; see
+/// below.
+fn erase<M: Molecule + Clone + ToSMILES>(
+    molecule: &M,
+    rules: &TautomerRules,
+    for_a_structure: bool,
+) -> (M, TautomericGroups) {
     // Each atom's valence as the input actually uses it, measured before
     // anything is erased. For an atom that is not an endpoint this is fixed by
     // its element and charge -- a neutral carbon spends four however its π bond
@@ -1607,7 +1618,19 @@ pub fn erased_skeleton<M: Molecule + Clone + ToSMILES>(
     // with its charge pooled no assignment existed. And so does a hub whose
     // charge is what lets it hold its bonds at all: the six-bonded `[P-]` of a
     // spirophosphorane is no neutral phosphorus, and neither is the `[S-]` of
-    // `C#[S-](N)O`, whose triple bond no group moves.
+    // `C#[S-](N)O`, whose triple bond no group moves. Nor is a hub neutral
+    // whose π would then not fit on its terminal ligands, one unit each, and
+    // spill onto a bridging one as an onium: PubChem writes H-phosphonates as
+    // a three-coordinate `[P+](=O)` with the P-H left off, one terminal oxygen
+    // for two units, and pooled, `[P+](OC)(OC)=O` normalized to
+    // `P(=[O+]C)(OC)=O`. Between two aryl ethers, in a pyrophosphonate
+    // cyclophane, that `[O+]=P` read back as a quinoid and normalized to
+    // something else again. In a structure, that is: the key pools the charge
+    // all the same. `[P+](OC)(OC)=O` and `P(=[O+]C)(OC)=O` are one compound
+    // written two ways, and so are `C[S+](C)(O)=NC` and `CS(C)(=O)=[NH+]C`;
+    // kept in the key, the charge told them apart, and an onium the solver put
+    // on a terminal oxygen beside such a hub, written back onto it, moved the
+    // key.
     let mut groups = groups;
     let mut used = used;
     let mut pooled_hubs: Vec<usize> = Vec::new();
@@ -1653,6 +1676,19 @@ pub fn erased_skeleton<M: Molecule + Clone + ToSMILES>(
                 if !valence_options(skeleton.atomic_numbers()[hub], 0, held)
                     .contains(&(valence + i64::from(charge)))
                 {
+                    continue;
+                }
+                let (mut terminal, mut bridging) = (0i64, false);
+                for bond in skeleton.get_atom_bonds(hub).unwrap_or_default() {
+                    if is_hub_bond(&skeleton, hub, bond.target()) {
+                        if heavy_degree(&skeleton, bond.target()) == 1 {
+                            terminal += 1;
+                        } else {
+                            bridging = true;
+                        }
+                    }
+                }
+                if for_a_structure && bridging && valence + i64::from(charge) - held > terminal {
                     continue;
                 }
                 pooled_hubs.push(hub);
@@ -2635,7 +2671,7 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
     molecule: &M,
     rules: &TautomerRules,
 ) -> Option<(M, bool)> {
-    let (skeleton, groups) = erased_skeleton(molecule, rules);
+    let (skeleton, groups) = erase(molecule, rules, true);
     let used = groups.used_valences.clone();
     if groups.is_empty() {
         return Some((canonizer.canonize(&skeleton), false));

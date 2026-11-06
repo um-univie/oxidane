@@ -141,9 +141,11 @@ def test_tautomer_keys_and_canonical_tautomers():
     assert ox.tautomer_key("CC(C)=O") != ox.tautomer_key("CC(O)=C")
     carbon = ox.tautomer_key(["CC(C)=O", "CC(O)=C"], carbon_endpoints=True)
     assert carbon[0] == carbon[1] and carbon[0].startswith("c/")
-    zwitterion = ox.tautomer_key("[NH3+]CC(=O)[O-]", ionizable_endpoints=True)
-    assert zwitterion == ox.tautomer_key("NCC(=O)O", ionizable_endpoints=True)
-    assert zwitterion.startswith("i/")
+    # The default key moves protons between ionizable sites; the narrower key
+    # without them keeps a zwitterion apart and says so.
+    assert ox.tautomer_key("[NH3+]CC(=O)[O-]") == ox.tautomer_key("NCC(=O)O")
+    narrow = ox.tautomer_key(["[NH3+]CC(=O)[O-]", "NCC(=O)O"], ionizable_endpoints=False)
+    assert narrow[0] != narrow[1] and narrow[0].startswith("h/")
     mol = ox.Molecule("Oc1ccccn1")
     assert mol.tautomer_key() == ox.tautomer_key("Oc1ccccn1")
     assert mol.canonical_tautomer() == ox.canonical_tautomer("Oc1ccccn1")
@@ -368,3 +370,22 @@ def test_valence_check_is_opt_in(tmp_path, capsys):
     source.write_text("CCO\nFF=F\n")
     assert main([str(source), str(tmp_path / "out.tsv"), "--check-valence", "--errors", "none"]) == 0
     assert "2 rows, 1 unreadable" in capsys.readouterr().err
+
+
+def test_charge_reduced_key():
+    keys = ox.tautomer_key(["CCN.Cl", "CC[NH3+].[Cl-]", "NCC(=O)O", "[NH3+]CC(=O)[O-]"],
+                           charge_reduced=True)
+    assert keys[0] == keys[1] and keys[2] == keys[3] and keys[0].startswith("p/")
+    assert ox.tautomer_key("CC(=O)O") != ox.tautomer_key("CC(=O)[O-]")
+    assert ox.Molecule("CC(=O)[O-]").tautomer_key(charge_reduced=True) == ox.tautomer_key(
+        "CC(=O)O", charge_reduced=True)
+
+
+def test_the_default_key_moves_protons_but_never_adds_them():
+    key = ox.tautomer_key
+    assert key("CN.Cl") == key("C[NH3+].[Cl-]")
+    assert key("NCC(=O)O") == key("[NH3+]CC(=O)[O-]")
+    assert key("CC(=O)O") != key("CC(=O)[O-]")
+    assert key("[CH3-].[Ti]") != key("C.[Ti]")
+    assert key("CN.Cl", ionizable_endpoints=False).startswith("h/")
+    assert key("CN.Cl", ionizable_endpoints=False) != key("C[NH3+].[Cl-]", ionizable_endpoints=False)

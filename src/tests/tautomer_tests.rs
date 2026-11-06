@@ -234,12 +234,15 @@ fn perception_terminates_on_dense_conjugation() {
     }
 }
 
-/// An empty molecule and a lone atom have no group and must not panic.
+/// An empty molecule and a lone atom must not panic. A lone atom is a group
+/// only where the key pools a whole record, since a bare ion is where a salt's
+/// proton goes.
 #[test]
 fn degenerate_inputs_are_handled() {
     let rules = TautomerRules::new();
     let water = MolecularGraph::from_smiles_single("O").unwrap();
-    assert!(perceive(&water, &rules).is_empty());
+    assert!(perceive(&water, &TautomerRules::heteroatom_only()).is_empty());
+    assert_eq!(perceive(&water, &rules).groups().len(), 1);
     assert_eq!(key("O"), tautomer_key(&water, &rules));
 
     let empty = MolecularGraph::default();
@@ -657,9 +660,16 @@ fn ionizable_endpoints_merge_a_zwitterion_with_its_neutral_form() {
         ("OC(=O)CCCC[NH2]", "[O-]C(=O)CCCC[NH3+]"),
     ] {
         assert_eq!(ionized(neutral), ionized(zwitterion), "{neutral}");
-        // The default rules keep them apart: an aliphatic amine has no second
-        // endpoint in its own conjugated system, so its proton is not mobile.
-        assert_ne!(key(neutral), key(zwitterion), "{neutral}");
+        // So does the default key, which pools the whole record.
+        assert_eq!(key(neutral), key(zwitterion), "{neutral}");
+        // Heteroatom tautomers alone keep them apart: an aliphatic amine has
+        // no second endpoint in its own conjugated system.
+        let only = TautomerRules::heteroatom_only();
+        assert_ne!(
+            tautomer_key_from_smiles(neutral, &only).unwrap(),
+            tautomer_key_from_smiles(zwitterion, &only).unwrap(),
+            "{neutral}"
+        );
     }
     // The marker says which relation was asked for, so the two cannot be
     // compared against each other by accident.
@@ -849,11 +859,33 @@ fn a_bare_ion_is_its_own_compound() {
     }
 }
 
-/// Pooling stops at the component: a salt and its free acid are still two
-/// compounds, because each component is keyed on its own.""
+/// The default key pools the whole record, so a proton crosses from one
+/// component to another: benzoic acid beside ammonia is ammonium benzoate,
+/// and an amine beside hydrogen chloride its hydrochloride. Pooling each
+/// component on its own keeps them apart.
 #[test]
-fn a_proton_does_not_cross_between_components() {
-    assert_ne!(key("OC(=O)c1ccccc1.N"), key("[O-]C(=O)c1ccccc1.[NH4+]"));
+fn a_proton_crosses_between_components_only_when_the_record_is_pooled() {
+    for (first, second) in [
+        ("OC(=O)c1ccccc1.N", "[O-]C(=O)c1ccccc1.[NH4+]"),
+        ("CN.Cl", "C[NH3+].[Cl-]"),
+    ] {
+        assert_eq!(key(first), key(second), "{first}");
+        let apart = TautomerRules::with_ionizable_endpoints();
+        assert_ne!(
+            tautomer_key_from_smiles(first, &apart).unwrap(),
+            tautomer_key_from_smiles(second, &apart).unwrap(),
+            "{first}"
+        );
+    }
+    // Only moved, never added: the record keeps its formula and its charge.
+    for (first, second) in [
+        ("CC(=O)O", "CC(=O)[O-]"),
+        ("CN", "C[NH3+]"),
+        ("C.[Ti]", "[CH3-].[Ti]"),
+        ("CC(=O)O.[Na+]", "CC(=O)[O-].[Na+]"),
+    ] {
+        assert_ne!(key(first), key(second), "{first}");
+    }
 }
 
 /// The totals are written once, after the groups.
@@ -1162,13 +1194,14 @@ fn a_geometry_no_shift_can_reach_is_kept() {
 fn keys_say_which_rules_made_them() {
     let both = TautomerRules {
         carbon_endpoints: true,
-        ionizable_endpoints: true,
-        ..TautomerRules::new()
+        ..TautomerRules::with_ionizable_endpoints()
     };
     assert_eq!(key("c1ccccc1"), "c1ccccc1");
     for (rules, marker) in [
         (TautomerRules::with_carbon_endpoints(), "c/"),
         (TautomerRules::with_ionizable_endpoints(), "i/"),
+        (TautomerRules::with_charge_reduction(), "p/"),
+        (TautomerRules::heteroatom_only(), "h/"),
         (both, "ci/"),
     ] {
         let marked = tautomer_key_from_smiles("CC(=O)N", &rules).expect("the SMILES parses");
@@ -1180,6 +1213,8 @@ fn keys_say_which_rules_made_them() {
         TautomerRules::new(),
         TautomerRules::with_carbon_endpoints(),
         TautomerRules::with_ionizable_endpoints(),
+        TautomerRules::with_charge_reduction(),
+        TautomerRules::heteroatom_only(),
     ] {
         assert_eq!(
             tautomer_key_from_smiles("O=c1cccc[nH]1", &rules).unwrap(),
@@ -1309,4 +1344,148 @@ fn a_carbon_endpoint_loses_its_stereocentre_to_the_shift() {
         normalized_smiles(forms[1], &rules).unwrap()
     );
     assert_ne!(key(forms[0]), key(forms[1]));
+}
+
+/// With carbon endpoints a ring carbon's hydrogens are mobile, and the solver,
+/// placing π before hydrogens, used to give a ring bond both its π units or a
+/// ring carbon π on both sides: phenol came back as `O=C1CCCC#C1` and
+/// pyridinium as `[N+]#1C=CCCC#1`. Pyridinium still comes back with a
+/// cumulated ring nitrogen, `[N+]=1=CCC=CC=1`, so it is held to the first rule
+/// only.
+#[test]
+fn carbon_endpoints_write_no_ring_triple_bonds_or_ring_allenes() {
+    let rules = TautomerRules::with_carbon_endpoints();
+    let ring_bond_orders = |smiles: &str| {
+        let normalized = normalized_smiles(smiles, &rules).unwrap();
+        let molecule = MolecularGraph::from_smiles(&normalized).unwrap().remove(0);
+        let (_, ring_bonds) = molecule.find_cyclic_bonds_and_atoms();
+        let order = |first: usize, second: usize| {
+            molecule
+                .get_atom_bonds(first)
+                .unwrap()
+                .iter()
+                .find(|bond| bond.target() == second)
+                .unwrap()
+                .bond_order()
+        };
+        let triple = ring_bonds
+            .iter()
+            .any(|&(first, second)| order(first, second) == BondOrder::Triple);
+        let cumulated = (0..molecule.atomic_numbers().len()).any(|atom| {
+            ring_bonds
+                .iter()
+                .filter(|&&(first, second)| {
+                    (first == atom || second == atom) && order(first, second) == BondOrder::Double
+                })
+                .count()
+                >= 2
+        });
+        (normalized, triple, cumulated)
+    };
+    for smiles in ["Oc1ccccc1", "C[n+]1ccccc1", "c1ccncc1", "c1cc[nH+]cc1"] {
+        let (normalized, triple, cumulated) = ring_bond_orders(smiles);
+        assert!(!triple, "{smiles} -> {normalized}");
+        assert!(
+            smiles == "c1cc[nH+]cc1" || !cumulated,
+            "{smiles} -> {normalized}"
+        );
+    }
+    assert_eq!(normalized_smiles("Oc1ccccc1", &rules).unwrap(), "Oc1ccccc1");
+}
+
+/// An N-oxide keeps its own negative charge, and an acid beside it its
+/// proton: nicotinic acid N-oxide came back as `O[n+]1cccc(c1)C(=O)[O-]`. A
+/// hydroxamic acid, with the same σ shape, still gives its proton up to a
+/// carboxylate before an N-oxide would.
+#[test]
+fn an_n_oxide_keeps_its_charge_beside_an_acid() {
+    assert_eq!(
+        normalized("OC(=O)c1ccc[n+]([O-])c1"),
+        normalized("[O-]C(=O)c1ccc[n+](O)c1")
+    );
+    assert_eq!(
+        normalized("OC(=O)c1ccc[n+]([O-])c1"),
+        "OC(=O)c1ccc[n+]([O-])c1"
+    );
+    assert_eq!(normalized("[O-]C(=O)CCC(=O)N(O)C"), "ON(C)C(=O)CCC(=O)[O-]");
+}
+
+/// An acylamino group on an aromatic ring is written as the amide, not as the
+/// acyl imine on a ring that has taken the hydrogen; an imine on a saturated
+/// ring, as in clonidine, is left as the major form it is.
+#[test]
+fn an_aminoheteroarene_is_written_as_the_amine() {
+    assert_eq!(
+        normalized("CC(=O)Nc1cc[nH]n1"),
+        normalized("CC(=O)N=c1cc[nH][nH]1")
+    );
+    assert!(!normalized("CC(=O)Nc1cc[nH]n1").contains("N=c"));
+    assert!(!normalized("CC(=O)Nc1nccs1").contains("N=c"));
+    assert!(normalized("Clc1cccc(Cl)c1NC1=NCCN1").contains("N=C"));
+}
+
+/// `S=O` and `[S+][O-]` are one sulfoxide, and the bond between them is
+/// frozen, so the charge-separated writing is rewritten before erasure.
+#[test]
+fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
+    for (double, separated) in [
+        ("CS(C)=O", "C[S+](C)[O-]"),
+        ("CS(C)(=O)=O", "C[S+2](C)([O-])[O-]"),
+        ("CP(C)(C)=O", "C[P+](C)(C)[O-]"),
+        ("C[S@](=O)c1ccccc1", "C[S@+]([O-])c1ccccc1"),
+    ] {
+        assert_eq!(key(double), key(separated), "{double}");
+        assert_eq!(normalized(double), normalized(separated), "{double}");
+    }
+    // An N-oxide has no double-bonded form to rewrite into.
+    assert_eq!(normalized("[O-][n+]1ccccc1"), "[O-][n+]1ccccc1");
+}
+
+fn reduced_key(smiles: &str) -> String {
+    tautomer_key_from_smiles(smiles, &TautomerRules::with_charge_reduction())
+        .expect("the SMILES parses")
+}
+
+/// Every protonation state of a compound shares the charge-reduced key: a
+/// proton gained or lost raises a group's hydrogens and its charge together,
+/// and the key keeps only their difference.
+#[test]
+fn protonation_states_share_the_charge_reduced_key() {
+    for forms in [
+        &["CC(=O)O", "CC(=O)[O-]"][..],
+        &["CCN", "CC[NH3+]"],
+        &["CCN.Cl", "CC[NH3+].[Cl-]"],
+        &[
+            "NCC(=O)O",
+            "[NH3+]CC(=O)[O-]",
+            "[NH3+]CC(=O)O",
+            "NCC(=O)[O-]",
+        ],
+        &["c1ccncc1", "c1cc[nH+]cc1"],
+        &["OP(=O)(O)O", "OP(=O)([O-])[O-]", "[O-]P(=O)([O-])[O-]"],
+        &["N", "[NH4+]"],
+        &["O", "[OH-]"],
+        &["Cl", "[Cl-]"],
+        &["C[N+](C)(C)CC(=O)O", "C[N+](C)(C)CC(=O)[O-]"],
+        &["Oc1ccccn1", "O=c1cccc[nH]1", "[O-]c1cccc[nH+]1"],
+    ] {
+        for form in &forms[1..] {
+            assert_eq!(reduced_key(forms[0]), reduced_key(form), "{form}");
+        }
+    }
+}
+
+/// What no proton can change keeps the keys apart: a quaternary nitrogen's
+/// charge, a metal's, and a different number of heavy atoms or bonds.
+#[test]
+fn the_charge_reduced_key_keeps_what_protons_cannot_change() {
+    for (first, second) in [
+        ("C[N+](C)(C)C", "CN(C)C"),
+        ("CC(=O)[O-].[Na+]", "CC(=O)O"),
+        ("CC(=O)O", "CC(=O)OC"),
+        ("CC(=O)C", "CC(O)=C"),
+        ("Clc1ccccc1", "c1ccccc1.Cl"),
+    ] {
+        assert_ne!(reduced_key(first), reduced_key(second), "{first} {second}");
+    }
 }

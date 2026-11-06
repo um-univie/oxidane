@@ -48,7 +48,7 @@
 //! # Perception, and why it is invariant rather than merely tested
 //!
 //! A **conjugated component** is a connected component of the subgraph on the
-//! π-capable atoms, not crossing a frozen bond. A component holding two or more
+//! π-capable atoms. A component holding two or more
 //! endpoint elements is a **tautomeric group**; its endpoints are those atoms.
 //! What is conserved -- total hydrogens, total charge, total unpaired electrons
 //! -- is conserved by the molecule's groups together rather than by each of
@@ -67,16 +67,13 @@
 //! with it, and with them the chance that one of them silently changes an
 //! answer.
 //!
-//! Two kinds of bond are **frozen**, meaning no group owns them and their order
-//! is not erased:
-//!
-//! * a sulfonyl, sulfinyl or phosphoryl oxygen's bond, identified by degrees
-//!   alone. Asking whether it is *double* would make a sulfonic acid's three
-//!   oxygens answer differently depending on which carried the hydrogen.
-//! * nothing else. A triple bond is not frozen: erasing `C#N` could let the
-//!   solver spend the nitrogen's second π unit elsewhere and make the
-//!   shortfall up with a hydrogen, but that comes from the *order* the bonds
-//!   are offered their π units in and is handled there -- see [`normalize`].
+//! No bond is **frozen**, kept out of every group with its order. A sulfonyl
+//! or phosphoryl oxygen's bond used to be, and a sulfonamide and its
+//! sulfonimidic acid had two keys for it. A triple bond is not frozen either:
+//! erasing `C#N` could let the solver spend the nitrogen's second π unit
+//! elsewhere and make the shortfall up with a hydrogen, but that comes from
+//! the *order* the bonds are offered their π units in and is handled there --
+//! see [`normalize`].
 //!
 //! # What is proved, and what is convention
 //!
@@ -307,6 +304,15 @@ impl TautomerRules {
             || (self.carbon_endpoints && atomic_number == 6)
             || (self.bare_ions() && is_halogen(atomic_number))
     }
+
+    /// Whether `atom` can carry a mobile hydrogen. A sulfonyl sulfur has four
+    /// heavy neighbours and no lone pair left for one: it conducts, as the
+    /// carbon of a carbonyl does, but holds no hydrogen and no charge.
+    fn is_endpoint<M: Molecule + ?Sized>(&self, molecule: &M, atom: usize) -> bool {
+        let atomic_number = molecule.atomic_numbers()[atom];
+        self.is_endpoint_element(atomic_number)
+            && !(matches!(atomic_number, 16 | 34 | 52) && heavy_degree(molecule, atom) >= 4)
+    }
 }
 
 fn is_halogen(atomic_number: u8) -> bool {
@@ -523,11 +529,10 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
 /// other than an oxide, where it is charge-separated: `CC=P(C)=O` as
 /// `CC=[P+](C)[O-]`.
 ///
-/// The two writings are one compound, but the bond between such an oxygen and
-/// its centre is frozen -- see [`is_chalcogen_oxide`] -- so its order survives
-/// erasure, and DMSO written either way had two keys and two canonical
-/// tautomers. Nitrogen is left alone: it has no valence of five to rewrite an
-/// N-oxide into.
+/// The two writings are one compound, but a centre that is no endpoint keeps
+/// its charge through erasure, and DMSO written either way had two keys and
+/// two canonical tautomers. Nitrogen is left alone: it has no valence of five
+/// to rewrite an N-oxide into.
 ///
 /// The exception is there for the other double bond. An atom with two double
 /// bonds is no end of a cis/trans bond, so `CC=P(C)=O` cannot say which side
@@ -644,26 +649,6 @@ fn with_chalcogen_oxides_conventional<M: Molecule + Clone + ?Sized>(molecule: &M
     Some(copy)
 }
 
-/// Whether the bond is a sulfonyl, sulfinyl or phosphoryl oxygen's.
-///
-/// `S=O` on a sulfur with three σ bonds already does not become `S-OH` under
-/// any tautomerism a registry recognises, so the bond is not a group's to
-/// erase. The test is on degrees only, never on the order the bond happens to
-/// be written with: asking whether it is *double* would make a sulfonic acid's
-/// three oxygens answer differently depending on which of them was carrying the
-/// hydrogen, and the same compound would key two ways.
-fn is_chalcogen_oxide<M: Molecule + ?Sized>(molecule: &M, atom: usize, target: usize) -> bool {
-    let is_centre = |index: usize| {
-        matches!(
-            molecule.atomic_numbers()[index],
-            15 | 16 | 33 | 34 | 51 | 52
-        ) && heavy_degree(molecule, index) >= 3
-    };
-    let is_oxide =
-        |index: usize| molecule.atomic_numbers()[index] == 8 && heavy_degree(molecule, index) == 1;
-    (is_centre(atom) && is_oxide(target)) || (is_centre(target) && is_oxide(atom))
-}
-
 /// Whether `atom` can hold part of a π system.
 ///
 /// Read from the σ-skeleton alone -- degrees and elements, never bond orders.
@@ -673,7 +658,9 @@ fn is_chalcogen_oxide<M: Molecule + ?Sized>(molecule: &M, atom: usize, target: u
 /// present *identical* input to every step that follows.
 ///
 /// A group 15 or 16 atom keeps a lone pair while it has room for one, which is
-/// a statement about its heavy degree. Carbon has no lone pair to donate, so it
+/// a statement about its heavy degree. Phosphorus and sulfur conduct with four
+/// as well: a phosphoryl or sulfonyl centre passes a proton between its
+/// oxygens and an amide nitrogen as a carbonyl carbon does. Carbon has no lone pair to donate, so it
 /// needs a free valence instead -- `heavy + hydrogens ≤ 3` -- and reading its
 /// hydrogens is sound because carbon's hydrogens are not the mobile ones. That
 /// last clause is where the theorem stops holding for
@@ -710,7 +697,8 @@ fn is_conjugatable_under<M: Molecule + ?Sized>(
                 heavy + hydrogens <= 3
             }
         }
-        7 | 15 | 33 | 51 | 8 | 16 | 34 | 52 => heavy <= 3,
+        7 | 8 => heavy <= 3,
+        15 | 33 | 51 | 16 | 34 | 52 => heavy <= 4,
         _ => false,
     }
 }
@@ -731,7 +719,7 @@ fn heavy_degree<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> usize {
 /// Perceives the tautomeric groups of `molecule`.
 ///
 /// A **conjugated component** is a connected component of the subgraph on the
-/// π-capable atoms, not crossing a frozen bond. A component holding two or more
+/// π-capable atoms. A component holding two or more
 /// endpoint elements is a **tautomeric group**; its endpoints are those atoms,
 /// and its conserved quantities are their total hydrogens and total charge.
 ///
@@ -797,6 +785,29 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
     // The components, as a disjoint-set forest over the π-capable atoms.
     let mut union_find = UnionFind::new(atom_count);
     let mut component_bonds: Vec<(usize, usize)> = Vec::new();
+    // A phosphoryl, sulfinyl or sulfonyl centre -- four heavy neighbours, or
+    // three and a terminal chalcogen -- conducts between its heteroatoms only.
+    // Through a carbon it offered `S=C`, which no proton shift leads to, and
+    // the possibility alone erased the geometry of every vinyl sulfone's
+    // double bond and of sulindac's.
+    let oxo_centre = |atom: usize| {
+        if !matches!(molecule.atomic_numbers()[atom], 15 | 33 | 51 | 16 | 34 | 52) {
+            return false;
+        }
+        match heavy_degree(molecule, atom) {
+            3 => molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+                bonds.iter().any(|bond| {
+                    matches!(molecule.atomic_numbers()[bond.target()], 8 | 16 | 34 | 52)
+                        && heavy_degree(molecule, bond.target()) == 1
+                })
+            }),
+            degree => degree >= 4,
+        }
+    };
+    let carbon_at_a_centre = |atom: usize, target: usize| {
+        (oxo_centre(atom) && molecule.atomic_numbers()[target] == 6)
+            || (oxo_centre(target) && molecule.atomic_numbers()[atom] == 6)
+    };
     for atom in 0..atom_count {
         if !capable[atom] {
             continue;
@@ -806,7 +817,7 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
         };
         for bond in bonds {
             let target = bond.target();
-            if target <= atom || !capable[target] || is_chalcogen_oxide(molecule, atom, target) {
+            if target <= atom || !capable[target] || carbon_at_a_centre(atom, target) {
                 continue;
             }
             union_find.union(atom, target);
@@ -818,7 +829,7 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
     // mobile hydrogen. One such atom has nothing to exchange with.
     let mut endpoints_of: FxHashMap<usize, Vec<usize>> = FxHashMap::default();
     for atom in 0..atom_count {
-        if capable[atom] && rules.is_endpoint_element(molecule.atomic_numbers()[atom]) {
+        if capable[atom] && rules.is_endpoint(molecule, atom) {
             endpoints_of
                 .entry(union_find.find(atom))
                 .or_default()
@@ -1193,7 +1204,7 @@ fn adopt_component_endpoints<M: Molecule + ?Sized>(
     group: &mut TautomericGroup,
 ) {
     for &atom in &group.atoms {
-        if rules.is_endpoint_element(molecule.atomic_numbers()[atom]) {
+        if rules.is_endpoint(molecule, atom) {
             group.endpoints.push(atom);
         }
     }
@@ -2720,6 +2731,9 @@ fn charge_count<M: Molecule + ?Sized>(molecule: &M) -> u32 {
 /// 3-aminopyrazole. A ring carbonyl is not counted -- 2-pyridone is the form
 /// written -- and nor is an imine on a saturated ring, where the imino form
 /// of a 2-amino-oxazoline or of clonidine is the one that predominates.
+///
+/// A ring phosphorus counts as an aromatic atom does: a cyclophosphazene keeps
+/// its `P=N` in the ring, not on an anilino nitrogen outside it.
 fn exocyclic_imine_count<M: Molecule + ?Sized>(molecule: &M) -> usize {
     let element = |atom: usize| molecule.atomic_numbers()[atom];
     let candidates: Vec<(usize, usize)> = (0..molecule.atomic_numbers().len())
@@ -2732,7 +2746,8 @@ fn exocyclic_imine_count<M: Molecule + ?Sized>(molecule: &M) -> usize {
                     bond.bond_order() == BondOrder::Double
                         && element(atom) == 7
                         && element(bond.target()) != 7
-                        && molecule.is_atom_aromatic(bond.target())
+                        && (molecule.is_atom_aromatic(bond.target())
+                            || element(bond.target()) == 15)
                 })
                 .map(move |bond| (atom, bond.target()))
         })
@@ -2743,7 +2758,10 @@ fn exocyclic_imine_count<M: Molecule + ?Sized>(molecule: &M) -> usize {
     let (cyclic_atoms, _) = molecule.find_cyclic_bonds_and_atoms();
     candidates
         .into_iter()
-        .filter(|&(nitrogen, _)| !cyclic_atoms.contains(nitrogen))
+        .filter(|&(nitrogen, target)| {
+            !cyclic_atoms.contains(nitrogen)
+                && (element(target) != 15 || cyclic_atoms.contains(target))
+        })
         .count()
 }
 
@@ -2890,6 +2908,33 @@ fn takes_positive_charge(atomic_number: u8) -> bool {
     matches!(atomic_number, 7 | 8 | 15 | 16 | 34 | 52)
 }
 
+/// Whether `atom` is a terminal chalcogen on a phosphorus, sulfur or heavier
+/// centre with four heavy neighbours. Such a centre spends its π on its
+/// terminal atoms, and a positive charge there is a triple bond: an iminium
+/// next to a sulfonyl came back as `S(#[O+])(O)`, because moving the charge
+/// let a ring become aromatic.
+fn on_a_four_coordinate_centre<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
+    if !matches!(molecule.atomic_numbers()[atom], 8 | 16 | 34 | 52) {
+        return false;
+    }
+    let Some(bonds) = molecule.get_atom_bonds(atom) else {
+        return false;
+    };
+    let mut heavy = bonds
+        .iter()
+        .map(|bond| bond.target())
+        .filter(|&target| molecule.atomic_numbers()[target] > 1);
+    match (heavy.next(), heavy.next()) {
+        (Some(centre), None) => {
+            matches!(
+                molecule.atomic_numbers()[centre],
+                15 | 33 | 51 | 16 | 34 | 52
+            ) && heavy_degree(molecule, centre) >= 4
+        }
+        _ => false,
+    }
+}
+
 /// Which ring bonds a ring-first candidate offers its π first.
 #[derive(Clone, Copy)]
 enum Rings {
@@ -2958,8 +3003,10 @@ fn bond_priority(first_element: u8, second_element: u8) -> u8 {
 /// The element ranks of [`bond_priority`] decide between bonds of one class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum BondClass {
-    /// A nitro group's N–O or a nitrile's C–N, offered before anything else
-    /// is decided.
+    /// A nitro group's N–O, a nitrile's C–N, or a terminal sulfur's bond to
+    /// a phosphorus or sulfur centre with four heavy neighbours, offered
+    /// before anything else is decided. The last keeps a phosphorothioate
+    /// written thiono, `P(=S)O`, as registries write it.
     Settled,
     Ordinary,
     /// A bond whose π unit would leave an atom charged that has no room as a
@@ -2987,10 +3034,17 @@ fn bond_class<M: Molecule + ?Sized>(
             && capacity[carbon_slot] >= 2
             && capacity[nitrogen_slot] >= 2
     };
+    let is_thiono = |chalcogen: usize, centre: usize| {
+        matches!(element(chalcogen), 16 | 34 | 52)
+            && on_a_four_coordinate_centre(molecule, chalcogen)
+            && heavy_degree(molecule, centre) >= 4
+    };
     if is_nitro_oxygen(molecule, first, second)
         || is_nitro_oxygen(molecule, second, first)
         || is_nitrile(first, first_slot, second, second_slot)
         || is_nitrile(second, second_slot, first, first_slot)
+        || is_thiono(first, second)
+        || is_thiono(second, first)
     {
         BondClass::Settled
     } else if capacity[first_slot] <= 0 || capacity[second_slot] <= 0 {
@@ -3321,6 +3375,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         is_endpoint[slot]
             && !pinned[slot]
             && takes_positive_charge(molecule.atomic_numbers()[group.atoms[slot]])
+            && !on_a_four_coordinate_centre(molecule, group.atoms[slot])
     };
     let minus_capable = |slot: usize| {
         is_endpoint[slot]
@@ -3648,9 +3703,46 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
                 })
             })
     };
+    // Then an oxygen on a sulfur or phosphorus centre with three or more: a
+    // sulfonate's, a sulfinate's or a phosphate's. These are the strongest
+    // acids a group is likely to hold, and a disodium azo dye came back with
+    // its sulfonate protonated and its naphthol a phenolate.
+    // Each centre's first oxygen is asked before any centre's second, so a
+    // pyrophosphate's two charges sit one on each phosphorus rather than both
+    // on one.
+    let terminal_oxygen =
+        |atom: usize| molecule.atomic_numbers()[atom] == 8 && heavy_degree(molecule, atom) == 1;
+    let oxo_acid_rank = |atom: usize| -> Option<usize> {
+        if !terminal_oxygen(atom) {
+            return None;
+        }
+        let centre = molecule
+            .get_atom_bonds(atom)?
+            .iter()
+            .map(|bond| bond.target())
+            .find(|&target| molecule.atomic_numbers()[target] > 1)?;
+        if !matches!(
+            molecule.atomic_numbers()[centre],
+            15 | 33 | 51 | 16 | 34 | 52
+        ) || heavy_degree(molecule, centre) < 3
+        {
+            return None;
+        }
+        Some(
+            molecule
+                .get_atom_bonds(centre)?
+                .iter()
+                .filter(|bond| bond.target() < atom && terminal_oxygen(bond.target()))
+                .count(),
+        )
+    };
     charge_edges.sort_by_key(|&(_, slot)| {
         let atom = group.atoms[slot];
-        (!nitro_oxygen(atom), !n_oxide_oxygen(atom))
+        (
+            !nitro_oxygen(atom),
+            !n_oxide_oxygen(atom),
+            oxo_acid_rank(atom).unwrap_or(usize::MAX),
+        )
     });
 
     // One three-vertex chain per possible separation. `z` either takes the
@@ -3718,10 +3810,24 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
     let carbon_endpoint = (0..atom_count)
         .any(|slot| is_endpoint[slot] && molecule.atomic_numbers()[group.atoms[slot]] == 6);
     let (cyclic_atoms, cyclic_bonds) = molecule.find_cyclic_bonds_and_atoms();
+    // Nor a triple bond at a phosphorus or sulfur centre with four heavy
+    // neighbours: such a centre spends one π unit on each of its terminal
+    // atoms, and a sulfodiimide `S(=N)(=N)` came back as `S(N)(#N)`.
+    let four_coordinate_centre = |atom: usize| {
+        matches!(molecule.atomic_numbers()[atom], 15 | 33 | 51 | 16 | 34 | 52)
+            && heavy_degree(molecule, atom) >= 4
+    };
     let ring_second_units = bond_edges
         .iter()
         .filter(|&&(_, _, (first, second))| {
             carbon_endpoint && cyclic_bonds.contains(&(first.min(second), first.max(second)))
+        })
+        .map(|&(_, second_unit, _)| second_unit)
+        .collect();
+    let centre_second_units = bond_edges
+        .iter()
+        .filter(|&&(_, _, (first, second))| {
+            four_coordinate_centre(first) || four_coordinate_centre(second)
         })
         .map(|&(_, second_unit, _)| second_unit)
         .collect();
@@ -3752,6 +3858,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         unused_separation_edges,
         offers,
         ring_second_units,
+        centre_second_units,
         ring_carbon_hydrogens,
     })
 }
@@ -3789,6 +3896,9 @@ struct GroupInstance {
     offers: Vec<(usize, usize)>,
     /// The second π unit of every ring bond.
     ring_second_units: Vec<usize>,
+    /// The second π unit of every bond at a four-coordinate phosphorus or
+    /// sulfur centre.
+    centre_second_units: Vec<usize>,
     /// A first hydrogen for every ring carbon with two heavy neighbours.
     ring_carbon_hydrogens: Vec<usize>,
 }
@@ -3877,6 +3987,15 @@ fn plan_from<M: Molecule + ?Sized>(
             .iter()
             .filter(|(_, _, bond)| closed.contains(bond))
             .flat_map(|&(single, second_unit, _)| [(single, false), (second_unit, false)]),
+    );
+    // No triple bond at a four-coordinate centre, and before the settled bonds:
+    // a thiono sulfur is one of those, and offered both its units it took
+    // both, writing a thiosulfonate `S(=S)(=O)` as `S(#[S-])([O-])`.
+    priority.extend(
+        instance
+            .centre_second_units
+            .iter()
+            .map(|&edge| (edge, false)),
     );
     // Nitro groups and nitriles before the charge separations: both are
     // written the one way whatever else the group does, and a separation left

@@ -1424,8 +1424,9 @@ fn an_aminoheteroarene_is_written_as_the_amine() {
     assert!(normalized("Clc1cccc(Cl)c1NC1=NCCN1").contains("N=C"));
 }
 
-/// `S=O` and `[S+][O-]` are one sulfoxide, and the bond between them is
-/// frozen, so the charge-separated writing is rewritten before erasure.
+/// `S=O` and `[S+][O-]` are one sulfoxide, and a centre that is no endpoint
+/// keeps its charge, so the charge-separated writing is rewritten before
+/// erasure.
 #[test]
 fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
     for (double, separated) in [
@@ -1479,6 +1480,79 @@ fn a_phosphorus_with_a_double_bond_keeps_its_oxide_separated() {
     // here, and the oxide is written the same way either side of the move.
     let moved = normalized("NC(=O)C/C(O)=C/[P+](=N)[O-]");
     assert_eq!(normalized(&moved), moved);
+}
+
+/// A proton moves across a sulfonyl, sulfinyl or phosphoryl centre as it does
+/// across a carbonyl carbon: a sulfonamide and its sulfonimidic acid are one
+/// compound, and the bond to the oxygen is no longer kept out of the group.
+#[test]
+fn a_proton_moves_across_a_sulfur_or_phosphorus_centre() {
+    for (written, other) in [
+        ("CS(=O)(=O)NC", "CS(=O)(O)=NC"),
+        ("CS(=O)NC", "CS(O)=NC"),
+        ("NP(=O)(O)O", "N=P(O)(O)O"),
+        ("CC(=O)NS(C)(=O)=O", "CC(=O)N=S(C)(=O)O"),
+        ("CP(=S)(O)O", "CP(=O)(S)O"),
+        ("CN[P+](=O)OC", "CN=[P+](O)OC"),
+    ] {
+        assert_eq!(key(written), key(other), "{written}");
+        assert_eq!(normalized(written), normalized(other), "{written}");
+        assert_eq!(normalized(other), normalized(written), "{other}");
+    }
+    assert_eq!(normalized("CS(=O)(O)=NC"), "S(=O)(=O)(NC)C");
+    assert_eq!(normalized("CS(O)=NC"), "S(=O)(NC)C");
+    assert_eq!(normalized("N=P(O)(O)O"), "P(O)(O)(=O)N");
+    // Written thiono, as registries write a phosphorothioate.
+    assert_eq!(normalized("CP(=O)(S)O"), "S=P(O)(O)C");
+}
+
+/// What lets the proton across must not let it do anything else. A sulfonyl
+/// sulfur has no hydrogen to take and no valence of four to fall back to --
+/// `S(O)(O)` beside an azo group is the same formula as a sulfone beside a
+/// hydrazide -- and its oxygens neither hold a cation as `S#[O+]` nor give
+/// their charge up to a naphthol.
+#[test]
+fn a_sulfonyl_centre_keeps_its_oxidation_state_and_its_charges() {
+    let normal = normalized("CS(=O)(=O)CCC(=O)NNC(C)=O");
+    assert!(normal.contains("S(=O)(=O)"), "{normal}");
+    assert!(!normal.contains("N=N"), "{normal}");
+
+    let normal = normalized("S(=O)(=O)([NH2+]c1ncc(cc1)C)c2ccccc2");
+    assert!(!normal.contains("[O+]"), "{normal}");
+
+    let dye = "[O-]S(=O)(=O)c1cc2cc(S(=O)(=O)[O-])ccc2c(N=Nc2cc(C)c(C)cc2C)c1O.[Na+].[Na+]";
+    let normal = normalized(dye);
+    assert_eq!(
+        normal.matches("S(=O)(=O)[O-]").count() + normal.matches("S(=O)(=O)([O-])").count(),
+        2,
+        "{normal}"
+    );
+
+    // A cyclophosphazene keeps its P=N in the ring.
+    let normal = normalized("C1CN1P1(Nc2ccccc2)=NP(Nc2ccccc2)(N2CC2)=NP(Nc2ccccc2)(Nc2ccccc2)=N1");
+    assert!(!normal.contains("=Nc"), "{normal}");
+
+    // No triple bond at the centre, whether the second unit is offered to an
+    // imine or to a thiono sulfur.
+    for smiles in [
+        "CS(=N)(=N)CC(O)=O",
+        "OS(=O)(=S)c1ccccc1",
+        "[O-]OS(=O)(=S)CC",
+    ] {
+        let normal = normalized(smiles);
+        assert!(!normal.contains('#'), "{smiles} gave {normal}");
+    }
+
+    // A pyrophosphate's two charges sit one on each phosphorus.
+    let normal = normalized("OP(=O)([O-])OP(=O)(O)[O-]");
+    assert!(!normal.contains("([O-])[O-]"), "{normal}");
+
+    // The centre does not conduct into a carbon, so a vinyl sulfone or
+    // sulfoxide keeps the geometry of its double bond.
+    for smiles in ["OS(=O)(=O)/C=C/c1ccccc1", "CS(=O)/C=C/c1ccc(cc1)C(=O)O"] {
+        let normal = normalized(smiles);
+        assert!(normal.contains('/'), "{smiles} gave {normal}");
+    }
 }
 
 fn reduced_key(smiles: &str) -> String {

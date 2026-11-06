@@ -1425,8 +1425,9 @@ fn an_aminoheteroarene_is_written_as_the_amine() {
 }
 
 /// `S=O` and `[S+][O-]` are one sulfoxide, and a centre that is no endpoint
-/// keeps its charge, so the charge-separated writing is rewritten before
-/// erasure.
+/// keeps its charge, so a centre's charge is moved onto its chalcogens before
+/// erasure -- a positive one taken back by an oxide, a negative one handed to
+/// a doubly bonded oxygen or sulfur.
 #[test]
 fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
     for (double, separated) in [
@@ -1434,6 +1435,8 @@ fn a_charge_separated_oxide_is_one_compound_with_its_double_bonded_form() {
         ("CS(C)(=O)=O", "C[S+2](C)([O-])[O-]"),
         ("CP(C)(C)=O", "C[P+](C)(C)[O-]"),
         ("C[S@](=O)c1ccccc1", "C[S@+]([O-])c1ccccc1"),
+        ("OS([O-])=S", "O[S-](=O)=S"),
+        ("C=S([O-])C(C)(C)O", "C=[S-](=O)C(C)(C)O"),
     ] {
         assert_eq!(key(double), key(separated), "{double}");
         assert_eq!(normalized(double), normalized(separated), "{double}");
@@ -1547,11 +1550,40 @@ fn a_sulfonyl_centre_keeps_its_oxidation_state_and_its_charges() {
     let normal = normalized("OP(=O)([O-])OP(=O)(O)[O-]");
     assert!(!normal.contains("([O-])[O-]"), "{normal}");
 
+    // A ring sulfone's oxygens are not bonds leaving the ring, so closing the
+    // ring does not take them, and an aminopyridine beside it is the amine.
+    for smiles in [
+        "COC1=CC=CC(=C1)NC2=NC=C(C=C2)C(=O)NC3CCS(=O)(=O)C3",
+        "COC1=CC=CC(=C1)NC2=NC=C(C=C2)C(=O)NC3CCS(=O)C3",
+    ] {
+        let normal = normalized(smiles);
+        assert!(!normal.contains("=Nc"), "{smiles} gave {normal}");
+    }
+
+    // Nor does it conduct into the aryl ring it is on, which would let
+    // sulfapyridine's ring take an imine.
+    let normal = normalized("Clc1ccc2oc(cc(=O)c2c1)C(=O)Nc1ccc(cc1)S(=O)(=O)Nc1ccccn1");
+    assert!(!normal.contains("=c"), "{normal}");
+
     // The centre does not conduct into a carbon, so a vinyl sulfone or
     // sulfoxide keeps the geometry of its double bond.
     for smiles in ["OS(=O)(=O)/C=C/c1ccccc1", "CS(=O)/C=C/c1ccc(cc1)C(=O)O"] {
         let normal = normalized(smiles);
         assert!(normal.contains('/'), "{smiles} gave {normal}");
+    }
+}
+
+/// What keeps a sulfonyl centre's charges and bonds in place is preference,
+/// not prohibition: a protonated sulfone is a structure too, and the input is
+/// always one of the assignments.
+#[test]
+fn a_cation_on_a_sulfonyl_oxygen_still_normalizes() {
+    let rules = TautomerRules::new();
+    for smiles in ["CS(=O)(=O)[OH2+]", "CS(C)(=O)=[OH+]", "CP(=O)(O)[OH2+]"] {
+        let molecule = MolecularGraph::from_smiles_single(smiles).expect("the SMILES parses");
+        let answer = crate::molecule::tautomer::try_normalize(&molecule, &rules)
+            .unwrap_or_else(|error| panic!("{smiles}: {error}"));
+        assert_eq!(key(&answer.to_smiles()), key(smiles), "{smiles}");
     }
 }
 

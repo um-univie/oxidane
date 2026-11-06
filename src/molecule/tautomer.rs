@@ -96,7 +96,7 @@
 //! tested, but they are validated by measurement, not by the argument above.
 
 use crate::graph_algorithms::mol_canonization::{Canonizer, reorder_molecule, with_canonizer};
-use crate::molecule::bond::BondOrder;
+use crate::molecule::bond::{BondOrder, BondTarget};
 use crate::molecule::chirality::ChiralClass;
 use crate::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -521,11 +521,20 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
 /// terminal chalcogens, where they can take it. `None` when there is none to
 /// move.
 ///
-/// A positive centre takes back a terminal oxide's electron and the bond
-/// between them becomes double: `C[S+](C)[O-]` is written `CS(C)=O`,
-/// `[S+2]([O-])([O-])` `S(=O)=O`, `C[P+](C)(C)[O-]` `CP(C)(C)=O`. A negative
-/// centre hands its charge to a doubly bonded terminal chalcogen and the bond
-/// becomes single: `O[S-](=O)=S` is written `OS([O-])=S`.
+/// A positive centre takes back a terminal chalcogen anion's electron and the
+/// bond between them becomes double: `C[S+](C)[O-]` is written `CS(C)=O`,
+/// `[S+2]([O-])([O-])` `S(=O)=O`, `C[P+](C)(C)[O-]` `CP(C)(C)=O`, and
+/// PubChem's `CO[P+](=O)[S-]` `COP(=O)=S`. Taking it from an oxide alone left
+/// that phosphorothioate's charge on the centre, where erasure keeps it, until
+/// the solver put the anion on an oxygen and the next pass took it back. A
+/// negative centre first cancels against a positive chalcogen, PubChem's
+/// `[S-]#[O+]` becoming `S=O`, and what is left
+/// it hands to a doubly bonded terminal chalcogen and the bond becomes single:
+/// `O[S-](=O)=S` is written `OS([O-])=S`. A neutral centre takes a positive
+/// chalcogen's charge where its valence allows, as `normalize` writes it:
+/// `CS(=[OH+])(C)(C)I` is `C[S+](O)(C)(C)I`. Left as written, the `S=[OH+]`
+/// was an oxide, which conducts nothing, and the two writings perceived
+/// different groups.
 ///
 /// Either way the two writings are one compound, and the centre's charge is
 /// bookkeeping for its semipolar bonds rather than a fact about it. But a hub
@@ -538,11 +547,11 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
 /// two unpaired electrons.
 ///
 /// A phosphorus, arsenic or antimony that already has a double bond to
-/// something other than an oxide goes the other way: its oxide is written
-/// charge-separated, `CC=P(C)=O` as `CC=[P+](C)[O-]`. An atom with two double
-/// bonds is no end of a cis/trans bond, so `CC=P(C)=O` cannot say which side
-/// of the `C=P` its methyl is on, while `C/C=[P+](/C)[O-]` can. Writing that
-/// oxide double dropped the geometry PubChem gave, or turned it over
+/// something other than one of its ligands goes the other way: its oxide is
+/// written charge-separated, `CC=P(C)=O` as `CC=[P+](C)[O-]`. An atom with two
+/// double bonds is no end of a cis/trans bond, so `CC=P(C)=O` cannot say which
+/// side of the `C=P` its methyl is on, while `C/C=[P+](/C)[O-]` can. Writing
+/// that oxide double dropped the geometry PubChem gave, or turned it over
 /// depending on the order the atoms came in; and in a ring it made a
 /// phosphinine oxide aromatic as `p1(=O)ccccc1`, which the SMILES reader
 /// cannot kekulize. RDKit separates the same oxides, but only where the other
@@ -552,8 +561,8 @@ fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
 /// that asked which of them held it answered differently for the input and for
 /// its canonical tautomer.
 fn with_centre_charges_moved<M: Molecule + Clone>(molecule: &M) -> Option<M> {
-    let oxide = |atom: usize| {
-        molecule.atomic_numbers()[atom] == 8
+    let anion = |atom: usize| {
+        matches!(molecule.atomic_numbers()[atom], 8 | 16 | 34 | 52)
             && molecule.get_atom_charge(atom) == -1
             && heavy_degree(molecule, atom) == 1
     };
@@ -562,38 +571,26 @@ fn with_centre_charges_moved<M: Molecule + Clone>(molecule: &M) -> Option<M> {
             && molecule.get_atom_charge(atom) == 0
             && heavy_degree(molecule, atom) == 1
     };
-    // Asked of a Kekule form. An aromatic bond does not say which side of the
-    // phosphorus the π bond is on: `[p+]1([O-])ccccc1` has it in the ring, and
-    // the `[P+](=O)` of a dibenzoxaphosphinine, which perception also calls
-    // aromatic, has it on the oxygen.
-    let localized;
-    let kekule = if (0..molecule.atomic_numbers().len()).any(|atom| {
-        matches!(molecule.atomic_numbers()[atom], 15 | 33 | 51)
-            && molecule.get_atom_bonds(atom).is_some_and(|bonds| {
-                bonds
-                    .iter()
-                    .any(|bond| bond.bond_order() == BondOrder::Aromatic)
+    // The terminal chalcogens a centre can take a positive charge from, with
+    // the order their bond to it drops to.
+    let positive_chalcogens = |bonds: &[BondTarget]| -> Vec<(usize, BondOrder)> {
+        bonds
+            .iter()
+            .filter(|bond| {
+                matches!(molecule.atomic_numbers()[bond.target()], 8 | 16 | 34 | 52)
+                    && molecule.get_atom_charge(bond.target()) == 1
+                    && heavy_degree(molecule, bond.target()) == 1
             })
-    }) {
-        let mut copy = molecule.clone();
-        let _ = copy.localize_aromatic_bonds();
-        localized = copy;
-        &localized
-    } else {
-        molecule
-    };
-    let ylide = |atom: usize| {
-        matches!(kekule.atomic_numbers()[atom], 15 | 33 | 51)
-            && kekule.get_atom_bonds(atom).is_some_and(|bonds| {
-                bonds.iter().any(|bond| {
-                    bond.bond_order() == BondOrder::Double
-                        && !(kekule.atomic_numbers()[bond.target()] == 8
-                            && heavy_degree(kekule, bond.target()) == 1)
-                })
+            .filter_map(|bond| match bond.bond_order() {
+                BondOrder::Triple => Some((bond.target(), BondOrder::Double)),
+                BondOrder::Double => Some((bond.target(), BondOrder::Single)),
+                _ => None,
             })
+            .collect()
     };
     // Each pair is a centre, a chalcogen, and the order the bond between them
-    // takes.
+    // takes. A higher order moves a unit of charge from the centre to the
+    // chalcogen, a lower one from the chalcogen to the centre.
     let mut pairs: Vec<(usize, usize, BondOrder)> = Vec::new();
     for atom in 0..molecule.atomic_numbers().len() {
         let charge = molecule.get_atom_charge(atom);
@@ -603,7 +600,7 @@ fn with_centre_charges_moved<M: Molecule + Clone>(molecule: &M) -> Option<M> {
         let Some(bonds) = molecule.get_atom_bonds(atom) else {
             continue;
         };
-        if ylide(atom) {
+        if is_ylide_hub(molecule, atom) {
             // A charged one stays as it is. `C#[P+]O` has the tautomer
             // `C=[P+]=O`, and separating that oxide makes a dication of it.
             if charge == 0 {
@@ -621,32 +618,69 @@ fn with_centre_charges_moved<M: Molecule + Clone>(molecule: &M) -> Option<M> {
             continue;
         }
         if charge > 0 {
-            // Which oxides take the double bonds has to be the molecule's
+            // Which anions take the double bonds has to be the molecule's
             // choice, not the input's order: with `[17O-]` and `[18O-]` on one
             // centre the label landed on whichever came first, and the
             // canonical SMILES, which lists them the other way round, keyed
-            // differently. Oxygens alike in all but position are equivalent,
-            // so the lightest go first.
-            let mut oxides: Vec<usize> = bonds
+            // differently. Anions alike in all but position are equivalent, so
+            // oxygen goes first and the lightest of an element before the rest.
+            let mut anions: Vec<usize> = bonds
                 .iter()
-                .filter(|bond| bond.bond_order() == BondOrder::Single && oxide(bond.target()))
+                .filter(|bond| bond.bond_order() == BondOrder::Single && anion(bond.target()))
                 .map(|bond| bond.target())
                 .collect();
-            oxides.sort_by_key(|&oxygen| molecule.get_isotope(oxygen));
+            anions.sort_by_key(|&anion| {
+                (
+                    molecule.atomic_numbers()[anion],
+                    molecule.get_isotope(anion),
+                )
+            });
             pairs.extend(
-                oxides
+                anions
                     .into_iter()
                     .take(charge as usize)
-                    .map(|oxygen| (atom, oxygen, BondOrder::Double)),
+                    .map(|anion| (atom, anion, BondOrder::Double)),
             );
-        } else if charge < 0 {
+        } else if charge == 0 {
+            let Some(used) = used_valence(molecule, atom) else {
+                continue;
+            };
+            if !valence_options(molecule.atomic_numbers()[atom], 1, bonds.len() as i64)
+                .contains(&(used - 1))
+            {
+                continue;
+            }
+            let mut cations = positive_chalcogens(bonds);
+            cations.sort_by_key(|&(cation, _)| {
+                (
+                    molecule.atomic_numbers()[cation],
+                    molecule.get_isotope(cation),
+                )
+            });
+            pairs.extend(
+                cations
+                    .into_iter()
+                    .take(1)
+                    .map(|(cation, order)| (atom, cation, order)),
+            );
+        } else {
+            let cations: Vec<(usize, BondOrder)> = positive_chalcogens(bonds)
+                .into_iter()
+                .take(charge.unsigned_abs() as usize)
+                .collect();
+            let left = charge.unsigned_abs() as usize - cations.len();
+            pairs.extend(
+                cations
+                    .into_iter()
+                    .map(|(cation, order)| (atom, cation, order)),
+            );
             pairs.extend(
                 bonds
                     .iter()
                     .filter(|bond| {
                         bond.bond_order() == BondOrder::Double && neutral_chalcogen(bond.target())
                     })
-                    .take(charge.unsigned_abs() as usize)
+                    .take(left)
                     .map(|bond| (atom, bond.target(), BondOrder::Single)),
             );
         }
@@ -656,12 +690,144 @@ fn with_centre_charges_moved<M: Molecule + Clone>(molecule: &M) -> Option<M> {
     }
     let mut copy = molecule.clone();
     for (centre, chalcogen, order) in pairs {
+        let higher =
+            bond_units(order) > bond_units(bond_order_between(molecule, centre, chalcogen));
         set_bond_order(&mut copy, centre, chalcogen, order);
-        let moved = if order == BondOrder::Double { 1 } else { -1 };
+        let moved = if higher { 1 } else { -1 };
         *copy.get_atom_charge_mut(centre) -= moved;
         *copy.get_atom_charge_mut(chalcogen) += moved;
     }
     Some(copy)
+}
+
+/// `normalize`'s answer with each onium on a hub written as the hub's charge:
+/// `CCP(=O)=[OH+]` as `CC[P+](=O)O`.
+///
+/// Erasure pools a hub's charge (see [`erased_skeleton`]), and where nothing
+/// else in the molecule takes it the solver puts it on one of the hub's own
+/// chalcogens. That is a structure, but not the one anybody draws, and writing
+/// the charge back on the hub costs nothing: erasure pools it again on the way
+/// in, so the key and a second normalization see what they saw the first time.
+fn with_hub_charges_written_back<M: Molecule + Clone + ToSMILES>(
+    canonizer: &mut Canonizer,
+    molecule: M,
+) -> M {
+    let onium = |atom: usize| {
+        matches!(molecule.atomic_numbers()[atom], 8 | 16 | 34 | 52)
+            && molecule.get_atom_charge(atom) == 1
+            && heavy_degree(&molecule, atom) == 1
+            && molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+                bonds
+                    .iter()
+                    .any(|bond| molecule.atomic_numbers()[bond.target()] == 1)
+            })
+    };
+    let pairs: Vec<(usize, usize)> = (0..molecule.atomic_numbers().len())
+        .filter(|&atom| is_hub(&molecule, atom))
+        .flat_map(|atom| {
+            molecule
+                .get_atom_bonds(atom)
+                .unwrap_or_default()
+                .iter()
+                .filter(|bond| bond.bond_order() == BondOrder::Double && onium(bond.target()))
+                .map(move |bond| (atom, bond.target()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if pairs.is_empty() {
+        return molecule;
+    }
+    // Only while the hub's valence allows: two oniums on one phosphorus would
+    // write back as `[P+2]`, which is no phosphorus `normalize` accepts.
+    let mut copy = molecule;
+    let mut changed = false;
+    for (centre, chalcogen) in pairs {
+        let charge = copy.get_atom_charge(centre) + 1;
+        let (Some(bonds), Some(used)) = (copy.get_atom_bonds(centre), used_valence(&copy, centre))
+        else {
+            continue;
+        };
+        if !valence_options(copy.atomic_numbers()[centre], charge, bonds.len() as i64)
+            .contains(&(used - 1))
+        {
+            continue;
+        }
+        set_bond_order(&mut copy, centre, chalcogen, BondOrder::Single);
+        *copy.get_atom_charge_mut(centre) = charge;
+        *copy.get_atom_charge_mut(chalcogen) -= 1;
+        changed = true;
+    }
+    if !changed {
+        return copy;
+    }
+    canonizer.canonize(&copy)
+}
+
+/// Canonizes an erased skeleton whose atoms carry their own indices as atom
+/// classes, telling apart hubs that are held to different valences.
+///
+/// Erasure takes a hub's bonds to single and keeps the valence it was using
+/// beside the skeleton rather than in it, so a phosphonous acid's `P(O)O` and
+/// a phosphinic acid's `P(=O)O` -- three and five -- are the same atom to the
+/// labelling. A molecule holding one of each then looked symmetric, and which
+/// phosphorus the solver gave which hydrogens fell to the atom order: PubChem's
+/// `C(P(O)O)[P+](=O)O` came back two ways. Each hub's valence is added to its
+/// isotope for the labelling alone, in thousands so a `[32P]` stays told apart
+/// from a plain phosphorus, and its own isotope is put back afterwards.
+fn canonize_skeleton<M: Molecule + Clone + ToSMILES>(
+    canonizer: &mut Canonizer,
+    tagged: &M,
+    groups: &TautomericGroups,
+) -> M {
+    const MARK: u16 = 1000;
+    let hubs: Vec<(usize, i64)> = (0..tagged.atomic_numbers().len())
+        .filter(|&atom| is_hub(tagged, atom))
+        .filter_map(|atom| groups.used_valence(atom).map(|valence| (atom, valence)))
+        .collect();
+    if hubs.is_empty() {
+        return canonizer.canonize(tagged);
+    }
+    let original = tagged.isotopes().cloned();
+    let mut marked = tagged.clone();
+    let mut isotopes = original
+        .clone()
+        .unwrap_or_else(|| vec![0; tagged.atomic_numbers().len()]);
+    for &(hub, valence) in &hubs {
+        isotopes[hub] += MARK * (valence as u16 + 1);
+    }
+    *marked.isotopes_mut() = Some(isotopes);
+    let mut canonical = canonizer.canonize(&marked);
+    let Some(origins) = canonical.atom_classes().clone() else {
+        return canonical;
+    };
+    *canonical.isotopes_mut() = original.map(|isotopes| {
+        origins
+            .iter()
+            .map(|&origin| isotopes.get(origin).copied().unwrap_or(0))
+            .collect()
+    });
+    canonical
+}
+
+/// How many bond units an order counts for, as far as a hub's rewrite cares.
+fn bond_units(order: BondOrder) -> u8 {
+    match order {
+        BondOrder::Double => 2,
+        BondOrder::Triple => 3,
+        _ => 1,
+    }
+}
+
+/// The order of the bond between two atoms, single if they are not bonded.
+fn bond_order_between<M: Molecule + ?Sized>(
+    molecule: &M,
+    first: usize,
+    second: usize,
+) -> BondOrder {
+    molecule
+        .get_atom_bonds(first)
+        .and_then(|bonds| bonds.iter().find(|bond| bond.target() == second))
+        .map_or(BondOrder::Single, |bond| bond.bond_order())
 }
 
 /// Whether `atom` can hold part of a π system.
@@ -729,6 +895,29 @@ fn heavy_degree<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> usize {
                 .count()
         })
         .unwrap_or(0)
+}
+
+/// Whether `atom` is a phosphorus, arsenic or antimony hub whose π bond is one
+/// its units cannot move: a double bond to a carbon, or a ring perception calls
+/// aromatic. Such a hub keeps its oxide charge-separated and its charge on
+/// itself; see [`with_centre_charges_moved`].
+///
+/// Read off the molecule as written, not a Kekule form of it: a ring that is
+/// aromatic says nothing about which neighbour has the phosphorus's π bond,
+/// and localizing it chose a ring nitrogen in one writing and a carbon in
+/// another, so `CN1C2=[P+](N=C1NC2=O)[O-]` was a ylide on the way in and not on
+/// the way back. A double bond to a ligand does not count either: `NN=[P+](O)[S-]`
+/// has its `P=N` as a `P=S` in another tautomer.
+fn is_ylide_hub<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
+    matches!(molecule.atomic_numbers()[atom], 15 | 33 | 51)
+        && is_hub(molecule, atom)
+        && molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+            bonds.iter().any(|bond| {
+                bond.bond_order() == BondOrder::Aromatic
+                    || (bond.bond_order() == BondOrder::Double
+                        && !is_hub_bond(molecule, atom, bond.target()))
+            })
+        })
 }
 
 /// Whether `atom` is a **hub**: a phosphorus, sulfur or heavier congener with
@@ -1403,6 +1592,79 @@ pub fn erased_skeleton<M: Molecule + Clone + ToSMILES>(
         }
     }
 
+    // A hub's charge joins the pool. It is bookkeeping for the hub's semipolar
+    // bonds, and which writing holds it is a proton's choice: `[S+](=O)(N)(O)C`
+    // beside a carboxylate is the sulfonamide beside the acid, and
+    // `[P+](=O)N`'s charge is on the phosphorus where the oxygen holds no
+    // hydrogen and on an `=[OH+]` where it does. Kept on the hub, it was a fact
+    // about the writing that erasure did not erase, and `normalize`, which could
+    // spend it, wrote forms the key told apart. In the pool it is placed like
+    // any other charge, and the hub takes the valence it would have without it.
+    // A ylide keeps its own (see [`is_ylide_hub`]), and so does a hub in no
+    // group, which has nothing to pool with: `C[P+](C)(C)O`. So does a hub with
+    // no terminal chalcogen, which is the one place the pool can always put the
+    // charge back: a phosphonium in a cage of selenium bridges had none, and
+    // with its charge pooled no assignment existed. And so does a hub whose
+    // charge is what lets it hold its bonds at all: the six-bonded `[P-]` of a
+    // spirophosphorane is no neutral phosphorus, and neither is the `[S-]` of
+    // `C#[S-](N)O`, whose triple bond no group moves.
+    let mut groups = groups;
+    let mut used = used;
+    let mut pooled_hubs: Vec<usize> = Vec::new();
+    let has_a_terminal_chalcogen = |hub: usize| {
+        molecule.get_atom_bonds(hub).is_some_and(|bonds| {
+            bonds
+                .iter()
+                .any(|bond| hub_of_terminal(molecule, bond.target()) == Some(hub))
+        })
+    };
+    // Read on the skeleton, where every bond a group owns is single by now: a
+    // `P=C` still double is one no tautomer moves. On the molecule as written
+    // a `P=C` in a ring a group runs through counted in one writing and not in
+    // the next.
+    let ylides: Vec<usize> = (0..skeleton.atomic_numbers().len())
+        .filter(|&atom| is_ylide_hub(&skeleton, atom))
+        .collect();
+    for index in 0..groups.groups.len() {
+        let bonds = groups.groups[index].bonds.clone();
+        for (first, second) in bonds {
+            if !is_hub_bond(&skeleton, first, second) {
+                continue;
+            }
+            for hub in [first, second] {
+                let charge = skeleton.get_atom_charge(hub);
+                if charge == 0
+                    || !is_hub(&skeleton, hub)
+                    || ylides.contains(&hub)
+                    || !has_a_terminal_chalcogen(hub)
+                    || pooled_hubs.contains(&hub)
+                {
+                    continue;
+                }
+                let held: i64 = skeleton.get_atom_bonds(hub).map_or(0, |bonds| {
+                    bonds
+                        .iter()
+                        .map(|bond| i64::from(bond_units(bond.bond_order())))
+                        .sum()
+                });
+                let Some(Some(valence)) = used.get(hub) else {
+                    continue;
+                };
+                if !valence_options(skeleton.atomic_numbers()[hub], 0, held)
+                    .contains(&(valence + i64::from(charge)))
+                {
+                    continue;
+                }
+                pooled_hubs.push(hub);
+                groups.groups[index].mobile_charge += i32::from(charge);
+                *skeleton.get_atom_charge_mut(hub) = 0;
+                if let Some(Some(valence)) = used.get_mut(hub) {
+                    *valence += i64::from(charge);
+                }
+            }
+        }
+    }
+
     // Then the mobile hydrogens. Removing an atom shifts every index above it,
     // so they go in descending order and the groups are remapped afterwards.
     let mut mobile: Vec<usize> = Vec::new();
@@ -1855,7 +2117,7 @@ pub fn tautomer_key_with<M: Molecule + Clone + ToSMILES>(
     // The skeleton's bond orders have been rewritten, so whatever aromaticity
     // the molecule arrived with no longer describes it; `canonize` perceives it
     // again rather than trusting what is there.
-    let mut canonical = canonizer.canonize(&tagged);
+    let mut canonical = canonize_skeleton(canonizer, &tagged, &groups);
     let origins = canonical.atom_classes().clone();
     // The classes are emitted as `:n` in SMILES, so they go before the write.
     *canonical.atom_classes_mut() = None;
@@ -2332,7 +2594,7 @@ pub fn try_normalize_with<M: Molecule + Clone + ToSMILES>(
     // keeping the smaller settles it, and the question is only ever asked of a
     // molecule that has such a symmetry.
     if !mirror_ambiguous {
-        return Ok(settled);
+        return Ok(with_hub_charges_written_back(canonizer, settled));
     }
     // Normalizing again either stays where it is, or walks a short cycle
     // through the mirror images of one answer. Following it to the cycle and
@@ -2351,7 +2613,7 @@ pub fn try_normalize_with<M: Molecule + Clone + ToSMILES>(
                 .iter()
                 .min_by(|(left, _), (right, _)| left.cmp(right))
                 .unwrap();
-            return Ok(smallest.1.clone());
+            return Ok(with_hub_charges_written_back(canonizer, smallest.1.clone()));
         }
         walked.push((smiles, next));
     }
@@ -2385,7 +2647,7 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
     let atom_count = skeleton.atomic_numbers().len();
     let mut tagged = skeleton;
     *tagged.atom_classes_mut() = Some((0..atom_count).collect());
-    let mut canonical = canonizer.canonize(&tagged);
+    let mut canonical = canonize_skeleton(canonizer, &tagged, &groups);
     let origins = canonical.atom_classes().clone()?;
     *canonical.atom_classes_mut() = None;
 
@@ -3826,20 +4088,39 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
     // so a cation that can be an ammonium is not written as an oxonium: an
     // ester oxygen has no room either, and on room alone it kept the proton a
     // benzimidazolium was carrying.
+    // Of the chalcogens, a hub's own keep it longest: a hub's charge is pooled
+    // (see [`erased_skeleton`]), and where nothing else takes it back it is
+    // written on the hub again (see [`with_hub_charges_written_back`]) rather
+    // than as an `[OH+]` on an ester oxygen beside it.
     let gives_back_first = |slot: usize| {
-        u8::from(matches!(
-            molecule.atomic_numbers()[group.atoms[slot]],
-            8 | 16 | 34 | 52
-        ))
+        let atom = group.atoms[slot];
+        if !matches!(molecule.atomic_numbers()[atom], 8 | 16 | 34 | 52) {
+            0u8
+        } else if hub_of_terminal(molecule, atom).is_some() {
+            1
+        } else {
+            2
+        }
     };
-    let mut offers: Vec<(u8, usize, usize)> = positive_edges
+    // And a hub's second oxygen before any hub's first, as for the negative
+    // charges above: a hub's charge goes to an oxygen as an onium on the way
+    // in (see [`with_centre_charges_moved`]), and `C(C[P+](=O)O)[P+](=O)O`
+    // came back with both on one phosphorus, written `[P+2](O)(O)`.
+    let mut offers: Vec<(u8, usize, usize, usize)> = positive_edges
         .iter()
-        .map(|&(edge, slot)| (gives_back_first(slot), required[slot], edge))
+        .map(|&(edge, slot)| {
+            (
+                gives_back_first(slot),
+                hub_oxygen_rank(group.atoms[slot]).unwrap_or(0),
+                required[slot],
+                edge,
+            )
+        })
         .collect();
     offers.sort_unstable_by(|first, second| second.cmp(first));
     let offers = offers
         .into_iter()
-        .map(|(_, room, edge)| (room, edge))
+        .map(|(_, _, room, edge)| (room, edge))
         .collect();
     // Read from σ bonds alone, like everything else here, so every tautomer
     // of a compound names the same edges.
@@ -4177,7 +4458,7 @@ fn apply<M: Molecule + Clone + ToSMILES>(molecule: &mut M, assignment: &Assignme
     // disturb the indices the rest of the assignment names.
     for &atom in &assignment.hydrogens {
         let mut hydrogen = crate::atom::Atom::new(1);
-        hydrogen.add_bond(crate::molecule::bond::BondTarget::single(atom));
+        hydrogen.add_bond(BondTarget::single(atom));
         molecule.add_atom(hydrogen);
     }
 

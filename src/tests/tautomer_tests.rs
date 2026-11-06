@@ -1470,15 +1470,21 @@ fn a_phosphorus_with_a_double_bond_keeps_its_oxide_separated() {
         assert_eq!(key(double), key(separated), "{double}");
         assert_eq!(normalized(double), normalized(separated), "{double}");
     }
-    let ring = normalized("C1=CC=C2C(=C1)N=C3C=C(C=CC3=[P+]2[O-])Br");
-    assert!(MolecularGraph::from_smiles_single(&ring).is_ok(), "{ring}");
     // A `[P+](=O)` whose ring perception calls aromatic has its π bond on the
     // oxygen, and keeps it there.
-    let oxaphosphinine = normalized("C1=CC=C2C(=C1)C3=CC=CC=C3[P+](=O)O2");
-    assert!(
-        MolecularGraph::from_smiles_single(&oxaphosphinine).is_ok(),
-        "{oxaphosphinine}"
-    );
+    for smiles in [
+        "C1=CC=C2C(=C1)N=C3C=C(C=CC3=[P+]2[O-])Br",
+        "C1=CC=C2C(=C1)C3=CC=CC=C3[P+](=O)O2",
+        "CN1C2=[P+](N=C1NC2=O)[O-]",
+    ] {
+        let normal = normalized(smiles);
+        assert!(
+            MolecularGraph::from_smiles_single(&normal).is_ok(),
+            "{smiles} gave {normal}"
+        );
+        assert_eq!(normalized(&normal), normal, "{smiles}");
+        assert_eq!(key(&normal), key(smiles), "{smiles}");
+    }
     // The double bond is a tautomer's to move, from the `=NH` to the `=C`
     // here, and the oxide is written the same way either side of the move.
     let moved = normalized("NC(=O)C/C(O)=C/[P+](=N)[O-]");
@@ -1584,6 +1590,59 @@ fn a_cation_on_a_sulfonyl_oxygen_still_normalizes() {
         let answer = crate::molecule::tautomer::try_normalize(&molecule, &rules)
             .unwrap_or_else(|error| panic!("{smiles}: {error}"));
         assert_eq!(key(&answer.to_smiles()), key(smiles), "{smiles}");
+    }
+}
+
+/// A hub's charge is the compound's, not the writing's. PubChem writes a
+/// phosphorothioate `[P+](=O)[S-]`, a sulfinamide `[S-]#[O+]` and a
+/// sulfonamide beside a carboxylate `[S+](O)`, each one compound with its
+/// neutral form; where nothing else takes the charge it stays on the hub, as
+/// it is drawn.
+#[test]
+fn a_hub_charge_is_the_compound_s_not_the_writing_s() {
+    use crate::graph_algorithms::mol_canonization::reorder_molecule;
+    use crate::molecule::tautomer::normalize;
+    use rand::{SeedableRng, seq::SliceRandom};
+    for (charged, neutral) in [
+        ("CO[P+](=O)[S-]", "COP(=O)=S"),
+        ("C=C[S-](#[O+])N1CCCC1", "C=CS(=O)N1CCCC1"),
+        ("[O-]C(=O)CC[S+](=O)(N)O", "OC(=O)CCS(=O)(=O)N"),
+        ("CS(=[OH+])(C)(C)I", "C[S+](O)(C)(C)I"),
+        ("CNS(=[OH+])(C)(Nc1ccccc1)O", "CN[S+](O)(O)(Nc1ccccc1)C"),
+    ] {
+        assert_eq!(key(charged), key(neutral), "{charged}");
+        assert_eq!(normalized(charged), normalized(neutral), "{charged}");
+    }
+    for smiles in [
+        "CC[P+](=O)O",
+        "C[P+](C)(C)O",
+        "C(C[P+](=O)O)[P+](=O)O",
+        "[O-]P(=O)([O-])O[32P](=O)([O-])[O-]",
+        "CCCCCCC(O)(P(=O)(O)O)[32P](=O)(O)O",
+        "C1=CC=C2C(=C1)O[P-]3(O2)(OC4=CC=CC=C4O3)(O)Cl",
+        "C#[S-](N)O",
+    ] {
+        let normal = normalized(smiles);
+        assert!(
+            !normal.contains("[OH+]") && !normal.contains("+2"),
+            "{smiles} gave {normal}"
+        );
+        assert_eq!(normalized(&normal), normal, "{smiles}");
+        assert_eq!(key(&normal), key(smiles), "{smiles}");
+    }
+    // A phosphonous and a phosphinic acid on one carbon are the same atom
+    // once erased, but for the valence each is held to; which of them holds
+    // the charge is still the molecule's to say, not the atom order's.
+    let rules = TautomerRules::new();
+    let molecule = MolecularGraph::from_smiles_single("C(P(O)O)[P+](=O)O").unwrap();
+    let expected = normalize(&molecule, &rules).unwrap().to_smiles();
+    let mut rng = rand::rngs::StdRng::seed_from_u64(57278377);
+    for _ in 0..12 {
+        let mut copy = molecule.clone();
+        let mut order: Vec<_> = (0..copy.len()).collect();
+        order.shuffle(&mut rng);
+        reorder_molecule(&mut copy, &order);
+        assert_eq!(normalize(&copy, &rules).unwrap().to_smiles(), expected);
     }
 }
 

@@ -5,6 +5,7 @@ mod chirality_tests;
 mod cip_tests;
 mod embed_tests;
 mod fingerprint_tests;
+mod inchi_tests;
 mod matching_tests;
 mod mces_tests;
 mod ml_tests;

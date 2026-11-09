@@ -108,3 +108,36 @@ implementing Rappe & Goddard, *J. Phys. Chem.* **1991**, 95, 3358.
 Graph canonicalization uses the [canonaut](https://crates.io/crates/canonaut)
 crate, version 1.1.0 or later, from crates.io. Its licence and `NOTICE` ship
 with the crate.
+
+## InChI — MIT
+
+`src/io/inchi/elements.rs` holds the element table of the InChI software
+version 1.07.5 (`ElData` in `INCHI-1-SRC/INCHI_BASE/src/util.c`,
+<https://github.com/IUPAC-InChI/InChI>): the reference mass an isotopic shift
+is counted from, which elements are metals, and the valences allowed at each
+charge. The reader in `src/io/inchi/` is otherwise written from the InChI
+Technical Manual and contains no InChI code.
+
+```text
+MIT License
+
+Copyright (c) 2024 InChI Project
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

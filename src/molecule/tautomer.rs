@@ -914,7 +914,7 @@ fn heavy_degree<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> usize {
         .map(|bonds| {
             bonds
                 .iter()
-                .filter(|bond| molecule.atomic_numbers()[bond.target()] > 1)
+                .filter(|bond| molecule.atomic_numbers()[bond.target()] != 1)
                 .count()
         })
         .unwrap_or(0)
@@ -994,7 +994,7 @@ fn hub_of_terminal<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> Option<us
         .get_atom_bonds(atom)?
         .iter()
         .map(|bond| bond.target())
-        .filter(|&target| molecule.atomic_numbers()[target] > 1);
+        .filter(|&target| molecule.atomic_numbers()[target] != 1);
     match (heavy.next(), heavy.next()) {
         (Some(centre), None) if is_hub(molecule, centre) => Some(centre),
         _ => None,
@@ -3078,7 +3078,7 @@ fn a_symmetry_moves_a_placement<M: Molecule + Clone + ToSMILES>(
 fn placement_signature<M: Molecule + ?Sized>(molecule: &M) -> Vec<(u8, i8, u8)> {
     let numbers = molecule.atomic_numbers();
     (0..numbers.len())
-        .filter(|&atom| numbers[atom] > 1)
+        .filter(|&atom| numbers[atom] != 1)
         .map(|atom| {
             let hydrogens = molecule
                 .get_atom_bonds(atom)
@@ -3824,7 +3824,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         let bonds = molecule.get_atom_bonds(atom)?;
         let heavy = bonds
             .iter()
-            .filter(|bond| molecule.atomic_numbers()[bond.target()] > 1)
+            .filter(|bond| molecule.atomic_numbers()[bond.target()] != 1)
             .count();
         let hydrogens = bonds.len() - heavy;
         // π already committed on bonds the group does not own -- a triple bond
@@ -4057,7 +4057,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
                 .map(|bonds| {
                     bonds
                         .iter()
-                        .filter(|bond| molecule.atomic_numbers()[bond.target()] > 1)
+                        .filter(|bond| molecule.atomic_numbers()[bond.target()] != 1)
                         .count()
                 })
                 .unwrap_or(0) as i64;

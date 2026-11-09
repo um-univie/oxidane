@@ -1865,3 +1865,21 @@ fn the_charge_reduced_key_keeps_what_protons_cannot_change() {
         assert_ne!(reduced_key(first), reduced_key(second), "{first} {second}");
     }
 }
+
+/// A wildcard atom, `*`, is a substituent like any other: counted among an
+/// endpoint's heavy neighbours, an amide or ester written with one has its
+/// canonical tautomer, where it had none.
+#[test]
+fn a_wildcard_is_a_heavy_neighbour() {
+    for (input, expected) in [
+        ("*NC(=O)C", "O=C(N*)C"),
+        ("CC(=O)O*", "O(C(=O)C)*"),
+        ("CC(O)=N*", "O=C(N*)C"),
+    ] {
+        assert_eq!(
+            normalized_smiles(input, &TautomerRules::new()).unwrap(),
+            expected,
+            "{input}"
+        );
+    }
+}

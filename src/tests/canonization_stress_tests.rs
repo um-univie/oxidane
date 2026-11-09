@@ -132,6 +132,39 @@ mod canonization_stress_tests {
         }
     }
 
+    /// A record's components are canonized one at a time. Cycloalkanes of
+    /// different sizes side by side are a graph colour refinement cannot split,
+    /// and searched whole, eight of each of four sizes did not finish: every
+    /// extra set of four multiplied the time by ten. PubChem's CID 157779877
+    /// holds 57 such rings and ran for hours. The record's tautomer key goes
+    /// through the same labelling, so it is checked too.
+    #[test]
+    fn a_record_of_many_small_rings_canonizes_alike() {
+        use crate::molecule::tautomer::{TautomerRules, tautomer_key};
+        let rules = TautomerRules::new();
+        let rings = [
+            "C1CC1", "C1CCC1", "C1CCCC1", "C1CCCCC1", "C1CCOC1", "C1CCSCC1",
+        ];
+        let smiles = rings.repeat(8).join(".");
+        let parts = MolecularGraph::from_smiles(&smiles).unwrap();
+        let parts: Vec<&MolecularGraph> = parts.iter().collect();
+        let molecule = MolecularGraph::combine(&parts);
+        let expected = canonize_mol(&molecule).to_smiles();
+        let key = tautomer_key(&molecule, &rules);
+        let mut rng = StdRng::seed_from_u64(157779877);
+        for trial in 0..8 {
+            let order = random_permutation(molecule.len(), &mut rng);
+            let mut permuted = molecule.clone();
+            reorder_molecule(&mut permuted, &order);
+            assert_eq!(
+                canonize_mol(&permuted).to_smiles(),
+                expected,
+                "trial {trial}"
+            );
+            assert_eq!(tautomer_key(&permuted, &rules), key, "trial {trial}");
+        }
+    }
+
     #[test]
     fn pubchem_stereo_permutations_preserve_both_canonical_forms() {
         use crate::molecule::tautomer::{TautomerRules, normalize, tautomer_key};

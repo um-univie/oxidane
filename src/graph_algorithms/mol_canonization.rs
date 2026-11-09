@@ -242,6 +242,10 @@ impl Canonizer {
         &mut self,
         mut molecule: T,
     ) -> T {
+        let components = molecule.get_components();
+        if components.len() > 1 {
+            return self.canonize_each_component(molecule, &components);
+        }
         let (indices, labels) = prepare_and_sort_indices_and_labels(&molecule, &[]);
         self.automorphisms.clear();
         let _ = run_canonization(
@@ -257,6 +261,172 @@ impl Canonizer {
         self.graph_automorphisms.clone_from(&self.automorphisms);
         self.split_orbits_by_stereo(&mut molecule);
         molecule
+    }
+
+    /// [`Canonizer::canonize_in_the_order_given`] for a molecule of several
+    /// components.
+    ///
+    /// A record is a set of molecules, and its canonical form is theirs: each
+    /// component is canonized on its own, exactly as it would be alone, and the
+    /// record lists them in the order of their canonical forms. The atom
+    /// invariants decide first, the component holding the highest-ranked atom
+    /// leading as it did when nauty labelled the record whole (`Cl.CC`,
+    /// `O.O=C(NC)C`), and the canonical SMILES decide between components no
+    /// invariant tells apart, such as two diastereomers.
+    ///
+    /// Labelled whole, the record asked more of nauty than any of its parts do.
+    /// Colour refinement cannot tell a cyclopropane carbon from a cyclohexane
+    /// one -- each has two ring neighbours and two hydrogens -- so with rings
+    /// of several sizes side by side the search had to try which ring each atom
+    /// it individualized sat in, and every further set of four sizes multiplied
+    /// the time by ten. PubChem's CID 157779877, 57 small rings and
+    /// heterocycles, ran for hours. And a component's labelling, and with it
+    /// its SMILES, depended on what else the record held.
+    ///
+    /// The automorphisms reported are each component's, moved to where the
+    /// component now sits, and a swap of each neighbouring pair of components
+    /// that are the same compound, which together give every permutation of
+    /// them.
+    fn canonize_each_component<T: Molecule + Clone + ToSMILES>(
+        &mut self,
+        molecule: T,
+        components: &[Vec<usize>],
+    ) -> T {
+        struct Part<T> {
+            canonical: T,
+            origins: Vec<usize>,
+            heavy: usize,
+            labels: Vec<AtomInvariant>,
+            smiles: Option<String>,
+            automorphisms: Vec<Vec<usize>>,
+            graph_automorphisms: Vec<Vec<usize>>,
+        }
+        let count = molecule.len();
+        let mut empty = molecule.clone();
+        while empty.len() > 0 {
+            empty.pop_atom();
+        }
+        let mut place = vec![0; count];
+        let mut parts: Vec<Part<T>> = Vec::with_capacity(components.len());
+        for component in components {
+            let alone = component_alone(&molecule, &empty, component, &mut place);
+            let canonical = self.canonize_in_the_order_given(alone);
+            let origins = canonical.atom_classes().clone().unwrap_or_default();
+            let heavy = canonical
+                .atomic_numbers()
+                .iter()
+                .filter(|&&atomic_number| atomic_number != 1)
+                .count();
+            let labels = (0..heavy)
+                .map(|atom| canonical.get_atom_invariant(atom))
+                .collect();
+            parts.push(Part {
+                canonical,
+                origins,
+                heavy,
+                labels,
+                smiles: None,
+                automorphisms: std::mem::take(&mut self.automorphisms),
+                graph_automorphisms: std::mem::take(&mut self.graph_automorphisms),
+            });
+        }
+
+        // Invariants along each canonical order, highest first; the SMILES only
+        // where those tie, without the atom classes, which are no part of the
+        // canonical form.
+        let mut order: Vec<usize> = (0..parts.len()).collect();
+        order.sort_by(|&left, &right| parts[right].labels.cmp(&parts[left].labels));
+        let mut start = 0;
+        while start < order.len() {
+            let end = start
+                + order[start..]
+                    .iter()
+                    .take_while(|&&part| parts[part].labels == parts[order[start]].labels)
+                    .count();
+            if end - start > 1 {
+                for &part in &order[start..end] {
+                    let mut written = parts[part].canonical.clone();
+                    *written.atom_classes_mut() = None;
+                    parts[part].smiles = Some(written.to_smiles());
+                }
+                order[start..end]
+                    .sort_by(|&left, &right| parts[left].smiles.cmp(&parts[right].smiles));
+            }
+            start = end;
+        }
+
+        // Heavy atoms first, component by component, then the hydrogens the
+        // same way, as a single molecule's canonical order has them.
+        let mut final_order = Vec::with_capacity(count);
+        let mut heavy_at = Vec::with_capacity(order.len());
+        for &part in &order {
+            heavy_at.push(final_order.len());
+            final_order.extend_from_slice(&parts[part].origins[..parts[part].heavy]);
+        }
+        let heavy_total = final_order.len();
+        let mut light_at = Vec::with_capacity(order.len());
+        for &part in &order {
+            light_at.push(final_order.len());
+            final_order.extend_from_slice(&parts[part].origins[parts[part].heavy..]);
+        }
+        let mut record = molecule;
+        reorder_molecule(&mut record, &final_order);
+        // Each atom's neighbours keep their order, so a tag reads the same in
+        // the record as in its component -- and the component's is the one to
+        // keep, since canonizing it may have settled a tag the reordering
+        // alone does not reproduce, such as a free centre written `@`.
+        if let Some(classes) = record.chiral_classes_mut() {
+            for (slot, &part) in order.iter().enumerate() {
+                let part = &parts[part];
+                let Some(own) = part.canonical.chiral_classes() else {
+                    continue;
+                };
+                for (atom, &class) in own.iter().enumerate() {
+                    let at = if atom < part.heavy {
+                        heavy_at[slot] + atom
+                    } else {
+                        light_at[slot] + atom - part.heavy
+                    };
+                    classes[at] = class;
+                }
+            }
+        }
+
+        let identity: Vec<usize> = (0..heavy_total).collect();
+        let shifted = |permutations: &[Vec<usize>], at: usize| -> Vec<Vec<usize>> {
+            permutations
+                .iter()
+                .map(|permutation| {
+                    let mut full = identity.clone();
+                    for (atom, &image) in permutation.iter().enumerate() {
+                        full[at + atom] = at + image;
+                    }
+                    full
+                })
+                .collect()
+        };
+        self.automorphisms.clear();
+        self.graph_automorphisms.clear();
+        for (slot, &part) in order.iter().enumerate() {
+            let automorphisms = shifted(&parts[part].automorphisms, heavy_at[slot]);
+            let graph_automorphisms = shifted(&parts[part].graph_automorphisms, heavy_at[slot]);
+            self.automorphisms.extend(automorphisms);
+            self.graph_automorphisms.extend(graph_automorphisms);
+        }
+        for slot in 1..order.len() {
+            let (left, right) = (&parts[order[slot - 1]], &parts[order[slot]]);
+            if left.heavy == 0 || left.labels != right.labels || left.smiles != right.smiles {
+                continue;
+            }
+            let mut swap = identity.clone();
+            for atom in 0..left.heavy {
+                swap[heavy_at[slot - 1] + atom] = heavy_at[slot] + atom;
+                swap[heavy_at[slot] + atom] = heavy_at[slot - 1] + atom;
+            }
+            self.automorphisms.push(swap.clone());
+            self.graph_automorphisms.push(swap);
+        }
+        record
     }
 
     /// Recolours the graph by each stereocentre's orbit-relative tag and
@@ -397,6 +567,61 @@ impl Canonizer {
         let _ = with_sorting;
         Ok(canonical_smiles.join("."))
     }
+}
+
+/// `component` of `molecule` as a molecule of its own, built on `empty` (the
+/// molecule with its atoms popped), its atoms in the order given, and the atom
+/// classes holding each atom's place in `molecule`. `place` is scratch, one
+/// slot per atom of `molecule`.
+///
+/// Built field by field rather than with [`reorder_molecule`], which carries
+/// every atom of the record along and works out every stereo tag across all
+/// of it -- once per component, so a record of many small molecules cost the
+/// square of their number: twenty-four ethanes and ten salts beside them took
+/// 3.5 ms for a key their parts take 0.5 ms for. No tag needs working out
+/// here. `component` is sorted and nothing outside it is bonded to it, so each
+/// atom's neighbours come in the same order alone as in the record, and that
+/// order is what the tags are read against.
+fn component_alone<T: Molecule + Clone>(
+    molecule: &T,
+    empty: &T,
+    component: &[usize],
+    place: &mut [usize],
+) -> T {
+    for (index, &atom) in component.iter().enumerate() {
+        place[atom] = index;
+    }
+    let mut alone = empty.clone();
+    *alone.atomic_numbers_mut() = component
+        .iter()
+        .map(|&atom| molecule.atomic_numbers()[atom])
+        .collect();
+    *alone.charges_mut() = component
+        .iter()
+        .map(|&atom| molecule.charges()[atom])
+        .collect();
+    *alone.radical_states_mut() = component
+        .iter()
+        .map(|&atom| molecule.radical_states()[atom])
+        .collect();
+    *alone.atom_bonds_mut() = component
+        .iter()
+        .map(|&atom| {
+            let mut bonds = molecule.atom_bonds()[atom];
+            for bond in &mut bonds {
+                bond.target = place[bond.target()];
+            }
+            bonds
+        })
+        .collect();
+    if let Some(isotopes) = molecule.isotopes() {
+        *alone.isotopes_mut() = Some(component.iter().map(|&atom| isotopes[atom]).collect());
+    }
+    if let (Some(classes), Some(own)) = (molecule.chiral_classes(), alone.chiral_classes_mut()) {
+        own.extend(component.iter().map(|&atom| classes[atom]));
+    }
+    *alone.atom_classes_mut() = Some(component.to_vec());
+    alone
 }
 
 thread_local! {

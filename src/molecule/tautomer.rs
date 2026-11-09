@@ -3577,6 +3577,11 @@ fn placed_instance<M: Molecule + Clone + ToSMILES>(
 /// hydrogen or a charge that atom was itself holding, and then there is no
 /// assignment at all. Keeping the geometry is worth trying for and not worth
 /// failing over, so the unpinned model answers when the pinned one cannot.
+///
+/// Both are tried with one negative charge to a bonded atom first, and only
+/// where neither has an assignment with two or more on one; see
+/// [`build_instance`]. Whether a model has an assignment is a property of the
+/// skeleton and the totals, so the choice is the same for every tautomer.
 fn instance_for<M: Molecule + Clone + ToSMILES>(
     molecule: &M,
     group: &TautomericGroup,
@@ -3584,8 +3589,19 @@ fn instance_for<M: Molecule + Clone + ToSMILES>(
 ) -> Option<GroupInstance> {
     let positives = group.mobile_charge.max(0) as usize;
     let negatives = (-group.mobile_charge).max(0) as usize;
-    build_instance(molecule, group, positives, negatives, used, true)
-        .or_else(|| build_instance(molecule, group, positives, negatives, used, false))
+    [(true, false), (false, false), (true, true), (false, true)]
+        .into_iter()
+        .find_map(|(pin_stereocentres, stack_negatives)| {
+            build_instance(
+                molecule,
+                group,
+                positives,
+                negatives,
+                used,
+                pin_stereocentres,
+                stack_negatives,
+            )
+        })
 }
 
 /// Whether every assignment the group admits gives one of its bonds the same
@@ -3729,6 +3745,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
     negatives: usize,
     used: &[Option<i64>],
     pin_stereocentres: bool,
+    stack_negatives: bool,
 ) -> Option<GroupInstance> {
     use crate::molecule::matching::DegreeConstrainedInstance;
 
@@ -4065,7 +4082,18 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         // is what an oxide dianion needs: `[O-2]` is one atom holding the whole
         // of a component's charge, and capping every atom at one left it with
         // nowhere to put the second.
-        let charge_offers = required[slot].min(negatives.max(1));
+        //
+        // An atom with a heavy neighbour gets one, as it does a positive
+        // charge. Two let a dithiolate be `C=[S-2]` beside a thione, which
+        // looked like a shift moving its C=C, so `[S-]/C(C)=C(/C)[S-]` and its
+        // Z isomer had one key; and a β-diketiminate came back as `[N-2]`.
+        // `stack_negatives` lifts the cap for a group that has no assignment
+        // without it.
+        let charge_offers = if stack_negatives || heavy_degree(molecule, atom) == 0 {
+            required[slot].min(negatives.max(1))
+        } else {
+            required[slot].min(1)
+        };
         if negatives + separations > 0 && holds_negative_charge(molecule, atom) {
             for _ in 0..charge_offers {
                 charge_edges.push((edges.len(), slot));

@@ -1690,6 +1690,40 @@ fn a_bare_halide_keeps_its_charge_in_a_record() {
     assert_ne!(record_key(&e), record_key(&z));
 }
 
+/// A bonded atom holds one negative charge. Two let a dithiolate be `C=[S-2]`
+/// beside a thione, which looked like a shift moving its C=C: its E and Z
+/// forms had one key, and lost their geometry alone while keeping it beside a
+/// carbonyl ligand. A β-diketiminate normalized to `[N-2]`. Where nothing else
+/// has an assignment, as for `C[N-2]`, an atom still takes two, and a bare
+/// oxide always may.
+#[test]
+fn a_bonded_atom_holds_one_negative_charge() {
+    use crate::molecule::tautomer::normalize;
+    let rules = TautomerRules::new();
+    let record_key = |parts: &[MolecularGraph]| {
+        let parts: Vec<&MolecularGraph> = parts.iter().collect();
+        tautomer_key(&MolecularGraph::combine(&parts), &rules)
+    };
+    assert_ne!(key("[S-]/C(C)=C(/C)[S-]"), key("[S-]/C(C)=C(\\C)[S-]"));
+    let normal = normalized("[S-]/C(c1ccccc1)=C(/c1ccccc1)[S-]");
+    assert!(normal.contains('/'), "{normal}");
+    let normal = normalized("CC(=CC(=[N-])C)[N-]c1ccccc1");
+    assert!(!normal.contains("-2"), "{normal}");
+    for smiles in [
+        "[C-]#[O+].[C-]#[O+].[S-]/C(c1ccccc1)=C(/c1ccccc1)[S-].[Mn]",
+        "CC(=CC(=[N-])C)[N-]c1ccccc1.[Ir+3]",
+        "C[N-2]",
+        "[Ca+2].[O-2]",
+    ] {
+        let parts = MolecularGraph::from_smiles(smiles).unwrap();
+        let normals: Vec<MolecularGraph> = parts
+            .iter()
+            .map(|part| normalize(part, &rules).unwrap())
+            .collect();
+        assert_eq!(record_key(&parts), record_key(&normals), "{smiles}");
+    }
+}
+
 /// A hub's charge is the compound's, not the writing's. PubChem writes a
 /// phosphorothioate `[P+](=O)[S-]`, a sulfinamide `[S-]#[O+]` and a
 /// sulfonamide beside a carboxylate `[S+](O)`, each one compound with its

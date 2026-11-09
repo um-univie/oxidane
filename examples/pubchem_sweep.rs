@@ -19,6 +19,9 @@
 //! * one CID-seeded atom permutation preserves ordinary canonical SMILES,
 //!   normalized tautomer SMILES and tautomer keys for every component,
 //! * the canonical SMILES, read back, has the key its input had,
+//! * a record of several components, keyed as one molecule the way the default
+//!   key pools it, keeps that key under a permutation of all its atoms,
+//!   through its components' canonical SMILES and through normalization,
 //! * and nothing panics.
 //!
 //! ```text
@@ -114,6 +117,10 @@ struct Counts {
     key_permutation: AtomicU64,
     /// The canonical SMILES, read back, keyed differently from its input.
     key_canonical: AtomicU64,
+    /// The same three questions asked of a whole record; see `check_record`.
+    record_key_permutation: AtomicU64,
+    record_key_canonical: AtomicU64,
+    record_key: AtomicU64,
     nonconverged: AtomicU64,
     /// Records whose valences no element allows, which are not molecules to
     /// normalize and are counted apart from the failures that would be bugs.
@@ -138,6 +145,9 @@ impl Counts {
             (&self.tautomer_permutation, &other.tautomer_permutation),
             (&self.key_permutation, &other.key_permutation),
             (&self.key_canonical, &other.key_canonical),
+            (&self.record_key_permutation, &other.record_key_permutation),
+            (&self.record_key_canonical, &other.record_key_canonical),
+            (&self.record_key, &other.record_key),
             (&self.nonconverged, &other.nonconverged),
             (&self.impossible, &other.impossible),
             (&self.oversize, &other.oversize),
@@ -167,6 +177,9 @@ impl Counts {
             &self.tautomer_permutation,
             &self.key_permutation,
             &self.key_canonical,
+            &self.record_key_permutation,
+            &self.record_key_canonical,
+            &self.record_key,
             &self.nonconverged,
             &self.impossible,
             &self.oversize,
@@ -237,6 +250,15 @@ impl Counts {
             self.key_canonical.load(Ordering::Relaxed)
         );
         println!(
+            "  record_key_permutation : {}",
+            self.record_key_permutation.load(Ordering::Relaxed)
+        );
+        println!(
+            "  record_key_canonical : {}",
+            self.record_key_canonical.load(Ordering::Relaxed)
+        );
+        println!("  record_key : {}", self.record_key.load(Ordering::Relaxed));
+        println!(
             "  did not converge       : {}",
             self.nonconverged.load(Ordering::Relaxed)
         );
@@ -264,6 +286,13 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
         eprintln!("unparsed\t{cid}\t{smiles}");
         return;
     };
+    // What `check_record` needs of each component, kept as the component
+    // checks produce it. A component that is skipped or fails leaves its list
+    // short, and the record-wide check that needs it is not asked.
+    let pooled = options.tautomers && rules.whole_record && molecules.len() > 1;
+    let mut whole = pooled;
+    let mut rereads: Vec<MolecularGraph> = Vec::new();
+    let mut normals: Vec<MolecularGraph> = Vec::new();
     for molecule in &molecules {
         // Canonization uses heavy atoms as graph vertices. SMILES length is
         // neither an atom count nor a useful bound for disconnected records.
@@ -271,6 +300,7 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
         if options.max_atoms > 0 && heavy > options.max_atoms {
             counts.oversize.fetch_add(1, Ordering::Relaxed);
             eprintln!("oversize\t{cid}\t{smiles}\t{heavy}");
+            whole = false;
             continue;
         }
         // One deterministic random relabelling per component, reproducible across shards/threads.
@@ -293,6 +323,9 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
         let reread = MolecularGraph::from_smiles_single(&canonical_smiles);
         match &reread {
             Ok(again) => {
+                if pooled {
+                    rereads.push(again.clone());
+                }
                 if MolecularFormula::from_molecule(again)
                     != MolecularFormula::from_molecule(molecule)
                 {
@@ -352,6 +385,9 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             }
         };
         counts.normalized.fetch_add(1, Ordering::Relaxed);
+        if pooled {
+            normals.push(normal.clone());
+        }
         let written = normal.to_smiles();
         let permuted_normal = normalize(&permuted, rules).map(|m| m.to_smiles());
         if permuted_normal.as_deref() != Some(written.as_str()) {
@@ -385,6 +421,54 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             counts.idempotence.fetch_add(1, Ordering::Relaxed);
             eprintln!("idempotence\t{cid}\t{smiles}\t{written}");
         }
+    }
+    if whole {
+        check_record(cid, smiles, &molecules, &rereads, &normals, rules, counts);
+    }
+}
+
+/// The checks `check` makes of a component's key, made of the whole record.
+///
+/// The default key pools the record, so a proton may cross from one component
+/// to another -- `CN.Cl` and `C[NH3+].[Cl-]`, or an amine beside a bare `[H+]`
+/// -- and keying each component alone never sees it. So a record of several
+/// components is keyed as one molecule too, and that key has to survive what a
+/// component's does: a relabelling of all its atoms, which also shuffles the
+/// components among themselves; its components' canonical SMILES, read back;
+/// and normalization, which works one component at a time.
+fn check_record(
+    cid: &str,
+    smiles: &str,
+    molecules: &[MolecularGraph],
+    rereads: &[MolecularGraph],
+    normals: &[MolecularGraph],
+    rules: &TautomerRules,
+    counts: &Counts,
+) {
+    let combined = |parts: &[MolecularGraph]| {
+        let parts: Vec<&MolecularGraph> = parts.iter().collect();
+        MolecularGraph::combine(&parts)
+    };
+    let record = combined(molecules);
+    let key = tautomer_key(&record, rules);
+    let mut labeling: Vec<usize> = (0..record.len()).collect();
+    let mut rng = StdRng::seed_from_u64(cid.parse::<u64>().unwrap_or(0) ^ 0xBEEF);
+    labeling.shuffle(&mut rng);
+    let mut permuted = record.clone();
+    reorder_molecule(&mut permuted, &labeling);
+    if tautomer_key(&permuted, rules) != key {
+        counts
+            .record_key_permutation
+            .fetch_add(1, Ordering::Relaxed);
+        eprintln!("record_key_permutation\t{cid}\t{smiles}");
+    }
+    if rereads.len() == molecules.len() && tautomer_key(&combined(rereads), rules) != key {
+        counts.record_key_canonical.fetch_add(1, Ordering::Relaxed);
+        eprintln!("record_key_canonical\t{cid}\t{smiles}");
+    }
+    if normals.len() == molecules.len() && tautomer_key(&combined(normals), rules) != key {
+        counts.record_key.fetch_add(1, Ordering::Relaxed);
+        eprintln!("record_key\t{cid}\t{smiles}");
     }
 }
 
@@ -573,6 +657,9 @@ fn main() {
         &counts.tautomer_permutation,
         &counts.key_permutation,
         &counts.key_canonical,
+        &counts.record_key_permutation,
+        &counts.record_key_canonical,
+        &counts.record_key,
         &counts.key,
         &counts.panics,
         &counts.oversize,

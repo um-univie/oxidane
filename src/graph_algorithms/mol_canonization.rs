@@ -687,15 +687,24 @@ fn run_canonization<T: Molecule + ToSMILES + Clone>(
 /// stored against -- the neighbours by atom index -- says nothing outside the
 /// numbering that produced it. Sorting them by orbit instead gives an ordering
 /// every way of writing the molecule agrees on, so the tag re-read against it
-/// is a property of the molecule: `1` and `2` are the two windings, and `0`
-/// means the question does not arise, either because the atom is no
-/// stereocentre or because two of its neighbours share an orbit and so cannot
-/// be put in an order.
+/// is a property of the molecule: `1` and `2` are the two windings, `0` means
+/// the atom carries no tag, and `5` that it carries one no orbit can read --
+/// two of its neighbours share an orbit and cannot be put in an order. That
+/// is still worth a colour of its own: a record holding ten copies of an
+/// amino diol, eight tagged and two not, had the eight interchangeable with
+/// the two, and which copies came out tagged fell to the input.
 ///
 /// Hydrogens are not vertices of the graph nauty saw, so they are in no orbit
 /// of their own; each takes the orbit of the atom it hangs off, which is what
 /// the automorphism would do with it. Two hydrogens on one centre then collide,
 /// which is the right answer -- a centre with two of them is not stereogenic.
+///
+/// A double bond's geometry is read the same way, against the substituent of
+/// each end that sorts first by orbit, and written on both ends: `3` is cis,
+/// `4` trans, apart from the windings so that the two never share a colour.
+/// Without it a record holding `C/C=C/C` beside `C/C=C\C` had nothing to tell
+/// the two butenes apart but their tags, so which was written first fell to
+/// the input; and a mixture of a dozen isomers has a group too large to walk.
 fn orbit_relative_tags<T: Molecule>(
     molecule: &T,
     automorphisms: &[Vec<usize>],
@@ -763,6 +772,70 @@ fn orbit_relative_tags<T: Molecule>(
         let mut by_orbit = by_index.clone();
         by_orbit.sort_by_key(|&n| key_of(n, atom));
         parities[atom] = tetrahedral_tag_for_order(stored, &by_index, &by_orbit);
+    }
+
+    // The stored geometry is read against the first substituent each end
+    // lists; see `compute_cistrans_sides`, whose reading this follows.
+    let is_cis_trans = |class: ChiralClass| {
+        matches!(
+            class,
+            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+        )
+    };
+    let substituents = |atom: usize| -> Vec<usize> {
+        molecule
+            .get_atom_bonds(atom)
+            .unwrap_or_default()
+            .iter()
+            .filter(|bond| bond.bond_order() != BondOrder::Double)
+            .map(|bond| bond.target())
+            .collect()
+    };
+    for first in 0..atom_count {
+        if !is_cis_trans(molecule.get_chiral_class(first)) {
+            continue;
+        }
+        let Some(second) = molecule
+            .get_atom_bonds(first)
+            .unwrap_or_default()
+            .iter()
+            .filter(|bond| bond.bond_order() == BondOrder::Double)
+            .map(|bond| bond.target())
+            .find(|&target| is_cis_trans(molecule.get_chiral_class(target)))
+        else {
+            continue;
+        };
+        if second < first {
+            continue;
+        }
+        // The substituent an end's geometry is read against, or `None` when
+        // it has two that no orbit tells apart.
+        let reference = |end: usize, listed: &[usize]| -> Option<usize> {
+            let first_by_orbit = *listed.iter().min_by_key(|&&n| key_of(n, end))?;
+            let ties = listed
+                .iter()
+                .filter(|&&n| key_of(n, end) == key_of(first_by_orbit, end))
+                .count();
+            (ties == 1).then_some(first_by_orbit)
+        };
+        let (listed_first, listed_second) = (substituents(first), substituents(second));
+        let (Some(by_orbit_first), Some(by_orbit_second)) = (
+            reference(first, &listed_first),
+            reference(second, &listed_second),
+        ) else {
+            continue;
+        };
+        let mut trans = molecule.get_chiral_class(first) != molecule.get_chiral_class(second);
+        trans ^= by_orbit_first != listed_first[0];
+        trans ^= by_orbit_second != listed_second[0];
+        let geometry = if trans { 4 } else { 3 };
+        parities[first] = geometry;
+        parities[second] = geometry;
+    }
+    for (atom, parity) in parities.iter_mut().enumerate() {
+        if *parity == 0 && molecule.get_chiral_class(atom) != ChiralClass::None {
+            *parity = 5;
+        }
     }
     (parities, orbit_of)
 }
@@ -995,39 +1068,52 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
         return;
     }
 
+    // Only the tags the orbits leave open are the walk's to decide, and only
+    // the group's action on the atoms those tags read can decide them.
+    let open = open_tags(molecule, &full_generators);
+    let turn_over = |classes: &mut [ChiralClass]| {
+        for &centre in &open.free {
+            classes[centre] = ChiralClass::TH(1);
+        }
+    };
     let current = molecule.chiral_classes().unwrap().to_vec();
     let mut best = current.clone();
+    turn_over(&mut best);
+    let generators: Vec<&Vec<usize>> = full_generators
+        .iter()
+        .filter(|generator| open.read.iter().any(|&atom| generator[atom] != atom))
+        .collect();
 
-    // Enumerate the group generated by the automorphisms (bounded) and keep the
-    // smallest tag vector any of them produces.
+    // Walk the group's action on those atoms -- each element of it once, by a
+    // full automorphism that acts so -- and keep the smallest tag vector any
+    // of them produces. Two automorphisms that agree there rewrite the tags
+    // the same way, and a record's group is mostly made of ones that do not
+    // touch them at all: the phenyls of four triphenylphosphines turn through
+    // 48^4 * 4! elements, every one of which leaves a tartrate's centres where
+    // they were. Walking the whole group, bounded, spent the bound on those and
+    // reached the tartrate's own symmetry in some atom orders and not others.
+    // The bound now holds only for a group whose action on open tags is itself
+    // that large.
     const MAX_GROUP: usize = 4096;
     let identity: Vec<usize> = (0..molecule.len()).collect();
-    let mut seen: FxHashSet<Vec<usize>> = FxHashSet::default();
-    seen.insert(identity.clone());
-    // Two elements that agree on the atoms a tag depends on rewrite the tags
-    // the same way, and most of a large group's elements agree with the
-    // identity there -- a peptide's group is mostly methyls turning. Composing
-    // is cheap; reordering a copy of the molecule is not, so the group is
-    // walked in full and only a new *restriction* is paid for.
     let restriction =
-        |element: &[usize]| -> Vec<usize> { watched.iter().map(|&atom| element[atom]).collect() };
-    let mut evaluated: FxHashSet<Vec<usize>> = FxHashSet::default();
-    evaluated.insert(restriction(&identity));
+        |element: &[usize]| -> Vec<usize> { open.read.iter().map(|&atom| element[atom]).collect() };
+    let mut seen: FxHashSet<Vec<usize>> = FxHashSet::default();
+    seen.insert(restriction(&identity));
     let mut frontier = vec![identity];
     while let Some(element) = frontier.pop() {
         if seen.len() > MAX_GROUP {
             break;
         }
-        for generator in &full_generators {
+        for generator in &generators {
             let composed: Vec<usize> = element.iter().map(|&i| generator[i]).collect();
-            if seen.insert(composed.clone()) {
-                if evaluated.insert(restriction(&composed)) {
-                    let mut candidate = molecule.clone();
-                    reorder_molecule(&mut candidate, &composed);
-                    if let Some(tags) = candidate.chiral_classes() {
-                        if tags < best.as_slice() {
-                            best = tags.to_vec();
-                        }
+            if seen.insert(restriction(&composed)) {
+                let mut candidate = molecule.clone();
+                reorder_molecule(&mut candidate, &composed);
+                if let Some(classes) = candidate.chiral_classes_mut() {
+                    turn_over(classes);
+                    if *classes < best {
+                        best = classes.to_vec();
                     }
                 }
                 frontier.push(composed);
@@ -1039,6 +1125,147 @@ fn canonicalize_chirality_under_automorphisms<T: Molecule + ToSMILES + Clone>(
         if let Some(classes) = molecule.chiral_classes_mut() {
             classes.copy_from_slice(&best);
         }
+    }
+}
+
+/// What is left for [`canonicalize_chirality_under_automorphisms`] to decide.
+struct OpenTags {
+    /// The atoms whose images decide every tag an automorphism can change and
+    /// no other automorphism can change back, closed under the automorphisms.
+    read: Vec<usize>,
+    /// Tetrahedral centres whose tag some automorphism turns over and leaves
+    /// everything else open alone. Each is written `TH(1)`.
+    free: Vec<usize>,
+}
+
+/// Which tags an automorphism can change, and which of those it can change
+/// freely.
+///
+/// A tag the orbits settle cannot be changed by any automorphism: read against
+/// its neighbours sorted by orbit it says the same thing wherever the
+/// automorphism carries it, and when every atom of its orbit says the same,
+/// the tag that lands on each is the one already there. That is the case
+/// [`Canonizer::split_orbits_by_stereo`] leaves behind -- it recolours until no
+/// orbit disagrees. What is left open is a tag whose centre has two
+/// neighbours in one orbit, which no orbit can read, and any tag in an orbit
+/// that still disagrees, or that holds an untagged atom it could be carried
+/// onto.
+///
+/// Of those, a centre one automorphism turns over while fixing every other
+/// open tag has no configuration to speak of: COOH and COO⁻ on one carbon are
+/// one group once the key has pooled the proton, and the swap of the two
+/// turns the carbon's tag and nothing else. Conjugating that swap gives the
+/// same for every centre of its orbit, so the whole orbit is free, and each of
+/// its tags can be written the smaller way without a walk to find the element
+/// that does it -- which seven copies of such a centre in one record made
+/// 7! * 2^7, far past the bound. Only an orbit tagged throughout counts; one
+/// that mixes tagged and untagged centres still has to be walked to decide
+/// where the tags go.
+///
+/// An open tag reads its centre and the centre's neighbours, and an allene's
+/// its carriers one bond further out. Every orbit holding one of those is
+/// returned whole, so that each automorphism permutes the set.
+fn open_tags<T: Molecule>(molecule: &T, generators: &[Vec<usize>]) -> OpenTags {
+    let Some(classes) = molecule.chiral_classes() else {
+        return OpenTags {
+            read: Vec::new(),
+            free: Vec::new(),
+        };
+    };
+    let (readings, orbit_of) = orbit_relative_tags(molecule, generators);
+    let mut reading_of_orbit: FxHashMap<u32, Option<u8>> = FxHashMap::default();
+    for (atom, &reading) in readings.iter().enumerate() {
+        reading_of_orbit
+            .entry(orbit_of[atom])
+            .and_modify(|shared| {
+                if *shared != Some(reading) {
+                    *shared = None;
+                }
+            })
+            .or_insert(Some(reading));
+    }
+    let settled = |atom: usize| {
+        (1..=4).contains(&readings[atom])
+            && reading_of_orbit[&orbit_of[atom]] == Some(readings[atom])
+    };
+    let reads = |atom: usize| -> Vec<usize> {
+        let mut read = vec![atom];
+        for bond in &molecule.atom_bonds()[atom] {
+            read.push(bond.target());
+            if matches!(classes[atom], ChiralClass::AL(_)) {
+                read.extend(
+                    molecule.atom_bonds()[bond.target()]
+                        .iter()
+                        .map(|further| further.target()),
+                );
+            }
+        }
+        read
+    };
+    let open: Vec<usize> = (0..molecule.len())
+        .filter(|&atom| classes[atom] != ChiralClass::None && !settled(atom))
+        .collect();
+    // How many open tags read each atom.
+    let mut readers = vec![0u32; molecule.len()];
+    for &atom in &open {
+        let mut read = reads(atom);
+        read.sort_unstable();
+        read.dedup();
+        for other in read {
+            readers[other] += 1;
+        }
+    }
+
+    // An orbit is free once a generator turns one of its centres over alone.
+    let mut free_orbits: FxHashSet<u32> = FxHashSet::default();
+    for &centre in &open {
+        if !matches!(classes[centre], ChiralClass::TH(_))
+            || readings[centre] != 5
+            || reading_of_orbit[&orbit_of[centre]] != Some(5)
+            || free_orbits.contains(&orbit_of[centre])
+        {
+            continue;
+        }
+        let neighbours = index_sorted_neighbors(molecule, centre);
+        let own = reads(centre);
+        let turns_it_alone = |generator: &Vec<usize>| {
+            if generator[centre] != centre {
+                return false;
+            }
+            let images: Vec<usize> = neighbours.iter().map(|&n| generator[n]).collect();
+            neighbor_permutation_is_odd(&neighbours, &images)
+                && (0..molecule.len()).all(|atom| {
+                    generator[atom] == atom || readers[atom] <= u32::from(own.contains(&atom))
+                })
+        };
+        if generators.iter().any(turns_it_alone) {
+            free_orbits.insert(orbit_of[centre]);
+        }
+    }
+    let free: Vec<usize> = open
+        .iter()
+        .copied()
+        .filter(|&atom| free_orbits.contains(&orbit_of[atom]))
+        .collect();
+
+    let mut read = vec![false; molecule.len()];
+    for &atom in &open {
+        if free_orbits.contains(&orbit_of[atom]) {
+            continue;
+        }
+        for other in reads(atom) {
+            read[other] = true;
+        }
+    }
+    let orbits: FxHashSet<u32> = (0..molecule.len())
+        .filter(|&atom| read[atom])
+        .map(|atom| orbit_of[atom])
+        .collect();
+    OpenTags {
+        read: (0..molecule.len())
+            .filter(|&atom| orbits.contains(&orbit_of[atom]))
+            .collect(),
+        free,
     }
 }
 
@@ -1076,7 +1303,8 @@ fn atoms_a_tag_depends_on<T: Molecule>(molecule: &T) -> Vec<usize> {
 
 /// Extends a heavy-atom permutation to a full-atom permutation by mapping each
 /// atom's hydrogens onto the hydrogens of its image (ascending index order).
-/// Returns `None` if the mapping is not a bijection (mismatched hydrogen counts).
+/// A hydrogen on no heavy atom maps to itself. Returns `None` if the mapping is
+/// not a bijection (mismatched hydrogen counts).
 fn extend_permutation_over_hydrogens<T: Molecule>(
     molecule: &T,
     heavy_perm: &[usize],
@@ -1106,6 +1334,22 @@ fn extend_permutation_over_hydrogens<T: Molecule>(
         }
         for (h, image_h) in source_hydrogens.into_iter().zip(image_hydrogens) {
             full[h] = image_h;
+        }
+    }
+    // A hydrogen on no heavy atom -- a bare proton, a hydride, either end of
+    // `[H][H]` -- is no part of the graph nauty saw, and every automorphism
+    // fixes it. Left unmapped it failed the bijection test below and took the
+    // generator with it, so a record holding `[H+]` beside the E and Z forms
+    // of one alkene never had its tags canonized, and the two came out in
+    // whichever order the input gave them.
+    for (atom, image) in full.iter_mut().enumerate() {
+        if *image == usize::MAX
+            && molecule.atomic_numbers()[atom] == 1
+            && molecule.atom_bonds()[atom]
+                .iter()
+                .all(|bond| molecule.atomic_numbers()[bond.target()] == 1)
+        {
+            *image = atom;
         }
     }
 

@@ -69,6 +69,69 @@ mod canonization_stress_tests {
         }
     }
 
+    /// A hydrogen on no heavy atom is fixed by every automorphism. Left out of
+    /// the full-atom permutation it voided every generator, the tags were never
+    /// canonized, and the E and Z forms of one alkene beside `[H+]` came out in
+    /// whichever order the input gave them.
+    #[test]
+    fn a_bare_hydrogen_leaves_the_symmetry_whole() {
+        for smiles in [
+            "[H+].C/C=C/C.C/C=C\\C",
+            "[H][H].F/C=C/F.F/C=C\\F",
+            "[H-].[H+].Cl/C=C/C(F)(F)F.Cl/C=C\\C(F)(F)F",
+        ] {
+            let parts = MolecularGraph::from_smiles(smiles).unwrap();
+            let parts: Vec<&MolecularGraph> = parts.iter().collect();
+            let molecule = MolecularGraph::combine(&parts);
+            let expected = canonize_mol(&molecule).to_smiles();
+            let mut rng = StdRng::seed_from_u64(0xBEEF);
+            for trial in 0..32 {
+                let order = random_permutation(molecule.len(), &mut rng);
+                let mut permuted = molecule.clone();
+                reorder_molecule(&mut permuted, &order);
+                assert_eq!(
+                    canonize_mol(&permuted).to_smiles(),
+                    expected,
+                    "{smiles}, trial {trial}"
+                );
+            }
+        }
+    }
+
+    /// How many copies of a component a record holds is no limit on telling
+    /// their stereo apart. Six butenes, E and Z mixed, beside four butynes are
+    /// 6! * 2^6 * 4! * 2^4 automorphisms, and walking them, bounded at 4096,
+    /// left which isomer came first to the input's order. Read against the
+    /// orbits an E and a Z are no longer interchangeable, and nothing is left
+    /// to walk. A tag the orbits cannot read but one automorphism turns over
+    /// alone -- isopropanol's, seven times -- is free, and is written the
+    /// smaller way without a walk; and copies that carry such a tag are told
+    /// apart from copies that carry none.
+    #[test]
+    fn many_copies_of_a_stereo_component_canonize_alike() {
+        for smiles in [
+            "C/C=C/C.C/C=C/C.C/C=C/C.C/C=C\\C.C/C=C\\C.C/C=C\\C.CC#CC.CC#CC.CC#CC.CC#CC",
+            "C[C@H](C)O.C[C@@H](C)O.C[C@H](C)O.C[C@@H](C)O.C[C@H](C)O.C[C@@H](C)O.C[C@H](C)O",
+            "C[C@H](C)O.C[C@H](C)O.C[C@H](C)O.C[C@H](C)O.CC(C)O.CC(C)O.CC(C)O.CC(C)O",
+        ] {
+            let parts = MolecularGraph::from_smiles(smiles).unwrap();
+            let parts: Vec<&MolecularGraph> = parts.iter().collect();
+            let molecule = MolecularGraph::combine(&parts);
+            let expected = canonize_mol(&molecule).to_smiles();
+            let mut rng = StdRng::seed_from_u64(0xBEEF);
+            for trial in 0..32 {
+                let order = random_permutation(molecule.len(), &mut rng);
+                let mut permuted = molecule.clone();
+                reorder_molecule(&mut permuted, &order);
+                assert_eq!(
+                    canonize_mol(&permuted).to_smiles(),
+                    expected,
+                    "{smiles}, trial {trial}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn pubchem_stereo_permutations_preserve_both_canonical_forms() {
         use crate::molecule::tautomer::{TautomerRules, normalize, tautomer_key};

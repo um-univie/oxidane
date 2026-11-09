@@ -480,6 +480,21 @@ fn a_ring_hub_closes_the_same_whichever_bond_is_written_double() {
     }
 }
 
+/// A ring double bond's geometry goes when the ring perceives aromatic, and
+/// whether it does cannot hang on how a sulfoxide elsewhere in it is drawn.
+/// PubChem CID 145463699 writes one of its eight as `[S-](#[O+])`, which gave
+/// the ring no electrons; the cis/trans mark on its `C=C` survived the read,
+/// and the normal form, written `S(=O)`, lost it, so the two had two keys.
+#[test]
+fn a_geometry_goes_with_aromaticity_however_a_sulfoxide_is_drawn() {
+    let smiles = "C/C/1=C/2\\C=C(C=CS(=O)C3=C(S1=O)C(=CC(=C3)C(C)(C)C)S(=O)C4=C5C(=CC(=C4)C(C)(C)C)[S-](#[O+])C6=CC(=CC(=C6S5=O)S2=O)C(C)(C)C)C(C)(C)C";
+    let normal = normalized(smiles);
+    assert!(!normal.contains('/') && !normal.contains('\\'), "{normal}");
+    assert_eq!(normalized(&normal), normal);
+    assert_eq!(key(&normal), key(smiles), "{normal}");
+    assert_eq!(key(&smiles.replace("[S-](#[O+])", "S(=O)")), key(smiles));
+}
+
 /// The two halves have to agree: a molecule and its normalization are the same
 /// compound, so they share a key.
 #[test]

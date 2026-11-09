@@ -1016,6 +1016,31 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                     lookup_index = 21;
                 }
             }
+            -1 => {
+                // `[S-](#[O+])` is the sulfoxide again, with its S=O drawn as
+                // the oxygen's lone pair given over: three neighbours and the
+                // sulfur's one lone pair, which the ring gets as it does from
+                // `S(=O)` and `[S+][O-]`. Left without electrons, the writing
+                // decided aromaticity in rings the sulfur is not even on:
+                // PubChem CID 145463699 writes one sulfoxide of eight that way,
+                // which cut every 4n + 2 cycle through it, and a geometry on a
+                // ring double bond survived the read that `S(=O)` drops.
+                let bonds = self.get_atom_bonds(atom_index).unwrap_or_default();
+                if bonds.len() == 3
+                    && bonds.iter().any(|bond| {
+                        bond.bond_order() == BondOrder::Triple
+                            && !Self::bond_hashset_contains(
+                                bonds_in_rings,
+                                atom_index,
+                                bond.target(),
+                            )
+                            && self.get_atomic_number(bond.target()) == 8
+                            && self.get_atom_charge(bond.target()) == 1
+                    })
+                {
+                    return 20;
+                }
+            }
 
             _ => (),
         }

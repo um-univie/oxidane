@@ -3400,6 +3400,36 @@ mod tests {
     }
 
     #[test]
+    fn a_sulfoxide_drawn_as_s_minus_triple_o_plus_counts_as_s_double_o() {
+        // `[S-]#[O+]` is the sulfoxide with both of its charges drawn the
+        // other way round, and the ring gets the same lone pair from it. The
+        // written form reads back as itself, and a saturated ring stays so.
+        for (smiles, written) in [
+            ("O=S1C=CC=C1", "s1(=O)cccc1"),
+            ("[O-][S+]1C=CC=C1", "[s+]1([O-])cccc1"),
+            ("[O+]#[S-]1C=CC=C1", "[s-]1(#[O+])cccc1"),
+            ("[O+]#[S-]1CCCC1", "[S-]1(#[O+])CCCC1"),
+        ] {
+            assert_eq!(
+                crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                    smiles, false,
+                )
+                .unwrap(),
+                written,
+                "{smiles}"
+            );
+            assert_eq!(
+                crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles(
+                    written, false,
+                )
+                .unwrap(),
+                written,
+                "{smiles}"
+            );
+        }
+    }
+
+    #[test]
     fn a_neutral_sulfur_is_only_aromatic_where_it_has_a_lone_pair_to_give() {
         // Thiophene's sulfur donates its lone pair, and so does the sulfoxide's
         // once its exocyclic `=O` has taken the other. A three-coordinate

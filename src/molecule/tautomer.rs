@@ -3288,6 +3288,20 @@ fn takes_negative_charge(atomic_number: u8) -> bool {
     matches!(atomic_number, 7 | 8 | 15 | 16 | 34 | 52)
 }
 
+/// Whether an endpoint may hold a negative charge: an element that takes one,
+/// or a bare halide, which is a group only so that it can take the proton or
+/// keep the charge. Left out, a record's `[Cl-]` could not keep it, and a
+/// record one proton short had to put its charge on the other component:
+/// `CN(C)/C=C(\C=N)/Cl.[Cl-]` was solved as an amidinate beside HCl, its
+/// `C=C` fixed by that, and its geometry kept -- while the same component
+/// alone, free to be its zwitterion, had the geometry erased, so the record
+/// and its normalized parts keyed apart.
+fn holds_negative_charge<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
+    let atomic_number = molecule.atomic_numbers()[atom];
+    takes_negative_charge(atomic_number)
+        || (is_halogen(atomic_number) && heavy_degree(molecule, atom) == 0)
+}
+
 /// Selenium and tellurium belong here for the same reason sulfur does, and
 /// leaving them out was not a decision so much as an oversight: PubChem's
 /// selenonium and telluronium salts have three bonds at a chalcogen whose
@@ -3777,9 +3791,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
             && takes_positive_charge(molecule.atomic_numbers()[group.atoms[slot]])
     };
     let minus_capable = |slot: usize| {
-        is_endpoint[slot]
-            && !pinned[slot]
-            && takes_negative_charge(molecule.atomic_numbers()[group.atoms[slot]])
+        is_endpoint[slot] && !pinned[slot] && holds_negative_charge(molecule, group.atoms[slot])
     };
 
     // `c_u`: what the atom's valence has left over once its σ bonds and the
@@ -4054,7 +4066,7 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         // of a component's charge, and capping every atom at one left it with
         // nowhere to put the second.
         let charge_offers = required[slot].min(negatives.max(1));
-        if negatives + separations > 0 && takes_negative_charge(atomic_number) {
+        if negatives + separations > 0 && holds_negative_charge(molecule, atom) {
             for _ in 0..charge_offers {
                 charge_edges.push((edges.len(), slot));
                 edges.push((slot, negative_pool));

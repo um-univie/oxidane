@@ -1658,6 +1658,38 @@ fn a_cation_on_a_sulfonyl_oxygen_still_normalizes() {
     }
 }
 
+/// A record's bare halide may keep its charge. It is a group of its own so that
+/// it can take the proton, and while it could not hold the negative charge a
+/// record one proton short had to put that charge on the other component:
+/// `CN(C)/C=C(\C=N)/Cl.[Cl-]` was solved as an amidinate beside HCl, which
+/// fixed its `C=C` and kept the geometry the component alone, free to be its
+/// zwitterion, had erased; and a pyridinium iodide with nothing mobile had no
+/// assignment at all, so its `C=C` was erased and E and Z shared a key.
+#[test]
+fn a_bare_halide_keeps_its_charge_in_a_record() {
+    use crate::molecule::tautomer::normalize;
+    let rules = TautomerRules::new();
+    let record_key = |parts: &[MolecularGraph]| {
+        let parts: Vec<&MolecularGraph> = parts.iter().collect();
+        tautomer_key(&MolecularGraph::combine(&parts), &rules)
+    };
+    for smiles in [
+        "CN(C)/C=C(\\C=N)/Cl.[Cl-]",
+        "CN(C)/C=C/C(=N)SCC1=C(C=CC=C1Cl)Cl.[Cl-]",
+        "CC(=O)/C=C/C1=CC=[N+](C=C1)C.[I-]",
+    ] {
+        let parts = MolecularGraph::from_smiles(smiles).unwrap();
+        let normals: Vec<MolecularGraph> = parts
+            .iter()
+            .map(|part| normalize(part, &rules).unwrap())
+            .collect();
+        assert_eq!(record_key(&parts), record_key(&normals), "{smiles}");
+    }
+    let e = MolecularGraph::from_smiles("CC(=O)/C=C/C1=CC=[N+](C=C1)C.[I-]").unwrap();
+    let z = MolecularGraph::from_smiles("CC(=O)/C=C\\C1=CC=[N+](C=C1)C.[I-]").unwrap();
+    assert_ne!(record_key(&e), record_key(&z));
+}
+
 /// A hub's charge is the compound's, not the writing's. PubChem writes a
 /// phosphorothioate `[P+](=O)[S-]`, a sulfinamide `[S-]#[O+]` and a
 /// sulfonamide beside a carboxylate `[S+](O)`, each one compound with its

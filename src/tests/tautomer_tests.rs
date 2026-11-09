@@ -907,6 +907,52 @@ fn a_proton_crosses_between_components_only_when_the_record_is_pooled() {
     }
 }
 
+/// A bare proton is a hydrogen the record has not put on any site yet, so it
+/// joins the pool: a base written beside `[H+]` is its conjugate acid, and a
+/// hydrochloride written `[H+].[Cl-]` is the one written `Cl`.
+#[test]
+fn a_bare_proton_joins_the_pool() {
+    for (first, second) in [
+        ("CN.[H+].[Cl-]", "CN.Cl"),
+        ("CN.[H+]", "C[NH3+]"),
+        ("CC(=O)[O-].[H+]", "CC(=O)O"),
+        ("O.[H+]", "[OH3+]"),
+        ("c1ccncc1.[H+].[H+]", "c1cc[nH+]cc1.[H+]"),
+    ] {
+        assert_eq!(key(first), key(second), "{first}");
+    }
+    for (first, second) in [
+        // It is still a proton the record has, so one more is another record,
+        ("CC(=O)O.[H+]", "CC(=O)O"),
+        // one with nowhere to go stays where it was written,
+        ("c1ccccc1.[H+]", "c1ccccc1"),
+        ("C[N+](C)(C)C.[H+]", "C[N+](C)(C)C"),
+        // and a labelled one is not mobile.
+        ("[2H+].O", "[2H]O.[H+]"),
+    ] {
+        assert_ne!(key(first), key(second), "{first}");
+    }
+    // Pooled one component at a time, it is a component of its own.
+    let apart = TautomerRules::with_ionizable_endpoints();
+    assert_ne!(
+        tautomer_key_from_smiles("CN.[H+]", &apart).unwrap(),
+        tautomer_key_from_smiles("C[NH3+]", &apart).unwrap(),
+    );
+}
+
+/// A record with more bare protons than its sites can take leaves some bare in
+/// every writing. The geometry probes ask the system that leaves the fewest,
+/// which every writing shares; asking the one that places them all found it
+/// empty, called every bond movable, and gave E and Z one key.
+#[test]
+fn a_geometry_stands_beside_more_protons_than_the_sites_take() {
+    let protons = ".[H+]".repeat(5);
+    let trans = key(&format!("CN(C)C(=O)/C=C/c1ccccc1{protons}"));
+    let cis = key(&format!("CN(C)C(=O)/C=C\\c1ccccc1{protons}"));
+    assert_ne!(trans, cis);
+    assert_eq!(trans, key("C[NH+](C)C(=[OH+])/C=C/c1ccccc1.[H+].[H+].[H+]"));
+}
+
 /// The totals are written once, after the groups.
 #[test]
 fn the_key_writes_the_component_totals_once() {
@@ -1701,8 +1747,8 @@ fn reduced_key(smiles: &str) -> String {
 #[test]
 fn protonation_states_share_the_charge_reduced_key() {
     for forms in [
-        &["CC(=O)O", "CC(=O)[O-]"][..],
-        &["CCN", "CC[NH3+]"],
+        &["CC(=O)O", "CC(=O)[O-]", "CC(=O)O.[H+]"][..],
+        &["CCN", "CC[NH3+]", "CCN.[H+]"],
         &["CCN.Cl", "CC[NH3+].[Cl-]"],
         &[
             "NCC(=O)O",

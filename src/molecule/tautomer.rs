@@ -147,7 +147,9 @@ pub struct TautomerRules {
     /// Implies [`TautomerRules::ionizable_endpoints`], and admits the bare ions
     /// a salt is made of -- a free halide, `[NH4+]`, `[OH-]` -- as groups of
     /// their own, since those are where such a proton goes. A metal cation has
-    /// no proton to give and keeps its charge. Only the key reads it;
+    /// no proton to give and keeps its charge. A bare `[H+]` is a proton not
+    /// yet on any site, and joins the pool: `CC(=O)O.[H+]` and `CC(=[OH+])O`,
+    /// or `CN.[H+].[Cl-]` and `CN.Cl`, are one record. Only the key reads it;
     /// [`normalize`] works one component at a time.
     pub whole_record: bool,
     /// Whether the key counts a proton gained or lost as no change at all, so
@@ -292,9 +294,9 @@ impl TautomerRules {
         self.ionizable_endpoints || self.charge_reduced || self.whole_record
     }
 
-    /// Whether a bare ion -- a free halide, `[NH4+]` -- is a group of its own.
-    /// Only the key asks: the valence model `normalize` solves has no answer
-    /// for an atom that spends nothing.
+    /// Whether a bare ion -- a free halide, `[NH4+]` -- is a group of its own,
+    /// and a bare proton part of the pool. Only the key asks: the valence model
+    /// `normalize` solves has no answer for an atom that spends nothing.
     fn bare_ions(&self) -> bool {
         self.charge_reduced || self.whole_record
     }
@@ -360,6 +362,10 @@ pub struct TautomericGroups {
     /// would be read from taken out. `None` where an aromatic bond makes the
     /// count fractional, and the valence table answers instead.
     used_valences: Vec<Option<i64>>,
+    /// Bare protons, each `[H+]` written as a component of its own, which
+    /// erasure takes out of the skeleton and into the pool. Filled by
+    /// `erased_skeleton`; see [`TautomerRules::whole_record`].
+    free_protons: u32,
 }
 
 impl TautomericGroups {
@@ -415,16 +421,21 @@ impl TautomericGroups {
     /// Components are still separate. A hydrogen chloride salt and its free
     /// base keep their two keys, because [`tautomer_key_from_smiles`] keys each
     /// component on its own and the formula differs between them.
+    ///
+    /// A bare proton counts as a hydrogen and a charge of the pool, the same
+    /// two it adds to the endpoint it lands on.
     pub fn totals(&self) -> Totals {
-        self.groups
-            .iter()
-            .fold((0, 0, 0), |(hydrogens, charge, radicals), group| {
+        let protons = self.free_protons;
+        self.groups.iter().fold(
+            (protons, protons as i32, 0),
+            |(hydrogens, charge, radicals), group| {
                 (
                     hydrogens + group.mobile_hydrogens,
                     charge + group.mobile_charge,
                     radicals + group.mobile_radicals,
                 )
-            })
+            },
+        )
     }
 
     /// Every group of the component as one, which is the instance the solver
@@ -515,6 +526,18 @@ fn hydrogen_count<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> u32 {
 /// every unlabelled hydrogen beside it.
 fn is_mobile_hydrogen<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
     molecule.atomic_numbers()[atom] == 1 && molecule.get_isotope(atom).is_none()
+}
+
+/// Whether `atom` is a proton on its own, `[H+]` with no bond to anything. A
+/// labelled one is not, for the reason a labelled hydrogen on an endpoint is
+/// not mobile.
+fn is_bare_proton<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> bool {
+    is_mobile_hydrogen(molecule, atom)
+        && molecule.get_atom_charge(atom) == 1
+        && molecule.radical_states().get(atom).copied().unwrap_or(0) == 0
+        && molecule
+            .get_atom_bonds(atom)
+            .is_none_or(|bonds| bonds.is_empty())
 }
 
 /// A copy of `molecule` with the formal charge of every hub moved onto its
@@ -1193,6 +1216,7 @@ pub fn perceive<M: Molecule + ?Sized>(molecule: &M, rules: &TautomerRules) -> Ta
         // Filled by `erased_skeleton`, which is the only place that can: the
         // count has to be taken before the orders are erased.
         used_valences: Vec::new(),
+        free_protons: 0,
     }
 }
 
@@ -1702,6 +1726,18 @@ fn erase<M: Molecule + Clone + ToSMILES>(
             }
         }
     }
+    // A bare proton goes into the pool with them. It is a hydrogen the record
+    // has not put on any site yet, so `CC(=O)O.[H+]` and `CC(=[OH+])O` are one
+    // record written two ways; see [`TautomerRules::whole_record`].
+    let mut free_protons = 0;
+    if rules.bare_ions() {
+        for atom in 0..skeleton.atomic_numbers().len() {
+            if is_bare_proton(&skeleton, atom) {
+                mobile.push(atom);
+                free_protons += 1;
+            }
+        }
+    }
     mobile.sort_unstable();
     mobile.dedup();
     for &hydrogen in mobile.iter().rev() {
@@ -1716,6 +1752,7 @@ fn erase<M: Molecule + Clone + ToSMILES>(
     }
     let mut groups = remap(groups, &mobile);
     groups.used_valences = kept;
+    groups.free_protons = free_protons;
     let shift = |atom: usize| atom - mobile.partition_point(|&hydrogen| hydrogen < atom);
     let moved: FxHashSet<(usize, usize)> = moved
         .into_iter()
@@ -1789,7 +1826,6 @@ fn settle_geometries<M: Molecule + Clone + ToSMILES>(
     // component's feasible set, which is one instance now that the pools are
     // shared between the groups -- and one instance answers every bond, since
     // only the order the edges are offered in differs between the questions.
-    let pooled = groups.pooled();
     let mut instance = LazyInstance::new();
     let (cyclic_atoms, cyclic) = skeleton.find_cyclic_bonds_and_atoms();
     let mut fixed: Vec<((usize, usize), BondOrder)> = Vec::new();
@@ -1836,7 +1872,7 @@ fn settle_geometries<M: Molecule + Clone + ToSMILES>(
                 && stereogenic_shaped(bond.1)
                 && neighbourhood_stands(bond.0, bond)
                 && neighbourhood_stands(bond.1, bond)
-                && let Some(solver) = instance.get(skeleton, &pooled, &used)
+                && let Some(solver) = instance.get(skeleton, groups, &used)
                 && let Some(order) = fixed_order(skeleton, solver, bond)
                 && order != BondOrder::Single
             {
@@ -2091,14 +2127,13 @@ fn restore_geometry_orders<M: Molecule + Clone + ToSMILES>(
         )
     };
     let used = groups.used_valences.clone();
-    let pooled = groups.pooled();
     let mut instance = LazyInstance::new();
     let mut restored: Vec<((usize, usize), BondOrder)> = Vec::new();
     for group in groups.groups() {
         for &bond in &group.bonds {
             if states(skeleton, bond.0)
                 && states(skeleton, bond.1)
-                && let Some(solver) = instance.get(skeleton, &pooled, &used)
+                && let Some(solver) = instance.get(skeleton, groups, &used)
                 && let Some(order) = fixed_order(skeleton, solver, bond)
                 && order != BondOrder::Single
             {
@@ -3484,13 +3519,42 @@ impl LazyInstance {
     fn get<M: Molecule + Clone + ToSMILES>(
         &mut self,
         molecule: &M,
-        group: &TautomericGroup,
+        groups: &TautomericGroups,
         used: &[Option<i64>],
     ) -> Option<&mut GroupInstance> {
         self.built
-            .get_or_insert_with(|| instance_for(molecule, group, used))
+            .get_or_insert_with(|| placed_instance(molecule, groups, used))
             .as_mut()
     }
+}
+
+/// The component's constraint system with the pool's protons on its sites, as
+/// many of them as the sites can take.
+///
+/// A record's bare protons are in the pool, and a pool can hold more than its
+/// sites will: `c1ccncc1.[H+].[H+]` has one nitrogen for two. No writing of
+/// that record puts every proton on a site, so the system that places all of
+/// them is empty, and an empty system answers every geometry probe with "not
+/// fixed" -- a cinnamamide beside five protons got one key for its E and Z
+/// forms. Every writing leaves some number bare, and the fewest any can leave
+/// is a property of the skeleton and the totals, so that is the system asked.
+/// The input leaves no more than it wrote, which bounds the search.
+fn placed_instance<M: Molecule + Clone + ToSMILES>(
+    molecule: &M,
+    groups: &TautomericGroups,
+    used: &[Option<i64>],
+) -> Option<GroupInstance> {
+    let mut pooled = groups.pooled();
+    for bare in 0..=groups.free_protons {
+        if bare > 0 {
+            pooled.mobile_hydrogens -= 1;
+            pooled.mobile_charge -= 1;
+        }
+        if let Some(instance) = instance_for(molecule, &pooled, used) {
+            return Some(instance);
+        }
+    }
+    None
 }
 
 /// The component's constraint system, pinned model for preference.

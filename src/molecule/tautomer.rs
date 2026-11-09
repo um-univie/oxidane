@@ -4175,6 +4175,26 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
         )
     });
 
+    // A separation puts a positive charge on one atom and a negative one on
+    // another, and no atom needs both: one keeping a positive offer and taking
+    // a negative edge is a neutral atom written the long way, and the same
+    // assignment with that separation unused is one too. So the separations
+    // any assignment needs fit in what the atoms can hold besides the charges
+    // the totals ask for, two units to a separation. The count above is the
+    // smaller side only, and an atom that could hold either sign was on both:
+    // PubChem's polyazene chains, six hundred nitrogens in one record, were
+    // offered six hundred separations where three hundred fit, and the pools
+    // those chains feed are most of the gadget.
+    let mut holds = vec![0usize; atom_count];
+    for &(_, slot) in &charge_edges {
+        holds[slot] += 1;
+    }
+    for &(_, slot) in &positive_edges {
+        holds[slot] = holds[slot].max(1);
+    }
+    let room: usize = holds.iter().sum();
+    let separations = separations.min(room.saturating_sub(positives + negatives) / 2);
+
     // One three-vertex chain per possible separation. `z` either takes the
     // negative pool -- the separation goes unused -- or pairs with `d`, which
     // then leaves `y` no partner but the positive pool, and the separation is

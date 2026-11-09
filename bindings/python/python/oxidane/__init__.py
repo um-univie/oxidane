@@ -8,6 +8,7 @@ from ._oxidane import (
     Smarts,
     canonical_smiles,
     canonical_tautomer,
+    parent_compound,
     tautomer_key,
 )
 from ._display import Reaction
@@ -19,5 +20,6 @@ __version__ = "0.2.0"
 __all__ = [
     "Molecule", "Molecule3D", "PyMolecule", "PyMolecule3D", "MolParser",
     "Smarts", "Reaction", "ReactionSmarts",
-    "canonical_smiles", "canonical_tautomer", "tautomer_key", "process_file",
+    "canonical_smiles", "canonical_tautomer", "tautomer_key", "parent_compound",
+    "process_file",
 ]

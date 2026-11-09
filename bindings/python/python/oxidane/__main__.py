@@ -10,6 +10,7 @@ EXAMPLES = """\
 examples:
   oxidane-normalize molecules.smi molecules.tsv
   oxidane-normalize data.csv data_out.csv --smiles-column smiles
+  oxidane-normalize library.csv out.csv -s smiles --parent -c parent,canonical_tautomer
   oxidane-normalize CID-SMILES.gz keys.tsv.gz --smiles-column 1 --columns tautomer_key
   sqlite3 -tabs db.sqlite "SELECT id, smiles FROM compounds" | oxidane-normalize - out.tsv -s 1
 """
@@ -29,7 +30,7 @@ def main(argv=None):
                         help="0-based index, or a header name (implies --header); default 0")
     parser.add_argument("-c", "--columns", default=",".join(COLUMNS),
                         help="comma-separated results to append; default: all of "
-                             + ", ".join(COLUMNS))
+                             + ", ".join(COLUMNS) + "; also: parent")
     parser.add_argument("--header", action=argparse.BooleanOptionalAction, default=None,
                         help="first row is a header; default: only with a column name")
     parser.add_argument("-d", "--delimiter",
@@ -40,6 +41,10 @@ def main(argv=None):
     parser.add_argument("--ionizable-endpoints", action="store_true",
                         help="canonical tautomer: also neutralize zwitterions by moving "
                              "a proton (the key always does)")
+    parser.add_argument("--parent", action="store_true",
+                        help="compute every result on the parent compound: counterions and "
+                             "bonded alkali metals removed, groups written one way, net charge "
+                             "as close to zero as fixed charges allow")
     parser.add_argument("-j", "--threads", type=int, help="threads to use; default: every core")
     parser.add_argument("--errors", choices=("keep", "none", "raise"), default="keep",
                         help="unreadable SMILES: keep the input (default), leave empty, or stop")
@@ -59,6 +64,7 @@ def main(argv=None):
             delimiter=args.delimiter,
             carbon_endpoints=args.carbon_endpoints,
             ionizable_endpoints=args.ionizable_endpoints,
+            parent=args.parent,
             threads=args.threads,
             errors=args.errors,
             check_valence=args.check_valence,

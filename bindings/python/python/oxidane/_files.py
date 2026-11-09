@@ -9,9 +9,11 @@ from itertools import islice
 from os import PathLike, fspath
 from typing import Dict, Optional, Sequence, Union
 
-from ._oxidane import canonical_smiles, canonical_tautomer, tautomer_key
+from ._oxidane import canonical_smiles, canonical_tautomer, parent_compound, tautomer_key
 
 COLUMNS = ("canonical_smiles", "tautomer_key", "canonical_tautomer")
+# Accepted in `columns` but not written unless asked for.
+OPTIONAL_COLUMNS = ("parent",)
 REPORTED = 10  # unreadable lines named on stderr per file; the rest are counted
 
 
@@ -57,6 +59,7 @@ def process_file(
     delimiter: Optional[str] = None,
     carbon_endpoints: bool = False,
     ionizable_endpoints: bool = False,
+    parent: bool = False,
     threads: Optional[int] = None,
     errors: str = "keep",
     check_valence: bool = False,
@@ -82,10 +85,15 @@ def process_file(
     silently, "raise" stops with ValueError. With `check_valence`, a SMILES with
     an atom bonded past its element's valences counts as not parsing. Returns
     counts of rows written and SMILES that did not parse.
+
+    With `parent=True` every result is computed on the parent compound (see
+    `parent_compound`) instead of the SMILES as written; the column "parent"
+    writes the parent itself.
     """
-    unknown = [name for name in columns if name not in COLUMNS]
+    unknown = [name for name in columns if name not in COLUMNS + OPTIONAL_COLUMNS]
     if unknown:
-        raise ValueError(f"unknown columns {unknown}; choose from {list(COLUMNS)}")
+        raise ValueError(
+            f"unknown columns {unknown}; choose from {list(COLUMNS + OPTIONAL_COLUMNS)}")
     if errors not in ("keep", "none", "raise"):
         raise ValueError('errors must be "keep", "none" or "raise"')
     if chunk_size < 1:
@@ -126,7 +134,16 @@ def process_file(
             if not chunk:
                 break
             batch = [row[smiles_column] if smiles_column < len(row) else "" for _, row in chunk]
-            results = [functions[name](batch) for name in columns]
+            source_batch = batch
+            if parent or "parent" in columns:
+                parents = parent_compound(batch, threads=threads, errors="none",
+                                          check_valence=check_valence)
+                if parent:
+                    source_batch = parents
+            results = [
+                (parents if name == "parent" else functions[name](source_batch))
+                for name in columns
+            ]
             report = io.StringIO()
             for index, (line, row) in enumerate(chunk):
                 answers = [result[index] for result in results]

@@ -26,6 +26,7 @@ pub mod scaffold;
 pub mod tautomer;
 pub mod shape;
 pub mod molecule3d;
+pub mod parent;
 pub mod traits;
 pub mod utils;
 mod substructure;

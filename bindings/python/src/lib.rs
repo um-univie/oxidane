@@ -9,6 +9,7 @@ use oxidane::io::{
 };
 use oxidane::molecule::base::MoleculeCore;
 use oxidane::molecule::draw::Draw;
+use oxidane::molecule::parent::{ParentOptions, parent_smiles};
 use oxidane::molecule::reaction::ReactionSmarts as RustReaction;
 use oxidane::molecule::tautomer::{TautomerRules, normalized_smiles, tautomer_key_from_smiles};
 use oxidane::molecule::{MolecularGraph, Molecule3D};
@@ -631,11 +632,40 @@ fn canonical_tautomer(
     })
 }
 
+/// The parent compound: counterions dropped, metals drawn as bonds broken,
+/// groups written one way, and protons moved until the net charge is as close
+/// to zero as the fixed charges allow.
+#[pyfunction]
+#[pyo3(signature = (smiles, *, disconnect_metals=true, normalize_groups=true, neutralize=true, strip_salts=true, threads=None, errors="keep", check_valence=false))]
+#[allow(clippy::too_many_arguments)]
+fn parent_compound(
+    py: Python<'_>,
+    smiles: &Bound<'_, PyAny>,
+    disconnect_metals: bool,
+    normalize_groups: bool,
+    neutralize: bool,
+    strip_salts: bool,
+    threads: Option<usize>,
+    errors: &str,
+    check_valence: bool,
+) -> PyResult<Py<PyAny>> {
+    let options = ParentOptions {
+        disconnect_metals,
+        normalize_groups,
+        neutralize,
+        strip_salts,
+    };
+    map_smiles(py, smiles, threads, errors, check_valence, |smiles| {
+        parent_smiles(smiles, &options)
+    })
+}
+
 #[pymodule]
 fn _oxidane(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_smiles, module)?)?;
     module.add_function(wrap_pyfunction!(tautomer_key, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_tautomer, module)?)?;
+    module.add_function(wrap_pyfunction!(parent_compound, module)?)?;
     module.add_class::<PyMolecule>()?;
     module.add_class::<PyMolecule3D>()?;
     module.add_class::<MolParser>()?;

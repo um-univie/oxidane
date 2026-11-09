@@ -389,3 +389,41 @@ def test_the_default_key_moves_protons_but_never_adds_them():
     assert key("[CH3-].[Ti]") != key("C.[Ti]")
     assert key("CN.Cl", ionizable_endpoints=False).startswith("h/")
     assert key("CN.Cl", ionizable_endpoints=False) != key("C[NH3+].[Cl-]", ionizable_endpoints=False)
+
+
+def test_parent_compound_merges_salts_metals_and_protomers():
+    same = [
+        ["CCN", "CCN.Cl", "CC[NH3+].[Cl-]"],
+        ["CC(=O)O", "CC(=O)[O-].[Na+]", "CC(=O)O[Na]"],
+        ["NCC(=O)O", "[NH3+]CC([O-])=O"],
+        ["C[N+](C)(C)CC(=O)[O-]", "C[N+](C)(C)CC(=O)O"],
+        ["CS(C)=O", "C[S+](C)[O-]"],
+    ]
+    for forms in same:
+        parents = ox.parent_compound(forms)
+        assert len(set(parents)) == 1, (forms, parents)
+    # A quaternary ammonium with nothing to balance it stays a cation.
+    assert "+" in ox.parent_compound("OCC[N+](C)(C)C.[Cl-]")
+    # Each step can be switched off.
+    assert "." in ox.parent_compound("CCN.Cl", strip_salts=False)
+    assert "+" in ox.parent_compound("CC[NH3+]", neutralize=False)
+    assert "Na" in ox.parent_compound("CC(=O)O[Na]", disconnect_metals=False)
+    assert "+" in ox.parent_compound("C[S+](C)[O-]", normalize_groups=False)
+    # Same error handling and missing values as the other functions.
+    assert ox.parent_compound(["C1CC", None, "CCO"], errors="none") == [
+        None, None, ox.parent_compound("CCO")]
+
+
+def test_parent_is_opt_in_for_files_and_the_command_line(tmp_path, capsys):
+    from oxidane.__main__ import main
+    source = tmp_path / "in.smi"
+    source.write_text("CC[NH3+].[Cl-] salt\nCCN base\n")
+    ox.process_file(source, tmp_path / "plain.tsv", columns=["canonical_tautomer"])
+    plain = [line.split("\t") for line in (tmp_path / "plain.tsv").read_text().splitlines()]
+    assert plain[0][2] != plain[1][2]  # default: the salt is kept as written
+    assert main([str(source), str(tmp_path / "parent.tsv"), "--parent",
+                 "-c", "parent,canonical_tautomer"]) == 0
+    capsys.readouterr()
+    rows = [line.split("\t") for line in (tmp_path / "parent.tsv").read_text().splitlines()]
+    assert rows[0][2:] == rows[1][2:]
+    assert rows[0][2] == ox.parent_compound("CCN")

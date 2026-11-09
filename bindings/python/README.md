@@ -58,8 +58,55 @@ The three results are:
 
 Nothing else is changed: counterions, charges that no tautomer removes,
 isotopes and stereochemistry stay as written, and components of a salt are
-sorted, so `[Na+].CC([O-])=O` and `CC(=O)[O-].[Na+]` come out the same. Strip
-salts or neutralize first if the database should hold parent compounds.
+sorted, so `[Na+].CC([O-])=O` and `CC(=O)[O-].[Na+]` come out the same. If the
+database should hold parent compounds, add `--parent` (see below).
+
+### Parent compounds
+
+`--parent` computes every column on the parent compound instead of the SMILES as
+written, and the extra column `parent` writes the parent itself:
+
+```sh
+oxidane-normalize library.csv out.csv -s smiles --parent -c parent,canonical_tautomer
+```
+
+In Python the same step is `ox.parent_compound`, which takes one SMILES or a
+column like the other functions:
+
+```python
+ox.parent_compound("CC[NH3+].[Cl-]")             # 'NCC'
+ox.parent_compound("CC(=O)O[Na]")                # 'OC(=O)C', sodium drawn as a bond
+ox.parent_compound("[NH3+]CC([O-])=O")           # 'OC(=O)CN', glycine
+ox.parent_compound("C[N+](C)(C)CC(=O)O")         # 'O=C([O-])C[N+](C)(C)C', betaine
+ox.parent_compound("C[S+](C)[O-]")               # 'S(=O)(C)C'
+df["structure"] = ox.canonical_tautomer(ox.parent_compound(df["smiles"]))
+```
+
+It takes four steps, each of which can be switched off with a keyword:
+
+| keyword | what it does |
+|---|---|
+| `disconnect_metals` | breaks bonds from Li, Na, K, Rb, Cs, Be, Mg, Ca, Sr, Ba to N, O, S, Se or a halogen; the metal leaves as its cation |
+| `normalize_groups` | one spelling per group: `S=O`, `P=O`, `Se=O` rather than `[S+][O-]`; `N=[N+]=[N-]` for azides, `C=[N+]=[N-]` for diazo compounds |
+| `neutralize` | moves protons until the net charge is as close to zero as charges no proton can remove allow (see below) |
+| `strip_salts` | drops components without carbon and common counterions (acetate, trifluoroacetate, mesylate, tosylate, citrate, tartrate, maleate, ...) and keeps the largest component left |
+
+Neutralizing takes the proton off every cation that has one and puts one on
+every anion, except that a cation with no proton to lose -- a quaternary
+ammonium, a sulfonium -- keeps one anion to balance it. That anion is the most
+acidic site (sulfonate, then phosphate, then carboxylate), whether the record
+wrote it charged or not, so carnitine written as the cation, the alkoxide or the
+zwitterion comes out as the one carboxylate zwitterion, while choline, with no
+acid to pair with, stays a cation. A phenol or an alcohol never gives up its
+proton for this. Charge pairs that are how a group is written (nitro, N-oxide,
+azide) are not ions and are left as they are.
+
+A record that is nothing but counterions keeps its largest component, so acetic
+acid on its own stays acetic acid. A transition-metal ion written as its own
+component (heme as a porphyrin dianion and `[Fe+2]`) is the centre of a complex,
+not a counterion, and such a record is neither neutralized nor stripped.
+Stereochemistry and isotopes are kept, and the result is a fixed point: the
+parent of a parent is itself.
 
 A SMILES that does not parse is written back unchanged in the result columns and
 reported on stderr (the first ten, then a count); `--errors none` leaves the

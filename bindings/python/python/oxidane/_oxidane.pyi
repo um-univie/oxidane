@@ -97,3 +97,22 @@ def canonical_tautomer(smiles: Iterable[Optional[str]], *, carbon_endpoints: boo
                        ionizable_endpoints: bool = False, threads: Optional[int] = None,
                        errors: Literal["keep", "none", "raise"] = "keep",
                        check_valence: bool = False) -> List[Optional[str]]: ...
+
+@overload
+def parent_compound(smiles: str, *, disconnect_metals: bool = True,
+                    normalize_groups: bool = True, neutralize: bool = True,
+                    strip_salts: bool = True, threads: Optional[int] = None,
+                    errors: Literal["keep", "none", "raise"] = "keep",
+                    check_valence: bool = False) -> str: ...
+@overload
+def parent_compound(smiles: None, *, disconnect_metals: bool = True,
+                    normalize_groups: bool = True, neutralize: bool = True,
+                    strip_salts: bool = True, threads: Optional[int] = None,
+                    errors: Literal["keep", "none", "raise"] = "keep",
+                    check_valence: bool = False) -> None: ...
+@overload
+def parent_compound(smiles: Iterable[Optional[str]], *, disconnect_metals: bool = True,
+                    normalize_groups: bool = True, neutralize: bool = True,
+                    strip_salts: bool = True, threads: Optional[int] = None,
+                    errors: Literal["keep", "none", "raise"] = "keep",
+                    check_valence: bool = False) -> List[Optional[str]]: ...

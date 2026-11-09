@@ -2887,8 +2887,27 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
     // offered their π, which is a pass over the instance rather than a reason
     // to build another.
     let mut instance = instance_for(&canonical, &pooled, &used_canonical)?;
+    // Only worth a pass where some bond is a charging one; ahead of the
+    // pools-first candidate, which stays last.
+    if instance.bond_classes.contains(&BondClass::Charging) {
+        let last = candidates.len() - 1;
+        candidates.insert(
+            last,
+            (
+                BondOrdering::RingFirstChargingAlike,
+                Rings::All,
+                Closure::Open,
+                false,
+            ),
+        );
+    }
     let mut best: Option<(
-        (std::cmp::Reverse<u32>, usize, std::cmp::Reverse<usize>),
+        (
+            std::cmp::Reverse<u32>,
+            usize,
+            std::cmp::Reverse<usize>,
+            std::cmp::Reverse<usize>,
+        ),
         M,
         bool,
         bool,
@@ -2970,20 +2989,29 @@ fn place_the_totals<M: Molecule + Clone + ToSMILES>(
         // canonical order.
         let unsettled =
             mirror_ambiguous || a_symmetry_moves_a_placement(&skeleton_symmetries, &candidate);
+        let separated = separated_charges(&candidate, &pooled.endpoints);
         let (candidate, already_canonical) = canonizer.perceive_for_scoring(candidate);
         // Fewest charges first, then most aromatic bonds: a ring closure can
         // buy aromaticity with a charge separation, and N-methyl-2-pyridone
-        // beside a phenol is not a pyridinium phenolate. Then fewest imines
-        // hung off a ring, which only breaks ties: an imino ring such as
-        // `N=c1[nH][nH]cc1` is as aromatic to this count as the amino ring
-        // it is a tautomer of, and the amino form is the one written.
+        // beside a phenol is not a pyridinium phenolate. Then the fewest
+        // charges on endpoints with no opposite charge beside them: an azide
+        // or a nitro group is a charge pair however it is written, and two
+        // writings with as many charges as each other, one keeping the pair
+        // and one taking a proton from an acid onto it -- `OC(=O)CCN=[N+]=[N-]`
+        // and `O=C([O-])CCN=[N+]=N` -- are the group and an ion pair, of which
+        // the group is the one written. Then fewest imines hung off a ring,
+        // which only breaks ties: an imino ring such as `N=c1[nH][nH]cc1` is
+        // as aromatic to this count as the amino ring it is a tautomer of, and
+        // the amino form is the one written.
         let score = (
             std::cmp::Reverse(charge_count(&candidate)),
             aromatic_bond_count(&candidate),
+            std::cmp::Reverse(separated),
             std::cmp::Reverse(exocyclic_imine_count(&candidate)),
         );
         let fewest = *fewest.get_or_insert(score.0);
-        let settled = score.1 >= most_aromatic && score.0 == fewest && score.2.0 == 0;
+        let settled =
+            score.1 >= most_aromatic && score.0 == fewest && score.2.0 == 0 && score.3.0 == 0;
         if best
             .as_ref()
             .is_none_or(|(best_score, _, _, _)| score > *best_score)
@@ -3109,10 +3137,49 @@ fn bond_order_signature<M: Molecule + ?Sized>(molecule: &M) -> Vec<u8> {
 /// How many aromatic bonds a molecule has, which is what separates the two bond
 /// orderings when both give a valid answer.
 /// The sum of the magnitudes of the formal charges.
+/// The endpoints holding a charge with no opposite charge on any neighbour. A
+/// hub's charge is bookkeeping rather than a partner; see [`is_hub`].
+fn separated_charges<M: Molecule + ?Sized>(molecule: &M, endpoints: &[usize]) -> usize {
+    endpoints
+        .iter()
+        .filter(|&&atom| {
+            let charge = molecule.get_atom_charge(atom);
+            charge != 0
+                && !molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+                    bonds.iter().any(|bond| {
+                        molecule.get_atom_charge(bond.target()).signum() == -charge.signum()
+                            && !is_hub(molecule, bond.target())
+                    })
+                })
+        })
+        .count()
+}
+
+/// The formal charges a candidate carries, a protonated nitro group counted
+/// as the charge pair it still is.
+///
+/// A nitro group is charge-separated however it is written; putting a proton
+/// on one of its oxygens trades the pair for a cation and saves nothing. Read
+/// at face value, `[N+](O)=O` has one charge where `[N+](=O)[O-]` has two, so
+/// the amide proton of a nitrothiophene-carboxamide on a phenazinium dye went
+/// to the nitro group: the protonated nitro group beside the dye's neutral
+/// anhydrobase had one charge, the dye and its nitro group three.
 fn charge_count<M: Molecule + ?Sized>(molecule: &M) -> u32 {
+    let protonated_nitro = (0..molecule.atomic_numbers().len())
+        .filter(|&atom| {
+            molecule.atomic_numbers()[atom] == 8
+                && hydrogen_count(molecule, atom) > 0
+                && molecule.get_atom_bonds(atom).is_some_and(|bonds| {
+                    bonds
+                        .iter()
+                        .any(|bond| is_nitro_oxygen(molecule, atom, bond.target()))
+                })
+        })
+        .count() as u32;
     (0..molecule.atomic_numbers().len())
         .map(|atom| u32::from(molecule.get_atom_charge(atom).unsigned_abs()))
-        .sum()
+        .sum::<u32>()
+        + 2 * protonated_nitro
 }
 
 /// The double bonds from an aromatic ring atom to a nitrogen outside every
@@ -3355,6 +3422,14 @@ enum BondOrdering {
     HeteroatomFirst,
     /// Ring bonds first: the aromatic system over the exocyclic double bond.
     RingFirst,
+    /// Ring bonds first, and a bond that charges an atom offered with the
+    /// rest rather than after them. A methylated ring nitrogen has no room as
+    /// a neutral atom, so its bonds are charging ones, and offered last they
+    /// came after a pass over the carbons had already used up the π it
+    /// needed: `C[n+]1ccc2[nH]ccc2c1` came back as `[NH+]1(C)C=CC2=NC=CC2=C1`,
+    /// the pyrrole's proton on the methylated nitrogen and neither ring
+    /// aromatic.
+    RingFirstChargingAlike,
 }
 
 /// How early a bond gets to claim a π bond: the lower, the sooner.
@@ -3484,7 +3559,8 @@ fn solve_group<M: Molecule + Clone + ToSMILES>(
     used: &[Option<i64>],
     spread: bool,
 ) -> Option<()> {
-    let assignment = plan_from(instance, molecule, ordering, cyclic, closed, spread);
+    let mut assignment = plan_from(instance, molecule, ordering, cyclic, closed, spread);
+    pair_negative_charges(molecule, &mut assignment);
     // An atom's bond list is a fixed-capacity inline array, so an assignment
     // asking for more is a panic rather than a wrong answer. It should never
     // happen -- nothing in the model gives an atom more neighbours than a
@@ -4388,7 +4464,11 @@ fn plan_from<M: Molecule + ?Sized>(
             let on_ring = u8::from(!cyclic.contains(&(first.min(second), first.max(second))));
             let leading = match ordering {
                 BondOrdering::HeteroatomFirst => 0,
-                BondOrdering::RingFirst => on_ring,
+                BondOrdering::RingFirst | BondOrdering::RingFirstChargingAlike => on_ring,
+            };
+            let class = match (ordering, class) {
+                (BondOrdering::RingFirstChargingAlike, BondClass::Charging) => BondClass::Ordinary,
+                _ => class,
             };
             (
                 leading,
@@ -4554,6 +4634,142 @@ fn plan_from<M: Molecule + ?Sized>(
             .filter(|&&(edge, _)| taken[edge])
             .map(|&(_, slot)| instance.atoms[slot])
             .collect(),
+    }
+}
+
+/// Moves each negative charge with no positive neighbour onto an endpoint
+/// that has one, trading it for a hydrogen there.
+///
+/// An endpoint's hydrogens and negative charges are one quantity to the
+/// valence model -- each spends what the other would -- so a hydrogen on one
+/// endpoint and a charge on another can change places without touching a
+/// bond, and the solver, deciding bonds, leaves that choice to atom position.
+/// An azide beside a carboxylic acid then came out as the carboxylate and a
+/// protonated azide, `O=C([O-])CCN=[N+]=N`, and AZT as the thymine anion beside
+/// `N=[N+]=N`: as many charges as the group the input wrote, but as two ions
+/// rather than one pair. The pair is the group, so a charge that can sit
+/// beside its positive partner does.
+fn pair_negative_charges<M: Molecule + ?Sized>(molecule: &M, assignment: &mut Assignment) {
+    // The swaps below move negative charges and hydrogens only, so which atoms
+    // are positive is settled before any of them.
+    let positives: FxHashSet<usize> = assignment.positive.iter().copied().collect();
+    // A hub's charge is bookkeeping for its semipolar bonds, not a cation a
+    // charge could pair with; see [`is_hub`].
+    let positive = |atom: usize| {
+        (molecule.get_atom_charge(atom) > 0 || positives.contains(&atom)) && !is_hub(molecule, atom)
+    };
+    let beside_positive = |atom: usize| {
+        molecule
+            .get_atom_bonds(atom)
+            .is_some_and(|bonds| bonds.iter().any(|bond| positive(bond.target())))
+    };
+    let mut lone: Vec<usize> = assignment
+        .negative
+        .iter()
+        .copied()
+        .filter(|&atom| !beside_positive(atom))
+        .collect();
+    lone.sort_unstable();
+    for atom in lone {
+        let mut partners: Vec<usize> = assignment
+            .hydrogens
+            .iter()
+            .copied()
+            .filter(|&other| {
+                other != atom
+                    && beside_positive(other)
+                    && takes_negative_charge(molecule.atomic_numbers()[other])
+                    && !assignment.negative.contains(&other)
+            })
+            .collect();
+        partners.sort_unstable();
+        let Some(&partner) = partners.first() else {
+            continue;
+        };
+        swap_charge_and_hydrogen(assignment, atom, partner);
+    }
+    // Then each charge still on its own goes to the most acidic endpoint that
+    // holds a hydrogen to give it: carnitine's to the carboxylate rather than
+    // the alcohol, which is where atom position had put it.
+    let mut lone: Vec<usize> = assignment
+        .negative
+        .iter()
+        .copied()
+        .filter(|&atom| !beside_positive(atom))
+        .collect();
+    lone.sort_unstable();
+    for atom in lone {
+        let rank = acidity(molecule, atom);
+        let mut stronger: Vec<(u8, usize)> = assignment
+            .hydrogens
+            .iter()
+            .copied()
+            .filter(|&other| {
+                other != atom
+                    && takes_negative_charge(molecule.atomic_numbers()[other])
+                    && !assignment.negative.contains(&other)
+            })
+            .map(|other| (acidity(molecule, other), other))
+            .filter(|&(other_rank, _)| other_rank < rank)
+            .collect();
+        stronger.sort_unstable();
+        if let Some(&(_, partner)) = stronger.first() {
+            swap_charge_and_hydrogen(assignment, atom, partner);
+        }
+    }
+}
+
+/// Gives `partner` the negative charge `atom` holds, and `atom` one of the
+/// hydrogens `partner` was to take.
+fn swap_charge_and_hydrogen(assignment: &mut Assignment, atom: usize, partner: usize) {
+    if let Some(slot) = assignment.negative.iter().position(|&a| a == atom) {
+        assignment.negative[slot] = partner;
+    }
+    if let Some(slot) = assignment.hydrogens.iter().position(|&a| a == partner) {
+        assignment.hydrogens[slot] = atom;
+    }
+}
+
+/// How readily an endpoint holds a negative charge, lower first, read from σ
+/// bonds and the bonds outside the groups, which every tautomer shares: an
+/// oxygen on a sulfur, selenium, phosphorus or arsenic, then an oxygen or
+/// sulfur on a carbon that also bears another oxygen or sulfur -- a carboxylic
+/// or thio acid -- then any other heteroatom on an unsaturated atom, and last
+/// one with only saturated neighbours, an alcohol or an amine.
+fn acidity<M: Molecule + ?Sized>(molecule: &M, atom: usize) -> u8 {
+    let heavy: Vec<usize> = molecule
+        .get_atom_bonds(atom)
+        .unwrap_or_default()
+        .iter()
+        .map(|bond| bond.target())
+        .filter(|&other| molecule.atomic_numbers()[other] != 1)
+        .collect();
+    let element = molecule.atomic_numbers()[atom];
+    let [center] = heavy[..] else {
+        return 3;
+    };
+    let chalcogens_on_center = molecule
+        .get_atom_bonds(center)
+        .unwrap_or_default()
+        .iter()
+        .filter(|bond| {
+            bond.target() != atom
+                && matches!(molecule.atomic_numbers()[bond.target()], 8 | 16)
+                && heavy_degree(molecule, bond.target()) == 1
+        })
+        .count();
+    let saturated = molecule
+        .get_atom_bonds(center)
+        .unwrap_or_default()
+        .iter()
+        .filter(|bond| molecule.atomic_numbers()[bond.target()] != 1)
+        .count()
+        == 4;
+    match (element, molecule.atomic_numbers()[center]) {
+        (8 | 16, 15 | 16 | 33 | 34) => 0,
+        (8 | 16, 6) if chalcogens_on_center > 0 => 1,
+        _ if saturated => 4,
+        _ => 2,
     }
 }
 

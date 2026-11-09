@@ -7,6 +7,7 @@
 //! partition against RDKit's tautomer hashes; what is here is the set of cases
 //! worth naming.
 
+use crate::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
 use crate::molecule::tautomer::{
     TautomerRules, erased_skeleton, perceive, tautomer_key, tautomer_key_from_smiles,
 };
@@ -1866,6 +1867,71 @@ fn the_charge_reduced_key_keeps_what_protons_cannot_change() {
     }
 }
 
+fn normal(smiles: &str, rules: &TautomerRules) -> String {
+    normalized_smiles(smiles, rules).expect("the SMILES parses")
+}
+
+fn canonical(smiles: &str) -> String {
+    canonicalize_and_sort_smiles(smiles, false).expect("the SMILES parses")
+}
+
+/// An azide and a nitro group are charge pairs however they are written, and
+/// the canonical tautomer keeps them so: no acid in the molecule hands its
+/// proton to them, as the solver's placement by atom position had it do.
+#[test]
+fn charge_pairs_keep_their_protons_off() {
+    let rules = TautomerRules::new();
+    for (input, protonated) in [
+        ("OC(=O)CCN=[N+]=[N-]", "O=C([O-])CCN=[N+]=N"),
+        (
+            "Cc1cn(C2CC(N=[N+]=[N-])C(CO)O2)c(=O)[nH]c1=O",
+            "Cc1cn(C2CC(N=[N+]=N)C(CO)O2)c(=O)[n-]c1=O",
+        ),
+        (
+            "CC(C)C[C@H](NC(=O)c1ccc(cc1)[N+](=O)[O-])C(=O)O",
+            "O[N+](=O)c1ccc(cc1)C(=O)N[C@@H](CC(C)C)C(=O)[O-]",
+        ),
+    ] {
+        assert_eq!(normal(input, &rules), canonical(input), "{input}");
+        assert_eq!(normal(protonated, &rules), canonical(input), "{protonated}");
+        assert_eq!(key(protonated), key(input), "{protonated}");
+    }
+    // A nitro group does not take an amide proton to buy a neutral dye: the
+    // protonated nitro group still counts as the pair it is.
+    let dye = "Cc1cc2nc3c(C)c(N)ccc3[n+](-c3ccccc3)c2cc1NC(=O)c1ccc([N+](=O)[O-])s1";
+    assert_eq!(normal(dye, &rules), canonical(dye));
+}
+
+/// A methylated ring nitrogen keeps its charge and its ring its aromaticity:
+/// a pass that offered its bonds last wrote the pyrrole's proton onto it.
+#[test]
+fn a_methylated_ring_nitrogen_stays_aromatic() {
+    for smiles in [
+        "C[n+]1ccc2[nH]ccc2c1",
+        "Cc1c2cc[n+](C)cc2c(C)c2c1[nH]c1c2cc(O)cc1",
+    ] {
+        assert_eq!(
+            normal(smiles, &TautomerRules::new()),
+            canonical(smiles),
+            "{smiles}"
+        );
+    }
+}
+
+/// Pooled, a charge goes to the most acidic site that can hold it: carnitine
+/// is the carboxylate under the ionizable rules, not the alkoxide.
+#[test]
+fn a_pooled_charge_goes_to_the_strongest_acid() {
+    let rules = TautomerRules::with_ionizable_endpoints();
+    for (input, expected) in [
+        ("C[N+](C)(C)CC([O-])CC(=O)O", "C[N+](C)(C)CC(O)CC(=O)[O-]"),
+        ("[O-]c1ccc(cc1)CC(=O)O", "Oc1ccc(cc1)CC(=O)[O-]"),
+        ("OS(=O)(=O)CCC(=O)[O-]", "[O-]S(=O)(=O)CCC(=O)O"),
+    ] {
+        assert_eq!(normal(input, &rules), canonical(expected), "{input}");
+    }
+}
+
 /// A wildcard atom, `*`, is a substituent like any other: counted among an
 /// endpoint's heavy neighbours, an amide or ester written with one has its
 /// canonical tautomer, where it had none.
@@ -1876,10 +1942,6 @@ fn a_wildcard_is_a_heavy_neighbour() {
         ("CC(=O)O*", "O(C(=O)C)*"),
         ("CC(O)=N*", "O=C(N*)C"),
     ] {
-        assert_eq!(
-            normalized_smiles(input, &TautomerRules::new()).unwrap(),
-            expected,
-            "{input}"
-        );
+        assert_eq!(normal(input, &TautomerRules::new()), expected, "{input}");
     }
 }

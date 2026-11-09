@@ -692,4 +692,60 @@ mod canonization_stress_tests {
             ],
         );
     }
+
+    /// A tetrahedral tag on an atom with two identical hydrogens means
+    /// nothing, and is not written: kept, it was read against whichever
+    /// hydrogen came first, so `CC[C@H](F)[C@@H3]` gave `@` or `@@` on its
+    /// methyl by atom order. GNPS deposits such tags. A centre with a
+    /// protium and a deuterium is a centre, and keeps its tag.
+    #[test]
+    fn a_centre_with_two_identical_hydrogens_has_no_tag() {
+        let mut rng = StdRng::seed_from_u64(20261110);
+        for (smiles, tagged) in [
+            ("CC[C@H](F)[C@@H3]", true),
+            ("C[C@@H3]", false),
+            ("F[C@@H2]Cl", false),
+            (
+                "CC1(C)C2CC[C@]3(C)C(C(=O)C=C4C5C[C@](C)(CC[C@]5(C)CC[C@]43[C@@H3])C(=O)O)[C@@]2(C)CC[C@@H]1O",
+                true,
+            ),
+            ("[2H][C@](C)([H])F", true),
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            let canonical = canonize_mol(&molecule).to_smiles();
+            assert!(
+                !canonical.contains("H3]") && !canonical.contains("H2]"),
+                "{canonical}"
+            );
+            assert_eq!(canonical.contains('@'), tagged, "{smiles} -> {canonical}");
+            for _ in 0..16 {
+                let mut shuffled = molecule.clone();
+                let mut order: Vec<usize> = (0..shuffled.len()).collect();
+                order.shuffle(&mut rng);
+                reorder_molecule(&mut shuffled, &order);
+                assert_eq!(canonize_mol(&shuffled).to_smiles(), canonical, "{smiles}");
+            }
+        }
+    }
+
+    /// The same of a double bond with two identical hydrogens on one end:
+    /// `=C([H])[H]` has no geometry, and GNPS writes marks on it.
+    #[test]
+    fn a_double_bond_ending_in_two_hydrogens_has_no_geometry() {
+        for (smiles, marked) in [
+            ("O/C(C)=C([H])\\[H]", false),
+            ("CC/C=C(/[H])\\[H]", false),
+            ("CC/C=C(/[H])\\[2H]", true),
+        ] {
+            let molecule = MolecularGraph::from_smiles_single(smiles).unwrap();
+            let canonical = canonize_mol(&molecule).to_smiles();
+            assert_eq!(
+                canonical.contains('/') || canonical.contains('\\'),
+                marked,
+                "{smiles} -> {canonical}"
+            );
+            let reread = MolecularGraph::from_smiles_single(&canonical).unwrap();
+            assert_eq!(canonize_mol(&reread).to_smiles(), canonical, "{smiles}");
+        }
+    }
 }

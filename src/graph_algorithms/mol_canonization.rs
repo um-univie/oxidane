@@ -5,6 +5,96 @@ use crate::molecule::graph::AtomInvariant;
 use crate::prelude::*;
 use std::cell::RefCell;
 
+/// Takes the tetrahedral tag off every atom with two identical hydrogens, and
+/// the geometry off every double bond with such an end.
+///
+/// Such an atom is not a stereocentre -- swapping the hydrogens is no change
+/// -- so its tag means nothing, and kept it was read against whichever
+/// hydrogen the input listed first: `CC[C@H](F)[C@@H3]` came out with `@` or
+/// `@@` on its methyl depending on the order of the atoms. GNPS deposits such
+/// tags on methyl groups.
+fn clear_tags_on_centres_with_two_hydrogens<T: Molecule>(molecule: &mut T) {
+    let doomed: Vec<usize> = (0..molecule.len())
+        .filter(|&atom| {
+            matches!(
+                molecule.get_chiral_class(atom),
+                ChiralClass::TH(_) | ChiralClass::Clockwise | ChiralClass::Counterclockwise
+            )
+        })
+        .filter(|&atom| {
+            let mut hydrogens: Vec<u16> = molecule.atom_bonds()[atom]
+                .iter()
+                .map(|bond| bond.target())
+                .filter(|&neighbour| {
+                    molecule.atomic_numbers()[neighbour] == 1
+                        && molecule.atom_bonds()[neighbour].len() == 1
+                })
+                .map(|hydrogen| {
+                    molecule
+                        .isotopes()
+                        .and_then(|isotopes| isotopes.get(hydrogen).copied())
+                        .unwrap_or(0)
+                })
+                .collect();
+            let count = hydrogens.len();
+            hydrogens.sort_unstable();
+            hydrogens.dedup();
+            hydrogens.len() < count
+        })
+        .collect();
+    // The same of a double bond: an end whose substituents are two identical
+    // hydrogens, `C=C([H])[H]`, has no geometry, and a mark on it -- GNPS
+    // writes `O/C(C)=C([H])\[H]` -- was read against whichever came first.
+    // Both ends go, since a geometry is written on both.
+    let mut doomed = doomed;
+    for atom in 0..molecule.len() {
+        if !matches!(
+            molecule.get_chiral_class(atom),
+            ChiralClass::CisTransClockwise | ChiralClass::CisTransCounterclockwise
+        ) {
+            continue;
+        }
+        let bonds = &molecule.atom_bonds()[atom];
+        let Some(partner) = bonds
+            .iter()
+            .find(|bond| bond.bond_order() == BondOrder::Double)
+            .map(|bond| bond.target())
+        else {
+            continue;
+        };
+        let substituents: Vec<usize> = bonds
+            .iter()
+            .map(|bond| bond.target())
+            .filter(|&other| other != partner)
+            .collect();
+        if let [first, second] = substituents[..]
+            && hydrogen_isotope(molecule, first).is_some()
+            && hydrogen_isotope(molecule, first) == hydrogen_isotope(molecule, second)
+        {
+            doomed.push(atom);
+            doomed.push(partner);
+        }
+    }
+    if doomed.is_empty() {
+        return;
+    }
+    if let Some(classes) = molecule.chiral_classes_mut() {
+        for atom in doomed {
+            classes[atom] = ChiralClass::None;
+        }
+    }
+}
+
+/// A terminal hydrogen's isotope (0 for none), or `None` for any other atom.
+fn hydrogen_isotope<T: Molecule>(molecule: &T, atom: usize) -> Option<u16> {
+    (molecule.atomic_numbers()[atom] == 1 && molecule.atom_bonds()[atom].len() == 1).then(|| {
+        molecule
+            .isotopes()
+            .and_then(|isotopes| isotopes.get(atom).copied())
+            .unwrap_or(0)
+    })
+}
+
 thread_local! {
     /// Automorphism generators collected from the most recent nauty run, each a
     /// permutation over the nauty vertices (heavy atoms + bond vertices).
@@ -160,7 +250,8 @@ impl Canonizer {
     /// has not, the Kekule and the aromatic way of writing the same structure
     /// canonicalize to different strings -- which is a silent wrong answer, not
     /// an error. When in doubt use [`Canonizer::canonize`].
-    pub fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, molecule: T) -> T {
+    pub fn canonize_perceived<T: Molecule + Clone + ToSMILES>(&mut self, mut molecule: T) -> T {
+        clear_tags_on_centres_with_two_hydrogens(&mut molecule);
         // Perception reads the atoms in the order they arrive in, and the
         // canonical order is not that order: a graphene flake's carbonyl ring
         // comes out Kekule from the molecule as written and aromatic from the

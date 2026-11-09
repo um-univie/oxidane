@@ -1873,7 +1873,7 @@ fn settle_geometries<M: Molecule + Clone + ToSMILES>(
                 && neighbourhood_stands(bond.0, bond)
                 && neighbourhood_stands(bond.1, bond)
                 && let Some(solver) = instance.get(skeleton, groups, &used)
-                && let Some(order) = fixed_order(skeleton, solver, bond)
+                && let Some(order) = fixed_order(solver, bond)
                 && order != BondOrder::Single
             {
                 fixed.push((bond, order));
@@ -2134,7 +2134,7 @@ fn restore_geometry_orders<M: Molecule + Clone + ToSMILES>(
             if states(skeleton, bond.0)
                 && states(skeleton, bond.1)
                 && let Some(solver) = instance.get(skeleton, groups, &used)
-                && let Some(order) = fixed_order(skeleton, solver, bond)
+                && let Some(order) = fixed_order(solver, bond)
                 && order != BondOrder::Single
             {
                 restored.push((bond, order));
@@ -3484,7 +3484,7 @@ fn solve_group<M: Molecule + Clone + ToSMILES>(
     used: &[Option<i64>],
     spread: bool,
 ) -> Option<()> {
-    let assignment = plan_from(instance, molecule, ordering, cyclic, closed, None, spread);
+    let assignment = plan_from(instance, molecule, ordering, cyclic, closed, spread);
     // An atom's bond list is a fixed-capacity inline array, so an assignment
     // asking for more is a panic rather than a wrong answer. It should never
     // happen -- nothing in the model gives an atom more neighbours than a
@@ -3621,30 +3621,33 @@ fn instance_for<M: Molecule + Clone + ToSMILES>(
 ///
 /// `None` where the group does not solve at all, which is the same answer as
 /// "not fixed": the caller then erases, as it always did.
-fn fixed_order<M: Molecule + ?Sized>(
-    skeleton: &M,
-    instance: &mut GroupInstance,
-    bond: (usize, usize),
-) -> Option<BondOrder> {
-    let none = FxHashSet::default();
+///
+/// Only the bond's own two π units are decided. Decided first, each is settled
+/// over the whole feasible set, and nothing decided after them could change
+/// them. Probing used to run a full pass behind them anyway, and that was all
+/// a probe cost: a PubChem record of conjugated dienes beside ninety catenated
+/// sulfurs spent five seconds in it, a search over the sulfur's gadget for
+/// each of a thousand decisions, twice per bond.
+fn fixed_order(instance: &mut GroupInstance, bond: (usize, usize)) -> Option<BondOrder> {
+    let Some(&(single, second_unit, _)) = instance
+        .bond_edges
+        .iter()
+        .find(|&&(_, _, edge)| edge == bond)
+    else {
+        return Some(BondOrder::Single);
+    };
     // The unpinned model, which has the larger feasible set: a bond fixed
     // across that is fixed across the pinned one `solve_group` tries first.
     let mut settled: Option<BondOrder> = None;
     for wanted in [false, true] {
-        let assignment = plan_from(
-            instance,
-            skeleton,
-            BondOrdering::HeteroatomFirst,
-            &none,
-            &none,
-            Some((bond, wanted)),
-            false,
-        );
-        let order = assignment
-            .bond_orders
-            .iter()
-            .find(|&&(edge, _)| edge == bond)
-            .map_or(BondOrder::Single, |&(_, order)| order);
+        let taken = instance
+            .solver
+            .select(&[(single, wanted), (second_unit, wanted)]);
+        let order = match (taken[single], taken[second_unit]) {
+            (false, false) => BondOrder::Single,
+            (true, true) => BondOrder::Triple,
+            _ => BondOrder::Double,
+        };
         match settled {
             None => settled = Some(order),
             Some(first) if first == order => {}
@@ -4308,9 +4311,9 @@ fn build_instance<M: Molecule + Clone + ToSMILES>(
 /// What the graph is made of -- the atoms' capacities, the pools, the ladder
 /// rungs, the charge separations -- depends on the molecule and the groups
 /// alone. What changes between one assignment and the next is only the order
-/// the edges are offered in: which bonds are asked first, which are forced
-/// π-free to keep a ring, and whether a caller is probing one bond's range.
-/// So the instance is built once and each of those is a pass over it.
+/// the edges are offered in: which bonds are asked first, and which are forced
+/// π-free to keep a ring; probing one bond's range offers only that bond. So
+/// the instance is built once and each of those is a pass over it.
 ///
 /// `normalize` asks for up to four assignments of one component, and
 /// [`settle_geometries`] asks two more per double bond whose geometry might
@@ -4349,7 +4352,6 @@ fn plan_from<M: Molecule + ?Sized>(
     ordering: BondOrdering,
     cyclic: &FxHashSet<(usize, usize)>,
     closed: &FxHashSet<(usize, usize)>,
-    probe: Option<((usize, usize), bool)>,
     spread_pools_first: bool,
 ) -> Assignment {
     // Decide the bonds in canonical order, heteroatom bonds first; the charges
@@ -4398,31 +4400,15 @@ fn plan_from<M: Molecule + ?Sized>(
     // writable form does. The separations are interchangeable, so taking them
     // greedily in this order really is the minimum rather than merely a small
     // number.
-    // A caller asking what orders one bond can take puts that bond's two π
-    // units at the very head of the list, so the first thing the lexicographic
-    // pass settles is whether the group can be written with the bond π-free --
-    // or, asked the other way round, with as much π as it will hold. Nothing
-    // precedes it, so the answer is over the whole feasible set rather than
-    // over what earlier preferences have already narrowed it to.
-    let mut priority: Vec<(usize, bool)> = match probe {
-        Some((probed, wanted)) => instance
-            .bond_edges
-            .iter()
-            .filter(|(_, _, bond)| *bond == probed)
-            .flat_map(|&(single, second_unit, _)| [(single, wanted), (second_unit, wanted)])
-            .collect(),
-        None => Vec::new(),
-    };
     // Bonds the caller wants kept free of π: the exocyclic ones at a ring that
     // would otherwise steal the ring's own π bonds. Forced out first, so the
     // ring has no choice but to satisfy itself.
-    priority.extend(
-        instance
-            .bond_edges
-            .iter()
-            .filter(|(_, _, bond)| closed.contains(bond))
-            .flat_map(|&(single, second_unit, _)| [(single, false), (second_unit, false)]),
-    );
+    let mut priority: Vec<(usize, bool)> = instance
+        .bond_edges
+        .iter()
+        .filter(|(_, _, bond)| closed.contains(bond))
+        .flat_map(|&(single, second_unit, _)| [(single, false), (second_unit, false)])
+        .collect();
     // No triple bond at a hub; see [`is_hub`].
     priority.extend(instance.hub_second_units.iter().map(|&edge| (edge, false)));
     // Nitro groups and nitriles before the charge separations: both are

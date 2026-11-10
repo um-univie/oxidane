@@ -12,7 +12,7 @@ mod ml_tests;
 #[cfg(feature = "ml")]
 mod nn_tests;
 mod mcsplit_tests;
-mod parent_tests;
+mod mass_spec_tests;
 mod publication_regression_tests;
 mod reaction_tests;
 mod sdf_tests;

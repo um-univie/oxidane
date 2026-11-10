@@ -9,7 +9,7 @@ use oxidane::io::{
 };
 use oxidane::molecule::base::MoleculeCore;
 use oxidane::molecule::draw::Draw;
-use oxidane::molecule::parent::{ParentOptions, parent_smiles};
+use oxidane::molecule::mass_spec::{ParentOptions, parent_smiles};
 use oxidane::molecule::reaction::ReactionSmarts as RustReaction;
 use oxidane::molecule::tautomer::{TautomerRules, normalized_smiles, tautomer_key_from_smiles};
 use oxidane::molecule::{MolecularGraph, Molecule3D};
@@ -632,29 +632,27 @@ fn canonical_tautomer(
     })
 }
 
-/// The parent compound: counterions dropped, metals drawn as bonds broken,
-/// groups written one way, and protons moved until the net charge is as close
-/// to zero as the fixed charges allow.
+/// The parent compound M a spectral library records: metals drawn as bonds
+/// broken, each component's canonical tautomer, protons moved until the net
+/// charge is as close to zero as the fixed charges allow, and counterions
+/// dropped.
 #[pyfunction]
-#[pyo3(signature = (smiles, *, disconnect_metals=true, normalize_groups=true, neutralize=true, strip_salts=true, threads=None, errors="keep", check_valence=false))]
+#[pyo3(signature = (smiles, *, disconnect_metals=true, neutralize=true, strip_salts=true, threads=None, errors="keep", check_valence=false))]
 #[allow(clippy::too_many_arguments)]
 fn parent_compound(
     py: Python<'_>,
     smiles: &Bound<'_, PyAny>,
     disconnect_metals: bool,
-    normalize_groups: bool,
     neutralize: bool,
     strip_salts: bool,
     threads: Option<usize>,
     errors: &str,
     check_valence: bool,
 ) -> PyResult<Py<PyAny>> {
-    let options = ParentOptions {
-        disconnect_metals,
-        normalize_groups,
-        neutralize,
-        strip_salts,
-    };
+    let mut options = ParentOptions::default();
+    options.disconnect_metals = disconnect_metals;
+    options.neutralize = neutralize;
+    options.strip_salts = strip_salts;
     map_smiles(py, smiles, threads, errors, check_valence, |smiles| {
         parent_smiles(smiles, &options)
     })

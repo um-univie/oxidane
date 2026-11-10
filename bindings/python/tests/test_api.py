@@ -398,6 +398,7 @@ def test_parent_compound_merges_salts_metals_and_protomers():
         ["NCC(=O)O", "[NH3+]CC([O-])=O"],
         ["C[N+](C)(C)CC(=O)[O-]", "C[N+](C)(C)CC(=O)O"],
         ["CS(C)=O", "C[S+](C)[O-]"],
+        ["CN1C=CC=CC1=O", "[O-]c1cccc[n+]1C"],
     ]
     for forms in same:
         parents = ox.parent_compound(forms)
@@ -408,7 +409,8 @@ def test_parent_compound_merges_salts_metals_and_protomers():
     assert "." in ox.parent_compound("CCN.Cl", strip_salts=False)
     assert "+" in ox.parent_compound("CC[NH3+]", neutralize=False)
     assert "Na" in ox.parent_compound("CC(=O)O[Na]", disconnect_metals=False)
-    assert "+" in ox.parent_compound("C[S+](C)[O-]", normalize_groups=False)
+    # Nothing is guessed: two compounds, neither a known counterion, both stay.
+    assert "." in ox.parent_compound("CCCO.c1ccccc1N")
     # Same error handling and missing values as the other functions.
     assert ox.parent_compound(["C1CC", None, "CCO"], errors="none") == [
         None, None, ox.parent_compound("CCO")]

@@ -85,12 +85,12 @@ tautomer key is shared by every tautomer of a compound, so 2-pyridone and
 2-hydroxypyridine deduplicate to one row, and a canonical tautomer picks one
 structure to stand for them all.
 
-**Finds the parent compound.** Optionally, before any of that: counterions
-dropped, sodium or potassium drawn as a bond to the compound broken off, groups
-written one way (`S=O` for `[S+][O-]`), and protons moved until the net charge
-is as low as the fixed charges allow, so a hydrochloride, a sodium salt and a
-zwitterion each come back as the compound they are a form of
-(`oxidane::molecule::parent`, `ox.parent_compound`, `oxidane-normalize --parent`).
+**Finds the parent compound.** For mass spectrometry, the neutral molecule M a
+spectral library records: sodium or potassium drawn as a bond broken off, each
+component's canonical tautomer, protons moved until the net charge is as low as
+the fixed charges allow, and counterions dropped, so a hydrochloride, a sodium
+salt and a zwitterion each come back as the compound they are a form of
+(`oxidane::molecule::mass_spec`, `ox.parent_compound`, `oxidane-normalize --parent`).
 
 **Matches.** CxSMARTS patterns with the full atom expression language, ring
 and degree constraints, recursion, and chirality as part of the query. The

@@ -6,16 +6,24 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("run_dir", type=Path)
-parser.add_argument("--shards", type=int, default=500)
+parser.add_argument("--shards", type=int, default=1000)
 parser.add_argument("--expected-records", type=int, default=124598147)
 args = parser.parse_args()
+# Every counter a shard must report; the parent checks are reported too, as
+# zeros, when the sweep ran without `--parent on`.
 expected_counters = {
     "unparsed by this crate", "normalized", "no answer (should be 0)",
     "formula changed", "output did not reparse", "not idempotent", "key changed",
     "did not converge", "panics", "skipped as oversize",
     "canonical_formula", "canonical_reparse", "canonical_idempotence",
     "canonical_permutation", "tautomer_permutation", "key_permutation",
+    "key_canonical", "record_key_permutation", "record_key_canonical", "record_key",
+    "parent_reparse", "parent_idempotence", "parent_permutation", "parent_tautomer",
+    "parent_atoms", "impossible valence",
 }
+# Counted but not findings: what was normalized, and the deposited records
+# whose valences no element allows, which are not molecules to normalize.
+not_findings = {"normalized", "impossible valence"}
 totals = {}
 incomplete = []
 failures = []
@@ -36,7 +44,7 @@ for index in range(args.shards):
     records += int(report[1])
     for name, value in counters.items():
         totals[name] = totals.get(name, 0) + value
-    if any(value for name, value in counters.items() if name != "normalized"):
+    if any(value for name, value in counters.items() if name not in not_findings):
         failures.append(index)
 result = dict(completed_shards=complete, expected_shards=args.shards,
               records=records, expected_records=args.expected_records,

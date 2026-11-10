@@ -24,8 +24,14 @@
 //!   through its components' canonical SMILES and through normalization,
 //! * and nothing panics.
 //!
+//! With `--parent on` each record's parent compound (see
+//! `oxidane::molecule::mass_spec`) is checked as well: it reads back as
+//! itself, it is its own parent, it survives a shuffle of the atoms and the
+//! components, it is the parent of the record's canonical tautomer too, and it
+//! holds no heavy atom the record did not.
+//!
 //! ```text
-//! cargo run --release --example pubchem_sweep -- <path> [--limit N] [--threads N] [--max-atoms N] [--tautomers on|off] [--normalize on|off] [--ionizable on|off]
+//! cargo run --release --example pubchem_sweep -- <path> [--limit N] [--threads N] [--max-atoms N] [--tautomers on|off] [--normalize on|off] [--ionizable on|off] [--parent on|off]
 //! ```
 //!
 //! The corpus is mapped rather than read: the records are found by looking for
@@ -44,9 +50,10 @@
 //! Failures are written to stderr with their CID so they can be looked up.
 
 use oxidane::graph_algorithms::mol_canonization::{
-    canonize_mol, canonize_mol_perceived, reorder_molecule,
+    canonicalize_and_sort_smiles, canonize_mol, canonize_mol_perceived, reorder_molecule,
 };
 use oxidane::molecular_formula::MolecularFormula;
+use oxidane::molecule::mass_spec::{ParentOptions, parent_components, parent_smiles};
 use oxidane::molecule::tautomer::{
     NormalizationError, TautomerRules, normalize, tautomer_key, try_normalize,
 };
@@ -95,6 +102,7 @@ struct Options {
     max_atoms: usize,
     tautomers: bool,
     normalize: bool,
+    parent: bool,
 }
 
 #[derive(Default)]
@@ -122,6 +130,12 @@ struct Counts {
     record_key_canonical: AtomicU64,
     record_key: AtomicU64,
     nonconverged: AtomicU64,
+    /// The parent compound's promises; see `check_parent`.
+    parent_reparse: AtomicU64,
+    parent_idempotence: AtomicU64,
+    parent_permutation: AtomicU64,
+    parent_tautomer: AtomicU64,
+    parent_atoms: AtomicU64,
     /// Records whose valences no element allows, which are not molecules to
     /// normalize and are counted apart from the failures that would be bugs.
     impossible: AtomicU64,
@@ -149,6 +163,11 @@ impl Counts {
             (&self.record_key_canonical, &other.record_key_canonical),
             (&self.record_key, &other.record_key),
             (&self.nonconverged, &other.nonconverged),
+            (&self.parent_reparse, &other.parent_reparse),
+            (&self.parent_idempotence, &other.parent_idempotence),
+            (&self.parent_permutation, &other.parent_permutation),
+            (&self.parent_tautomer, &other.parent_tautomer),
+            (&self.parent_atoms, &other.parent_atoms),
             (&self.impossible, &other.impossible),
             (&self.oversize, &other.oversize),
             (&self.panics, &other.panics),
@@ -181,6 +200,11 @@ impl Counts {
             &self.record_key_canonical,
             &self.record_key,
             &self.nonconverged,
+            &self.parent_reparse,
+            &self.parent_idempotence,
+            &self.parent_permutation,
+            &self.parent_tautomer,
+            &self.parent_atoms,
             &self.impossible,
             &self.oversize,
             &self.panics,
@@ -262,6 +286,15 @@ impl Counts {
             "  did not converge       : {}",
             self.nonconverged.load(Ordering::Relaxed)
         );
+        for (label, counter) in [
+            ("parent_reparse", &self.parent_reparse),
+            ("parent_idempotence", &self.parent_idempotence),
+            ("parent_permutation", &self.parent_permutation),
+            ("parent_tautomer", &self.parent_tautomer),
+            ("parent_atoms", &self.parent_atoms),
+        ] {
+            println!("  {label} : {}", counter.load(Ordering::Relaxed));
+        }
         println!(
             "  impossible valence     : {}",
             self.impossible.load(Ordering::Relaxed)
@@ -291,6 +324,7 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
     // short, and the record-wide check that needs it is not asked.
     let pooled = options.tautomers && rules.whole_record && molecules.len() > 1;
     let mut whole = pooled;
+    let mut oversized = false;
     let mut rereads: Vec<MolecularGraph> = Vec::new();
     let mut normals: Vec<MolecularGraph> = Vec::new();
     for molecule in &molecules {
@@ -301,6 +335,7 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
             counts.oversize.fetch_add(1, Ordering::Relaxed);
             eprintln!("oversize\t{cid}\t{smiles}\t{heavy}");
             whole = false;
+            oversized = true;
             continue;
         }
         // One deterministic random relabelling per component, reproducible across shards/threads.
@@ -425,6 +460,103 @@ fn check(cid: &str, smiles: &str, rules: &TautomerRules, counts: &Counts, option
     if whole {
         check_record(cid, smiles, &molecules, &rereads, &normals, rules, counts);
     }
+    if options.parent && !oversized {
+        check_parent(cid, smiles, &molecules, rules, counts);
+    }
+}
+
+/// The parent compound's promises, asked of the whole record.
+///
+/// The parent reads back as itself and is its own parent; a relabelling of
+/// all the atoms, which also shuffles the components, gives it again; so does
+/// the record written as its components' canonical tautomers, which the
+/// parent starts from, except where the parent leaves a record as it was
+/// written -- a complex with a lone metal ion, or a record without carbon --
+/// and so promises nothing about its other writings; and it holds no more
+/// atoms of any heavy element than the record did.
+fn check_parent(
+    cid: &str,
+    smiles: &str,
+    molecules: &[MolecularGraph],
+    rules: &TautomerRules,
+    counts: &Counts,
+) {
+    let options = ParentOptions::default();
+    let written = |parts: &[MolecularGraph]| {
+        parts
+            .iter()
+            .map(|part| part.to_smiles())
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    let parents = parent_components(molecules.to_vec(), &options);
+    let parent = written(&parents);
+    if canonicalize_and_sort_smiles(&parent, false).ok().as_deref() != Some(parent.as_str()) {
+        counts.parent_reparse.fetch_add(1, Ordering::Relaxed);
+        eprintln!("parent_reparse\t{cid}\t{smiles}\t{parent}");
+    }
+    match parent_smiles(&parent, &options) {
+        Ok(again) if again == parent => {}
+        again => {
+            counts.parent_idempotence.fetch_add(1, Ordering::Relaxed);
+            eprintln!("parent_idempotence\t{cid}\t{smiles}\t{parent}\t{again:?}");
+        }
+    }
+    let mut rng = StdRng::seed_from_u64(cid.parse::<u64>().unwrap_or(0) ^ 0xFA7E);
+    let mut shuffled = molecules.to_vec();
+    shuffled.shuffle(&mut rng);
+    for component in &mut shuffled {
+        let mut labeling: Vec<usize> = (0..component.len()).collect();
+        labeling.shuffle(&mut rng);
+        reorder_molecule(component, &labeling);
+    }
+    let permuted = written(&parent_components(shuffled, &options));
+    if permuted != parent {
+        counts.parent_permutation.fetch_add(1, Ordering::Relaxed);
+        eprintln!("parent_permutation\t{cid}\t{smiles}\t{parent}\t{permuted}");
+    }
+    let complex = molecules.iter().any(|molecule| {
+        let heavy: Vec<u8> = molecule
+            .atomic_numbers()
+            .iter()
+            .copied()
+            .filter(|&z| z != 1)
+            .collect();
+        heavy.len() == 1 && matches!(heavy[0], 13 | 21..=31 | 39..=50 | 57..=83 | 89..=103)
+    });
+    let organic = molecules
+        .iter()
+        .any(|molecule| molecule.atomic_numbers().contains(&6));
+    if organic && !complex {
+        let tautomers: Vec<MolecularGraph> = molecules
+            .iter()
+            .map(|molecule| normalize(molecule, rules).unwrap_or_else(|| molecule.clone()))
+            .collect();
+        let from_tautomers = written(&parent_components(tautomers, &options));
+        if from_tautomers != parent {
+            counts.parent_tautomer.fetch_add(1, Ordering::Relaxed);
+            eprintln!("parent_tautomer\t{cid}\t{smiles}\t{parent}\t{from_tautomers}");
+        }
+    }
+    let heavy_atoms = |parts: &[MolecularGraph]| {
+        let mut counts = std::collections::BTreeMap::<u8, usize>::new();
+        for part in parts {
+            for &z in part.atomic_numbers() {
+                if z != 1 {
+                    *counts.entry(z).or_default() += 1;
+                }
+            }
+        }
+        counts
+    };
+    let before = heavy_atoms(molecules);
+    if heavy_atoms(&parents)
+        .iter()
+        .any(|(z, count)| before.get(z).is_none_or(|had| count > had))
+    {
+        counts.parent_atoms.fetch_add(1, Ordering::Relaxed);
+        eprintln!("parent_atoms\t{cid}\t{smiles}\t{parent}");
+    }
 }
 
 /// The checks `check` makes of a component's key, made of the whole record.
@@ -483,6 +615,7 @@ fn main() {
     let mut tautomers = true;
     let mut normalize = true;
     let mut ionizable = false;
+    let mut parent = false;
     while let Some(option) = arguments.next() {
         let value = arguments.next().expect("each option requires a value");
         match option.as_str() {
@@ -510,6 +643,13 @@ fn main() {
                     _ => panic!("--ionizable takes on or off"),
                 }
             }
+            "--parent" => {
+                parent = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => panic!("--parent takes on or off"),
+                }
+            }
             _ => panic!("unknown option: {option}"),
         }
     }
@@ -524,6 +664,7 @@ fn main() {
         max_atoms,
         tautomers,
         normalize,
+        parent,
     };
     let mut rules = TautomerRules::new();
     rules.ionizable_endpoints = ionizable;
@@ -664,6 +805,11 @@ fn main() {
         &counts.panics,
         &counts.oversize,
         &counts.nonconverged,
+        &counts.parent_reparse,
+        &counts.parent_idempotence,
+        &counts.parent_permutation,
+        &counts.parent_tautomer,
+        &counts.parent_atoms,
     ]
     .iter()
     .any(|count| count.load(Ordering::Relaxed) != 0)

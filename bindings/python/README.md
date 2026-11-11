@@ -22,11 +22,10 @@ with "Run workflow" (or open its latest run), download `oxidane-python-wheels`,
 and run `uv pip install --no-index --find-links <unpacked folder> oxidane`.
 
 From the repository, on any platform, which builds the native module and so
-needs Rust (`curl https://sh.rustup.rs -sSf | sh`; compiling takes a few minutes)
-and, for the first line, read access to the repository on GitHub:
+needs Rust (`curl https://sh.rustup.rs -sSf | sh`; compiling takes a few minutes):
 
 ```sh
-uv pip install "oxidane @ git+https://github.com/um-univie/oxidane-dev#subdirectory=bindings/python"
+uv pip install "oxidane @ git+https://github.com/um-univie/oxidane#subdirectory=bindings/python"
 uv pip install ./bindings/python             # or from a clone, at its root
 uv tool install ./bindings/python            # only the oxidane-normalize command, on PATH
 ```

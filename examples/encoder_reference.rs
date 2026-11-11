@@ -1,20 +1,20 @@
-//! Writes an encoder's weights and the vectors it produces, as an oracle for
-//! the PyTorch mirror in `prototype/`.
+//! Writes an encoder's weights and the vectors it produces, as an oracle for a
+//! reimplementation of the encoder elsewhere -- a PyTorch mirror, say, to try
+//! the architecture on a GPU candle cannot use.
 //!
 //! ```text
 //! cargo run --release --features ml --example encoder_reference -- \
 //!     --data molecules.smi --weights reference.safetensors --out reference.latents
 //! ```
 //!
-//! The prototype exists to settle the architecture on a GPU candle cannot use,
-//! which is only worth anything if it is the same architecture. Comparing loss
-//! curves cannot tell: two networks that differ in the reverse-message
-//! subtraction, or in how atoms are pooled, both train and both converge to
-//! something. Comparing the actual numbers can, so this writes the weights and
-//! the latent vectors they give, and `prototype/check_encoder.py` loads both
-//! and asks whether the mirror agrees to floating-point noise.
+//! A mirror is only worth anything if it is the same architecture, and
+//! comparing loss curves cannot tell: two networks that differ in the
+//! reverse-message subtraction, or in how atoms are pooled, both train and
+//! both converge to something. Comparing the actual numbers can, so this
+//! writes the weights and the latent vectors they give, for the mirror to load
+//! and check that it agrees to floating-point noise.
 //!
-//! The same input file should be handed to `dump_graphs`, so the Python side
+//! The same input file should be handed to `dump_graphs`, so the other side
 //! reads the features this crate computed for the same molecules in the same
 //! order.
 

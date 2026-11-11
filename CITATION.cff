@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use oxidane, please cite it as below."
+title: "oxidane: a cheminformatics toolkit in Rust"
+type: software
+license: MIT
+repository-code: "https://github.com/um-univie/oxidane"
+version: 0.2.0
+authors:
+  - family-names: Uhlir
+    given-names: Manuel
+    affiliation: "University of Vienna"
+keywords:
+  - cheminformatics
+  - Rust
+  - SMILES
+  - canonicalization
+  - tautomers
+  - conformer generation

@@ -1894,8 +1894,7 @@ mod tests {
             }
         }
         let (pairs, points) = scattered_pairs();
-        let [portable, scalar, native] = on_every_lanes(Run(&pairs, &points));
-        assert_eq!(portable, scalar);
+        let [portable, native] = on_every_lanes(Run(&pairs, &points));
         assert_eq!(portable, native);
     }
 }

@@ -961,7 +961,7 @@ mod tests {
 
     #[test]
     fn gemv_matches_a_plain_product_and_agrees_on_every_lanes() {
-        use crate::molecule::forcefield::lanes::{Portable, Pulp};
+        use crate::molecule::forcefield::lanes::PORTABLE;
         for dimension in [0, 1, 3, 7, 8, 9, 30, 270] {
             let matrix = scattered(dimension * dimension, 11);
             let x = scattered(dimension, 23);
@@ -975,8 +975,7 @@ mod tests {
                 });
                 out
             };
-            let portable = run(&|op| op.run(Portable));
-            let scalar = run(&|op| op.run(Pulp(pulp::Scalar::new())));
+            let portable = run(&|op| op.run(PORTABLE));
             let mut dispatched = vec![f64::NAN; dimension];
             gemv(&matrix, &x, &mut dispatched, dimension);
             for row in 0..dimension {
@@ -987,7 +986,6 @@ mod tests {
                     (portable[row] - plain).abs() < 1e-12,
                     "{dimension} row {row}"
                 );
-                assert_eq!(portable[row].to_bits(), scalar[row].to_bits());
                 assert_eq!(portable[row].to_bits(), dispatched[row].to_bits());
             }
         }

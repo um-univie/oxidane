@@ -686,7 +686,7 @@ mod tests {
         let (mut positions, scalar, pairs) = helix_pairs();
         // Apart, so the energy is finite and comparable.
         positions[7] = positions[7] + Vector3D::new(0.4, 0.0, 0.0);
-        let portable = crate::molecule::forcefield::lanes::Portable;
+        let portable = crate::molecule::forcefield::lanes::PORTABLE;
 
         let mut want_gradient = vec![Vector3D::default(); positions.len()];
         let want: f64 = scalar
@@ -750,8 +750,7 @@ mod tests {
             } else {
                 positions[7] = positions[3];
             }
-            let [portable, scalar, native] = on_every_lanes(Run(&pairs, &positions));
-            assert_eq!(portable, scalar, "overlap: {overlap}");
+            let [portable, native] = on_every_lanes(Run(&pairs, &positions));
             assert_eq!(portable, native, "overlap: {overlap}");
         }
     }

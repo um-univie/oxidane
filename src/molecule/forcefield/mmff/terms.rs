@@ -18,7 +18,7 @@ const MIN_ANGULAR_COMPONENT_SQUARED: f64 = 1e-8;
 
 use super::assign::DEGREES_TO_RADIANS;
 #[cfg(test)]
-use crate::molecule::forcefield::lanes::Portable;
+use crate::molecule::forcefield::lanes::PORTABLE;
 use crate::molecule::forcefield::lanes::{LANES, Lanes, horizontal_sum};
 use crate::vector::Vector3D;
 
@@ -154,9 +154,9 @@ impl NonBonded {
 ///
 /// Measured against the array of records this replaced, same arithmetic,
 /// four pairs at a time: 1.80x at 90 atoms, 1.79x at 248, 1.78x at 390.
-/// Written over plain `[f64; 4]` arrays instead, leaving the vectorisation
-/// to LLVM, it is 1.36x -- which is the fallback this would have if
-/// [`wide`] were not a dependency, and the reason it is one.
+/// That was on `wide::f64x4`; pulp's scalar backend, which replaced it as
+/// the fallback where no vector unit is detected, times the same on baseline
+/// x86-64 (0.41 against 0.42 ms for 79,000 pairs with gradient).
 #[derive(Default)]
 pub(super) struct NonBondedPairs {
     i: Vec<u32>,
@@ -652,7 +652,7 @@ fn lane<L: Lanes>(simd: L, values: &[f64], start: usize) -> L::Vector {
 /// two of an `f64`; see [`NonBondedPairs`] for what the layout buys.
 #[cfg(test)]
 pub(super) fn nonbonded_energies(pairs: &NonBondedPairs, positions: &[Vector3D]) -> (f64, f64) {
-    nonbonded_energies_in(Portable, pairs, positions)
+    nonbonded_energies_in(PORTABLE, pairs, positions)
 }
 
 /// [`nonbonded_energies`] on the lanes `simd` provides.
@@ -705,7 +705,7 @@ pub(super) fn nonbonded_energies_and_gradient(
     positions: &[Vector3D],
     gradient: &mut [Vector3D],
 ) -> (f64, f64) {
-    nonbonded_energies_and_gradient_in(Portable, pairs, positions, gradient)
+    nonbonded_energies_and_gradient_in(PORTABLE, pairs, positions, gradient)
 }
 
 /// [`nonbonded_energies_and_gradient`] on the lanes `simd` provides.
@@ -897,8 +897,7 @@ mod tests {
                     .collect()
             }
         }
-        let [portable, scalar, native] = on_every_lanes(Run(&pairs, &positions));
-        assert_eq!(portable, scalar);
+        let [portable, native] = on_every_lanes(Run(&pairs, &positions));
         assert_eq!(portable, native);
     }
 

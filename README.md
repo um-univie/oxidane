@@ -15,6 +15,10 @@ reactions, compute fingerprints and descriptors, and generate 3D conformers.
 It is written entirely in Rust and has no C or C++ dependencies. The name is
 the IUPAC name for water.
 
+<p align="center">
+  <img src="assets/readme/molecules.svg" alt="Caffeine, aspirin, (S)-ibuprofen and serotonin, drawn by oxidane" width="100%">
+</p>
+
 ## Installation
 
 ### Rust
@@ -144,6 +148,10 @@ assert!(literal[0].atomic_numbers().len() <= molecules[0].atomic_numbers().len()
 
 ## Substructures and reactions
 
+<p align="center">
+  <img src="assets/readme/reaction.svg" alt="Acetic acid and ethanol giving ethyl acetate and water, as applied by oxidane" width="90%">
+</p>
+
 ```rust
 use oxidane::prelude::*;
 use oxidane::molecule::reaction::ReactionSmarts;
@@ -166,7 +174,12 @@ assert!(!products.is_empty());
 
 Reactions can also be used to grow a set of molecules. Here two rules, ester
 and amide formation, are applied to every pair of molecules for two rounds,
-starting from acetic acid, ethanol and glycine:
+starting from acetic acid, ethanol and glycine. Among the products are the
+glycine peptides:
+
+<p align="center">
+  <img src="assets/readme/peptides.svg" alt="Glycine growing into diglycine and tetraglycine over two rounds" width="100%">
+</p>
 
 ```rust
 use std::collections::BTreeSet;
@@ -237,7 +250,11 @@ assert!(energy <= field.energy(&embedded.positions) + 1e-9);
 periodic table data oxidane uses: masses, isotopes, radii, valences and
 electronegativities.
 
-## Logo
+## Pictures
+
+All the pictures here are drawn by oxidane itself. The molecule, reaction and
+peptide figures come from `cargo run --example readme_figures`, which applies
+the same rules as the example above.
 
 The logo is a water molecule, drawn with the H-O-H angle that oxidane's own
 embedder gives. You can regenerate it with `cargo run --example logo`.

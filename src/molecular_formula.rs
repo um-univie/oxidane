@@ -5,7 +5,7 @@ use core::{
     str::FromStr,
 };
 use nohash_hasher::IntMap;
-use rustfft::{FftPlanner, num_complex::Complex64};
+use crate::molecule::forcefield::lanes::{self, LANES, Lanes, LanesOp};
 
 // TODO: make this a parameter
 const PRECISION: f64 = 1000.0;
@@ -342,9 +342,15 @@ impl MolecularFormula {
 
     /// Calculates the isotopic pattern of the molecular formula.
     ///
+    /// Returns `max_mass_difference * resolution` `(mass, abundance)` pairs,
+    /// one per bin of `1 / resolution` daltons, starting at the monoisotopic
+    /// mass rounded to whole daltons, with the abundances normalized to sum
+    /// to one over that window.
+    ///
     /// # Arguments
     /// * `max_mass_difference` - The maximum mass difference between the monoisotopic peak and the
     /// last peak in the isotopic pattern to be calculated.
+    /// * `resolution` - Bins per dalton.
     /// # Examples
     /// ```
     /// use oxidane::molecular_formula::MolecularFormula;
@@ -360,94 +366,211 @@ impl MolecularFormula {
     /// println!("{:?}", isotopic_pattern_methane);
     /// assert!(isotopic_pattern_methane.len() == 3);
     /// ```
-    /// Calculates the isotopic pattern of the molecular formula.
     pub fn isotopic_pattern(
         &self,
         max_mass_difference: usize,
         resolution: usize,
     ) -> Vec<(f64, f64)> {
-        // 1. Determine safe FFT array length to prevent circular aliasing.
-        // We need the absolute maximum possible mass of the molecule to size the array.
-        let mut max_possible_mass = 0.0;
-        for (atomic_number, count) in self.elements.iter() {
+        let resolution_f64 = resolution as f64;
+        let bin = |mass: f64| (mass * resolution_f64).round() as usize;
+        // The window to report, in mass bins.
+        let window_start = (self.monoisotopic_mass().round() as usize) * resolution;
+        let window_end = window_start + max_mass_difference * resolution;
+
+        // Each element's isotopes as offsets from its lightest one, so every
+        // offset is non-negative: a combination already past the window's
+        // end stays past it whatever is added, and can be dropped. That keeps
+        // every distribution below no longer than the window.
+        //
+        // Only the offsets are rounded to bins. The base -- every atom its
+        // lightest isotope -- is binned from its exact mass: rounding each
+        // atom's mass first would let the mass defects of thousands of atoms
+        // add up to whole daltons and shift the pattern out of the window.
+        let mut lightest_mass = 0.0;
+        let mut elements = Vec::new();
+        for (atomic_number, &count) in &self.elements {
             let Some(isotopes) = atomic_number.isotopes() else {
                 continue;
             };
-            let heaviest_isotope = isotopes.map(|i| i.mass).fold(0.0, f64::max);
-            max_possible_mass += heaviest_isotope * (*count as f64);
+            let isotopes: Vec<(f64, f64)> =
+                isotopes.map(|isotope| (isotope.mass, isotope.abundance)).collect();
+            let Some(lightest) = isotopes.iter().map(|&(mass, _)| mass).min_by(f64::total_cmp) else {
+                continue;
+            };
+            lightest_mass += lightest * count as f64;
+            let offsets: Vec<(usize, f64)> = isotopes
+                .iter()
+                .map(|&(mass, abundance)| (bin(mass - lightest), abundance))
+                .collect();
+            elements.push((offsets, count));
         }
+        let lightest_total = bin(lightest_mass);
+        let length = window_end.saturating_sub(lightest_total);
 
-        let required_length = (max_possible_mass * resolution as f64).ceil() as usize + 1;
-        let distribution_length = required_length.next_power_of_two();
-
-        // 2. Setup FFT Planner and Buffers (Allocating exactly once!)
-        let mut planner = FftPlanner::new();
-        let fft = planner.plan_fft_forward(distribution_length);
-        let ifft = planner.plan_fft_inverse(distribution_length);
-
-        // total_fft starts as the identity for multiplication: 1.0 + 0.0i
-        let mut total_fft = vec![Complex64::new(1.0, 0.0); distribution_length];
-        let mut atom_buffer = vec![Complex64::new(0.0, 0.0); distribution_length];
-
-        // 3. Process each UNIQUE element
-        for (atomic_number, count) in self.elements.iter() {
-            let Some(isotopes) = atomic_number.isotopes() else {
-                continue;
-            };
-
-            atom_buffer.fill(Complex64::new(0.0, 0.0));
-
-            for isotope in isotopes {
-                let idx = (isotope.mass * resolution as f64).round() as usize;
-                if idx < distribution_length {
-                    atom_buffer[idx].re = isotope.abundance;
+        let mut total = vec![0.0; length.min(1)];
+        if let Some(first) = total.first_mut() {
+            *first = 1.0;
+        }
+        for (offsets, count) in elements {
+            let mut single = Vec::new();
+            for (offset, abundance) in offsets {
+                if offset < length {
+                    if single.len() <= offset {
+                        single.resize(offset + 1, 0.0);
+                    }
+                    single[offset] += abundance;
                 }
             }
-
-            // Forward FFT for this single element
-            fft.process(&mut atom_buffer);
-
-            // Raise to power of atom count and multiply into total
-            let count_f64 = *count as f64;
-            for (t, a) in total_fft.iter_mut().zip(atom_buffer.iter()) {
-                // Complex exponentiation: a^count
-                // Using polar form: r^n * e^(i * theta * n)
-                let (r, theta) = a.to_polar();
-                let a_pow = Complex64::from_polar(r.powf(count_f64), theta * count_f64);
-                *t *= a_pow;
-            }
+            total = convolve(&total, &power(single, count, length), length);
         }
 
-        // 4. Inverse FFT the combined result (just once!)
-        ifft.process(&mut total_fft);
-
-        // Standard IFFT scaling factor (1/N)
-        let scale = 1.0 / distribution_length as f64;
-
-        // 5. Extract the window of interest and normalize
-        let min_mass_idx = (self.monoisotopic_mass().round() as usize) * resolution;
-        let max_mass_idx = min_mass_idx + (max_mass_difference * resolution);
-
-        let mut result = Vec::with_capacity(max_mass_idx - min_mass_idx);
+        let mut result = Vec::with_capacity(window_end - window_start);
         let mut sum = 0.0;
-
-        for i in min_mass_idx..max_mass_idx {
-            if i < distribution_length {
-                // Extract real part, apply scale.
-                // .max(0.0) cleans up tiny negative floating-point artifacts from the FFT.
-                let val = (total_fft[i].re * scale).max(0.0);
-                result.push((i as f64 / resolution as f64, val));
-                sum += val;
-            }
+        for index in window_start..window_end {
+            let abundance = index
+                .checked_sub(lightest_total)
+                .and_then(|offset| total.get(offset))
+                .copied()
+                .unwrap_or(0.0);
+            result.push((index as f64 / resolution_f64, abundance));
+            sum += abundance;
         }
-
-        // Normalize so the extracted window sums to 1.0
+        // Normalize so the window sums to 1.
         if sum > 0.0 {
             for (_, abundance) in result.iter_mut() {
                 *abundance /= sum;
             }
         }
-
         result
+    }
+}
+
+/// `left * right` as polynomials, keeping the first `length` coefficients.
+///
+/// Each nonzero coefficient of the shorter factor adds a scaled copy of the
+/// other one, an `axpy` the force fields' lanes vectorize (see
+/// [`lanes::dispatch`]); isotope distributions are short and mostly dense
+/// once raised to a power, so this beats an FFT at every size the window
+/// allows, and has no FFT round-off floor under the small peaks.
+fn convolve(left: &[f64], right: &[f64], length: usize) -> Vec<f64> {
+    let length = length.min((left.len() + right.len()).saturating_sub(1));
+    let (short, long) = if left.len() <= right.len() { (left, right) } else { (right, left) };
+    let mut out = vec![0.0; length];
+    for (shift, &scale) in short.iter().enumerate().take(length) {
+        if scale != 0.0 {
+            let span = (length - shift).min(long.len());
+            lanes::dispatch(Axpy { scale, x: &long[..span], y: &mut out[shift..shift + span] });
+        }
+    }
+    out
+}
+
+/// `base` raised to `exponent` by repeated squaring, truncated to `length`.
+fn power(base: Vec<f64>, mut exponent: usize, length: usize) -> Vec<f64> {
+    let mut result = vec![1.0];
+    let mut square = base;
+    while exponent > 0 {
+        if exponent & 1 == 1 {
+            result = convolve(&result, &square, length);
+        }
+        exponent >>= 1;
+        if exponent > 0 {
+            square = convolve(&square, &square, length);
+        }
+    }
+    result
+}
+
+/// `y += scale * x`.
+struct Axpy<'a> {
+    scale: f64,
+    x: &'a [f64],
+    y: &'a mut [f64],
+}
+
+impl LanesOp for Axpy<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) {
+        let Axpy { scale, x, y } = self;
+        let factor = lanes.splat(scale);
+        let (x_chunks, x_tail) = x.as_chunks::<LANES>();
+        let (y_chunks, y_tail) = y.as_chunks_mut::<LANES>();
+        for (x, y) in x_chunks.iter().zip(y_chunks) {
+            *y = lanes.to_array(lanes.from_array(*y) + factor * lanes.from_array(*x));
+        }
+        for (x, y) in x_tail.iter().zip(y_tail) {
+            *y += scale * x;
+        }
+    }
+}
+
+#[cfg(test)]
+mod isotope_tests {
+    use super::*;
+
+    fn assert_pattern(formula: &str, window: usize, first_mass: f64, expected: &[f64]) {
+        let pattern = formula.parse::<MolecularFormula>().unwrap().isotopic_pattern(window, 1);
+        assert_eq!(pattern.len(), expected.len());
+        for (index, (&(mass, abundance), &reference)) in pattern.iter().zip(expected).enumerate() {
+            assert_eq!(mass, first_mass + index as f64);
+            assert!((abundance - reference).abs() < 1e-12, "{formula} +{index}: {abundance} vs {reference}");
+        }
+    }
+
+    /// References from a separate model: the distribution over extra
+    /// neutrons, from the same isotope table, with integer offsets.
+    #[test]
+    fn dichloromethane_has_the_chlorine_triplet() {
+        assert_pattern(
+            "CH2Cl2",
+            5,
+            84.0,
+            &[0.5680505538965057, 0.006274547101542067, 0.3635057878877905, 0.004015180169481112, 0.05815393094468063],
+        );
+    }
+
+    /// Insulin's mass defect is three daltons: binning each atom's mass
+    /// before adding them up would label every peak three daltons light.
+    #[test]
+    fn insulin_peaks_three_daltons_above_the_monoisotopic_mass() {
+        assert_pattern(
+            "C254H377N65O75S6",
+            6,
+            5730.0,
+            &[
+                0.03826547851774699,
+                0.11877459790773397,
+                0.19991337185087416,
+                0.23899653385760822,
+                0.22575488321030582,
+                0.17829513465573082,
+            ],
+        );
+    }
+
+    #[test]
+    fn a_window_past_the_heaviest_mass_is_padded_with_zeros() {
+        let pattern = "H2".parse::<MolecularFormula>().unwrap().isotopic_pattern(10, 1);
+        assert_eq!(pattern.len(), 10);
+        assert!(pattern[5..].iter().all(|&(_, abundance)| abundance == 0.0));
+        assert!((pattern.iter().map(|p| p.1).sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn convolve_truncates_and_power_matches_repeated_products() {
+        assert_eq!(convolve(&[1.0, 2.0], &[3.0, 4.0, 5.0], 3), vec![3.0, 10.0, 13.0]);
+        assert_eq!(convolve(&[1.0, 2.0], &[3.0, 4.0, 5.0], 10), vec![3.0, 10.0, 13.0, 10.0]);
+        let base = vec![0.5, 0.25, 0.25, 0.0, 0.125, 0.0625, 0.03125, 0.015625, 0.0078125];
+        let mut product = vec![1.0];
+        for _ in 0..7 {
+            product = convolve(&product, &base, 20);
+        }
+        let powered = power(base, 7, 20);
+        assert_eq!(product.len(), powered.len());
+        for (a, b) in product.iter().zip(&powered) {
+            assert!((a - b).abs() < 1e-15);
+        }
     }
 }

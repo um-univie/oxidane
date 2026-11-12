@@ -30,7 +30,6 @@ candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 chemistry_consts = "0.3.1"
 ndarray = "0.17.2"
-faer = "0.24"
 wide = "0.7"
 pulp = "0.22"
 nohash-hasher = "0.2.0"
@@ -52,7 +51,8 @@ serde_json = "1"
 
 
 [profile.release]
-# faer's SIMD dispatch needs thin LTO; fat LTO discards dispatch symbols.
+# Thin LTO; it was required by faer's SIMD dispatch, which is gone, so fat
+# LTO is an option worth measuring.
 lto = "thin"
 strip = true
 codegen-units = 1

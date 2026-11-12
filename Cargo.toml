@@ -29,8 +29,6 @@ ml = ["dep:candle-core", "dep:candle-nn"]
 candle-core = { version = "0.11", optional = true }
 candle-nn = { version = "0.11", optional = true }
 chemistry_consts = "0.3.1"
-itertools = "0.15.0"
-kiddo = "5.3.3"
 ndarray = "0.17.2"
 faer = "0.24"
 wide = "0.7"

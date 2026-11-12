@@ -26,6 +26,7 @@ pub mod scaffold;
 pub mod tautomer;
 pub mod shape;
 pub mod molecule3d;
+mod neighbor_grid;
 pub mod mass_spec;
 pub mod traits;
 pub mod utils;

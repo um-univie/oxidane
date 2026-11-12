@@ -15,10 +15,6 @@ reactions, compute fingerprints and descriptors, and generate 3D conformers.
 It is written entirely in Rust and has no C or C++ dependencies. The name is
 the IUPAC name for water.
 
-<p align="center">
-  <img src="assets/readme/molecules.svg" alt="Caffeine, aspirin, (S)-ibuprofen and serotonin, drawn by oxidane" width="100%">
-</p>
-
 ## Installation
 
 ### Rust
@@ -109,6 +105,12 @@ assert_eq!(
 - **Force fields:** MMFF94 and UFF, with energies, gradients and minimisation.
 - **Machine learning:** atom and bond features, scaffold splits and batching for
   graph neural networks, and an optional encoder built on `candle`.
+
+Molecules can also be drawn as SVG:
+
+<p align="center">
+  <img src="assets/readme/molecules.svg" alt="Caffeine, aspirin, (S)-ibuprofen and serotonin, drawn by oxidane" width="100%">
+</p>
 
 ## Molecules with and without coordinates
 

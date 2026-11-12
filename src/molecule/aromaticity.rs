@@ -3,7 +3,6 @@ use crate::{
     molecule::graph::MoleculeGraph, molecule::utils::order_tuple,
 };
 use bit_set::BitSet;
-use bitvec::prelude::BitVec;
 use rustc_hash::FxHashSet;
 use std::cell::Cell;
 
@@ -2247,7 +2246,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 let ring_atoms = rings
                     .iter()
                     .map(|&assignment| assignment == Some(counter))
-                    .collect::<BitVec>();
+                    .collect::<Vec<bool>>();
 
                 let mut number_of_atoms_in_system = 0;
                 let mut number_of_bonds_in_system = 0;

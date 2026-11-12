@@ -10,7 +10,6 @@ use crate::{
     },
 };
 use bit_set::BitSet;
-use bitvec::prelude::*;
 use chemistry_consts::ElementProperties;
 use rustc_hash::FxHashSet;
 use tinyvec::{ArrayVec, array_vec};
@@ -1003,15 +1002,6 @@ pub trait MoleculeCore {
             .unwrap();
         self.atom_bonds_mut()[atom1][bond1].bond_order = new_order;
         self.atom_bonds_mut()[atom2][bond2].bond_order = new_order;
-    }
-
-    fn can_kekulize_bond(
-        &self,
-        atom1_idx: usize,
-        atom2_idx: usize,
-        aromatic_atoms: &BitVec<usize>,
-    ) -> bool {
-        aromatic_atoms[atom1_idx] && aromatic_atoms[atom2_idx]
     }
 
     fn get_bond_order(&self, atom1: usize, atom2: usize) -> BondOrder {

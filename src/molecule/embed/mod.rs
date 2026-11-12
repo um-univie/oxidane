@@ -50,6 +50,8 @@ mod fourd;
 mod torsion_preferences;
 mod torsion_search;
 mod refine;
+mod matrix;
+use matrix::SquareMatrix;
 
 #[cfg(test)]
 mod tests;
@@ -917,7 +919,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
     Ok(positions)
 }
 
-fn has_degenerate_distances(positions: &[Vector3D], bounds_matrix: &ndarray::Array2<f64>) -> bool {
+fn has_degenerate_distances(positions: &[Vector3D], bounds_matrix: &SquareMatrix<f64>) -> bool {
     const MIN_SEPARATION: f64 = 1e-3;
     let n = positions.len();
     for i in 0..n {

@@ -29,7 +29,7 @@ use crate::molecule::minimize::Coordinate;
 use crate::molecule::{base::MoleculeCore, bond::BondOrder, chirality::ChiralClass};
 use bit_set::BitSet;
 use chemistry_consts::ElementProperties;
-use ndarray::Array2;
+use super::matrix::SquareMatrix;
 use rustc_hash::FxHashSet;
 
 /// A generous finite placeholder for pairs not otherwise constrained, before
@@ -855,7 +855,7 @@ fn order(a: usize, b: usize) -> (usize, usize) {
 /// squares and reciprocals its violation energy is written in terms of.
 ///
 /// Hoisted out of the matrix once per molecule because every refinement
-/// iteration reads every pair: an `Array2` lookup costs a row-major index
+/// iteration reads every pair: a `SquareMatrix` lookup costs a row-major index
 /// computation and a bounds check per bound, a flat slice of these costs
 /// neither, and the reciprocals turn the energy's two divisions into
 /// multiplications.
@@ -906,7 +906,7 @@ pub(crate) struct Pairs {
 const TIGHT_WINDOW: f64 = 5.0;
 
 impl Pairs {
-    pub(crate) fn collect(bounds: &Array2<f64>) -> Self {
+    pub(crate) fn collect(bounds: &SquareMatrix<f64>) -> Self {
         let n = bounds.nrows();
         let mut all = Vec::with_capacity(n * n / 2);
         let mut tight = Vec::new();
@@ -1097,8 +1097,8 @@ fn pair_violations_in<L: Lanes, C: Coordinate>(
 fn apply_fourteen_bounds<T: MoleculeCore>(
     mol: &T,
     cycles: &FxHashSet<BitSet>,
-    is_specific: &Array2<bool>,
-    bounds: &mut Array2<f64>,
+    is_specific: &SquareMatrix<bool>,
+    bounds: &mut SquareMatrix<f64>,
     lengths: &Geometry,
 ) {
     let n = mol.len();
@@ -1226,23 +1226,23 @@ fn fourteen_distance(first: f64, middle: f64, last: f64, near: f64, far: f64, ci
     (x * x + y * y).sqrt()
 }
 
-pub(crate) fn get_upper(bounds: &Array2<f64>, a: usize, b: usize) -> f64 {
+pub(crate) fn get_upper(bounds: &SquareMatrix<f64>, a: usize, b: usize) -> f64 {
     let (i, j) = order(a, b);
     bounds[[i, j]]
 }
 
-pub(crate) fn get_lower(bounds: &Array2<f64>, a: usize, b: usize) -> f64 {
+pub(crate) fn get_lower(bounds: &SquareMatrix<f64>, a: usize, b: usize) -> f64 {
     let (i, j) = order(a, b);
     bounds[[j, i]]
 }
 
-fn set_bounds(bounds: &mut Array2<f64>, a: usize, b: usize, lower: f64, upper: f64) {
+fn set_bounds(bounds: &mut SquareMatrix<f64>, a: usize, b: usize, lower: f64, upper: f64) {
     let (i, j) = order(a, b);
     bounds[[i, j]] = upper;
     bounds[[j, i]] = lower;
 }
 
-fn intersect_bounds(bounds: &mut Array2<f64>, a: usize, b: usize, lower: f64, upper: f64) {
+fn intersect_bounds(bounds: &mut SquareMatrix<f64>, a: usize, b: usize, lower: f64, upper: f64) {
     let cur_lower = get_lower(bounds, a, b);
     let cur_upper = get_upper(bounds, a, b);
     set_bounds(bounds, a, b, cur_lower.max(lower), cur_upper.min(upper));
@@ -1297,19 +1297,19 @@ pub(crate) fn build_bounds<T: MoleculeCore>(
     mol: &T,
     lengths: &Geometry,
     cycles: &FxHashSet<BitSet>,
-) -> Result<Array2<f64>, EmbedError> {
+) -> Result<SquareMatrix<f64>, EmbedError> {
     let n = mol.len();
     if n < 2 {
         return Err(EmbedError::TooFewAtoms);
     }
 
-    let mut bounds = Array2::<f64>::from_elem((n, n), DEFAULT_UPPER);
+    let mut bounds = SquareMatrix::<f64>::from_elem(n, DEFAULT_UPPER);
     // Tracks which pairs have received a real 1-2/1-3 geometric constraint,
     // as opposed to still sitting at the generic van-der-Waals default. Only
     // specific-vs-specific bounds get intersected; a 1-3 estimate must never
     // be intersected against the unrelated (and often stricter-looking, but
     // inapplicable) VDW default, or it can spuriously force lower > upper.
-    let mut is_specific = Array2::<bool>::from_elem((n, n), false);
+    let mut is_specific = SquareMatrix::<bool>::from_elem(n, false);
     for i in 0..n {
         for j in (i + 1)..n {
             let lower = VDW_LOWER_SCALE
@@ -1443,7 +1443,7 @@ const RING_CHORD_TOLERANCE: f64 = 0.05;
 /// wrong in one. Handing the 1-3 chords to the angle pass and keeping only
 /// step 3 and beyond is a wash as well (27 violated against 30, at 0.29 A
 /// of slack against 0.25).
-fn regular_chord_bounds(ring: &[usize], bounds: &Array2<f64>, size: usize) -> Option<(f64, f64)> {
+fn regular_chord_bounds(ring: &[usize], bounds: &SquareMatrix<f64>, size: usize) -> Option<(f64, f64)> {
     let (mut side_min, mut side_max) = (f64::MAX, 0.0_f64);
     for step in 0..size {
         let (a, b) = (ring[step], ring[(step + 1) % size]);
@@ -1456,8 +1456,8 @@ fn regular_chord_bounds(ring: &[usize], bounds: &Array2<f64>, size: usize) -> Op
 fn apply_aromatic_ring_bounds<T: MoleculeCore>(
     mol: &T,
     cycles: &FxHashSet<BitSet>,
-    bounds: &mut Array2<f64>,
-    is_specific: &mut Array2<bool>,
+    bounds: &mut SquareMatrix<f64>,
+    is_specific: &mut SquareMatrix<bool>,
 ) {
     for cycle in cycles {
         let size = cycle.count();
@@ -1527,7 +1527,7 @@ fn aromatic_ring_order<T: MoleculeCore>(mol: &T, cycle: &BitSet) -> Option<Vec<u
 /// loop where, within each `k`, upper-bound tightening happens before the
 /// lower-bound update (the lower update consumes the just-tightened uppers).
 /// One-time O(n^3) preprocessing, reused across every trial embedding.
-pub(crate) fn smooth_bounds(bounds: &mut Array2<f64>) -> Result<(), EmbedError> {
+pub(crate) fn smooth_bounds(bounds: &mut SquareMatrix<f64>) -> Result<(), EmbedError> {
     let n = bounds.nrows();
     for k in 0..n {
         for i in 0..n {

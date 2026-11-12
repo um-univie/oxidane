@@ -16,7 +16,7 @@ const MIN_POWER_VECTOR_NORM: f64 = 1e-14;
 
 use super::bounds;
 use crate::vector::Vector3D;
-use ndarray::Array2;
+use super::matrix::SquareMatrix;
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 const POWER_ITERATION_MAX_ITERS: usize = 500;
@@ -25,9 +25,9 @@ const EMBED_DIMENSIONS: usize = 4;
 
 /// Samples one trial (Euclidean-inconsistent in general) distance matrix by
 /// drawing each pairwise distance uniformly within its bounds.
-pub(super) fn sample_trial_distances(bounds_matrix: &Array2<f64>, rng: &mut StdRng) -> Array2<f64> {
+pub(super) fn sample_trial_distances(bounds_matrix: &SquareMatrix<f64>, rng: &mut StdRng) -> SquareMatrix<f64> {
     let n = bounds_matrix.nrows();
-    let mut trial = Array2::<f64>::zeros((n, n));
+    let mut trial = SquareMatrix::zeros(n);
     for i in 0..n {
         for j in (i + 1)..n {
             let lower = bounds::get_lower(bounds_matrix, i, j);
@@ -53,7 +53,7 @@ pub(super) fn sample_trial_distances(bounds_matrix: &Array2<f64>, rng: &mut StdR
 /// to a Gram matrix, then the top-4 eigenpairs via power iteration with
 /// deflation (cheaper than a full eigendecomposition since only k=4 of n
 /// eigenvectors are needed, and this runs inside the per-attempt retry loop).
-pub(super) fn classical_mds_4d(trial: &Array2<f64>) -> (Vec<Vector3D>, Vec<f64>) {
+pub(super) fn classical_mds_4d(trial: &SquareMatrix<f64>) -> (Vec<Vector3D>, Vec<f64>) {
     let n = trial.nrows();
     let gram = double_centered_gram(trial);
     let eigenpairs = top_k_eigenpairs(&gram, EMBED_DIMENSIONS.min(n.max(1)));
@@ -77,13 +77,13 @@ pub(super) fn classical_mds_4d(trial: &Array2<f64>) -> (Vec<Vector3D>, Vec<f64>)
 /// `B[i,j] = -0.5 * (D2[i,j] - rowMean[i] - colMean[j] + grandMean)`, computed
 /// via row/column means (O(n^2)) rather than an explicit `J*D2*J` product
 /// (which would be O(n^3)).
-fn double_centered_gram(trial: &Array2<f64>) -> Array2<f64> {
+fn double_centered_gram(trial: &SquareMatrix<f64>) -> SquareMatrix<f64> {
     let n = trial.nrows();
-    let d2 = trial.mapv(|d| d * d);
-    let row_mean: Vec<f64> = (0..n).map(|i| d2.row(i).sum() / n.max(1) as f64).collect();
+    let d2 = trial.map(|d| d * d);
+    let row_mean: Vec<f64> = (0..n).map(|i| row_sum(d2.row(i)) / n.max(1) as f64).collect();
     let grand_mean: f64 = row_mean.iter().sum::<f64>() / n.max(1) as f64;
 
-    let mut gram = Array2::<f64>::zeros((n, n));
+    let mut gram = SquareMatrix::zeros(n);
     for i in 0..n {
         for j in 0..n {
             gram[[i, j]] = -0.5 * (d2[[i, j]] - row_mean[i] - row_mean[j] + grand_mean);
@@ -92,7 +92,25 @@ fn double_centered_gram(trial: &Array2<f64>) -> Array2<f64> {
     gram
 }
 
-fn matvec(m: &Array2<f64>, x: &[f64]) -> Vec<f64> {
+/// The sum of `values` over eight running sums, folded `(0+4) (1+5) (2+6)
+/// (3+7)` and then the tail -- the order `ndarray`'s `sum` used, kept so the
+/// embedding's coordinates did not move when the matrix type changed.
+fn row_sum(values: &[f64]) -> f64 {
+    let mut sums = [0.0f64; 8];
+    let (chunks, tail) = values.as_chunks::<8>();
+    for chunk in chunks {
+        for (sum, value) in sums.iter_mut().zip(chunk) {
+            *sum += value;
+        }
+    }
+    let mut total = 0.0;
+    for lane in 0..4 {
+        total += sums[lane] + sums[lane + 4];
+    }
+    tail.iter().fold(total, |total, value| total + value)
+}
+
+fn matvec(m: &SquareMatrix<f64>, x: &[f64]) -> Vec<f64> {
     let n = m.nrows();
     let mut y = vec![0.0; n];
     for i in 0..n {
@@ -131,7 +149,7 @@ fn random_unit_vec(n: usize, rng: &mut StdRng) -> Vec<f64> {
 /// iteration converges to the largest eigenvalue rather than the most
 /// negative one (Gram matrices from noisy trial distances commonly have a
 /// handful of small negative eigenvalues).
-fn gershgorin_shift(m: &Array2<f64>) -> f64 {
+fn gershgorin_shift(m: &SquareMatrix<f64>) -> f64 {
     let n = m.nrows();
     (0..n)
         .map(|i| m.row(i).iter().map(|v| v.abs()).sum::<f64>())
@@ -142,7 +160,7 @@ fn gershgorin_shift(m: &Array2<f64>) -> f64 {
 /// sorted descending by eigenvalue. Uses shifted power iteration with
 /// deflation; precision is loose since this only seeds gradient
 /// refinement, not a final answer.
-fn top_k_eigenpairs(m: &Array2<f64>, k: usize) -> Vec<(f64, Vec<f64>)> {
+fn top_k_eigenpairs(m: &SquareMatrix<f64>, k: usize) -> Vec<(f64, Vec<f64>)> {
     let n = m.nrows();
     if n == 0 || k == 0 {
         return Vec::new();

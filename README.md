@@ -7,41 +7,55 @@
 
 # oxidane
 
-Python users: the [Python bindings and notebook examples](bindings/python/README.md)
-live in this repository. They support `import oxidane` and the legacy
-`from molecules import PyMolecule, MolParser` API.
+oxidane is a cheminformatics library written in Rust, with Python bindings.
+You can use it to read SMILES, SMARTS and SDF files, write canonical SMILES,
+deal with tautomers and stereochemistry, search for substructures, run
+reactions, compute fingerprints and descriptors, and generate 3D conformers.
 
-A cheminformatics library in pure Rust. It reads SMILES, SMARTS and SDF;
-perceives aromaticity, hydrogens and stereochemistry; gives canonical SMILES
-and tautomer keys; searches substructures and maximum common subgraphs;
-applies reactions; computes fingerprints and descriptors; and builds 3D
-conformers and relaxes them with MMFF94 or UFF.
+It is written entirely in Rust and has no C or C++ dependencies. The name is
+the IUPAC name for water.
 
-Oxidane is the IUPAC name for water.
+## Installation
 
-## Install
+### Rust
 
-Oxidane is not on crates.io. Add the checkout to another Rust project's
-`Cargo.toml` (adjust the path):
+oxidane is not on crates.io yet, so add it as a git dependency:
 
 ```toml
 [dependencies]
-oxidane = { path = "../oxidane" }
+oxidane = { git = "https://github.com/um-univie/oxidane" }
 ```
 
-Enable the optional neural-network modules with `features = ["ml"]`. Parsing,
-descriptors, featurization and dataset splitting do not need it. From the
-checkout, check the library and run its documentation examples with:
+The neural-network code is behind the `ml` feature. You only need it if you
+want to train or run models; parsing, descriptors and featurization work
+without it.
+
+### Python
 
 ```sh
-cargo check --locked --all-features
-cargo test --locked --doc
+uv pip install "oxidane @ git+https://github.com/um-univie/oxidane#subdirectory=bindings/python"
 ```
 
-There is no `oxidane` command-line binary. See [RELEASING.md](RELEASING.md) for
-source releases.
+This compiles the extension, so you need a Rust toolchain. Prebuilt wheels for
+Linux, macOS and Windows are produced by the "Build the Python wheels" workflow
+under Actions.
 
-## Five minutes
+The main functions work on a single SMILES or on a whole column:
+
+```python
+import oxidane as ox
+
+df["canonical_smiles"] = ox.canonical_smiles(df["smiles"])
+df["tautomer_key"] = ox.tautomer_key(df["smiles"])
+df["parent"] = ox.parent_compound(df["smiles"])
+```
+
+There is also a command-line tool, `oxidane-normalize`, that adds these
+columns to a CSV, TSV or SMILES file. See the
+[Python README](bindings/python/README.md) for everything else, including
+molecule objects, SMARTS, reactions and drawing molecules in Jupyter.
+
+## A first example
 
 ```rust
 use oxidane::prelude::*;
@@ -63,83 +77,47 @@ assert_eq!(
 );
 ```
 
-## What it does
+## Features
 
-**Reads and writes.** SMILES, SDF and MOL (V2000), XYZ, GML, DOT, and SVG for
-a quick look. The SDF reader interprets the parts of the format that are codes
-rather than numbers -- the charge column, the isotope column as a mass
-difference, the valence column -- and honours the `M CHG`, `M RAD` and `M ISO`
-property lines that supersede the atom block. Wedge and hash bonds become
-stereochemistry, so a 2D molfile from PubChem or a vendor catalogue arrives
-with its stereocentres intact.
+- **File formats:** SMILES, SDF and MOL (V2000), XYZ, GML and DOT, plus SVG
+  output for quick pictures. Stereo wedges in 2D molfiles are turned into
+  stereocentres.
+- **Perception:** aromaticity, implicit hydrogens, rings and all stereo classes
+  in the SMILES spec. R/S and E/Z labels come from a port of RDKit's
+  CIPLabeler.
+- **Canonical SMILES**, including stereochemistry.
+- **Tautomers:** a key that is the same for all tautomers of a compound (so
+  2-pyridone and 2-hydroxypyridine match), and a canonical tautomer.
+- **Parent compounds** for mass spectrometry libraries: salts and counterions
+  removed, sodium drawn as a bond split off, and protons adjusted to give the
+  neutral molecule.
+- **Substructure search** with CxSMARTS, including recursive SMARTS and
+  chirality.
+- **Maximum common substructure**, using either a clique search or McSplit.
+- **Reactions** from reaction SMARTS or MØD's GML rules, applied to single
+  molecules or to sets of them.
+- **Fingerprints:** Morgan/ECFP, atom pairs, topological torsions, MACCS keys,
+  MHFP and MAP4.
+- **Descriptors:** Crippen logP and molar refractivity, TPSA, H-bond donors and
+  acceptors, rotatable bonds, Bemis-Murcko scaffolds, and shape descriptors
+  (USR, USRCAT) for 3D structures.
+- **3D conformers** with an ETKDG-style distance geometry embedder.
+- **Force fields:** MMFF94 and UFF, with energies, gradients and minimisation.
+- **Machine learning:** atom and bond features, scaffold splits and batching for
+  graph neural networks, and an optional encoder built on `candle`.
 
-**Perceives what the file left out.** Aromaticity, implicit hydrogens, ring
-systems, and stereochemistry in every class the SMILES specification has:
-tetrahedral, cis/trans, allene, square-planar, trigonal-bipyramidal and
-octahedral. CIP descriptors (R/S, E/Z) come from a port of RDKit's CIPLabeler,
-rules 1a through 6 with auxiliary descriptors.
+Molecules can also be drawn as SVG:
 
-**Canonizes, including stereochemistry and tautomers.** Every way of writing a
-molecule gives one canonical SMILES, and two stereoisomers give two. A
-tautomer key is shared by every tautomer of a compound, so 2-pyridone and
-2-hydroxypyridine deduplicate to one row, and a canonical tautomer picks one
-structure to stand for them all.
+<p align="center">
+  <img src="assets/readme/molecules.svg" alt="Caffeine, aspirin, (S)-ibuprofen and serotonin, drawn by oxidane" width="100%">
+</p>
 
-**Finds the parent compound.** For mass spectrometry, the neutral molecule M a
-spectral library records: sodium or potassium drawn as a bond broken off, each
-component's canonical tautomer, protons moved until the net charge is as low as
-the fixed charges allow, and counterions dropped, so a hydrochloride, a sodium
-salt and a zwitterion each come back as the compound they are a form of
-(`oxidane::molecule::mass_spec`, `ox.parent_compound`, `oxidane-normalize --parent`).
+## Molecules with and without coordinates
 
-**Matches.** CxSMARTS patterns with the full atom expression language, ring
-and degree constraints, recursion, and chirality as part of the query. The
-search is monomorphic rather than induced, so a three-atom chain matches
-inside cyclopropane and benzene matches inside naphthalene, which is what a
-chemist means by "contains".
-
-**Compares.** Maximum common edge subgraph two ways: a clique reduction over
-the modular product, and McSplit, which finishes on pairs of real drug
-molecules where the clique search does not.
-
-**Transforms.** Reaction SMARTS, applied through the atom map, with hydrogen
-counts re-derived for every atom whose bonding changed. Reactions are
-double-pushout rules underneath, so they can also be read from MØD's GML,
-composed, and overlapped into critical pairs.
-
-**Fingerprints and descriptors.** Circular (Morgan/ECFP), atom-pair and
-topological-torsion fingerprints, the 166 MACCS keys, and the minhashed MHFP
-and MAP4, kept as sparse counts and folded to bits on request. Crippen log P
-and molar refractivity, TPSA, hydrogen-bond donors and acceptors, rotatable
-bonds, Bemis-Murcko scaffolds, and for a conformer USR, USRCAT and the moments
-of inertia.
-
-**Embeds.** Distance geometry in the style of ETKDG: bounds smoothing,
-four-dimensional embedding, RDKit's experimental torsion preferences, and
-handedness terms for tetrahedral, cis/trans, allene and square-planar centres,
-since a bounds matrix alone cannot tell a stereocentre from its mirror image.
-Each conformer is then minimised with MMFF94 or UFF.
-
-**Force fields.** MMFF94, with its own atom typing and partial charges, and UFF
-for molecules MMFF94 cannot type. Both give energies and gradients and
-minimise with L-BFGS; the energy terms are vectorised through `pulp` and give
-the same bits on AVX2, NEON and scalar hardware.
-
-**Learns.** Per-atom and per-bond feature matrices, scaffold splits and
-batching for message-passing networks, and behind the `ml` feature an encoder
-with graph, atom and bond heads built on `candle`.
-
-## Two representations, one set of traits
-
-`MolecularGraph` is a molecule without coordinates: what SMILES gives you, and
-what matching, canonization and formula work on. `Molecule3D` is the same
-molecule with positions, from an XYZ file, a 3D SDF, or the embedder.
-
-Neither type owns any behaviour. `MoleculeCore` is the atoms, the bonds and
-the adjacency; everything else is a trait with a blanket implementation on top
-of it, and `Molecule` is their sum. A function that only walks bonds takes
-`impl MoleculeCore` and does not drag ring perception in with it; a new
-representation gets the entire library by writing `impl Molecule for`.
+`MolecularGraph` is a molecule without coordinates, which is what you get from
+SMILES. `Molecule3D` is the same thing with atom positions, for example from an
+XYZ file, a 3D SDF or the embedder. Most functionality is written as traits, so
+it works the same on both.
 
 ```rust
 use oxidane::prelude::*;
@@ -152,7 +130,7 @@ assert_eq!(caffeine.molecular_formula().to_string(), "C8H10N4O2");
 assert!((caffeine.molecular_weight() - 194.19).abs() < 0.01);
 ```
 
-## Reading a real file
+## Reading an SDF file
 
 ```rust
 use oxidane::prelude::*;
@@ -172,6 +150,10 @@ assert!(literal[0].atomic_numbers().len() <= molecules[0].atomic_numbers().len()
 
 ## Substructures and reactions
 
+<p align="center">
+  <img src="assets/readme/reaction.svg" alt="Acetic acid and ethanol giving ethyl acetate and water, as applied by oxidane" width="90%">
+</p>
+
 ```rust
 use oxidane::prelude::*;
 use oxidane::molecule::reaction::ReactionSmarts;
@@ -190,7 +172,60 @@ let products = hydrolysis.apply(&ester);
 assert!(!products.is_empty());
 ```
 
-## Three dimensions
+## Generating molecules with rules
+
+Reactions can also be used to grow a set of molecules. Here two rules, ester
+and amide formation, are applied to every pair of molecules for two rounds,
+starting from acetic acid, ethanol and glycine. Among the products are the
+glycine peptides:
+
+<p align="center">
+  <img src="assets/readme/peptides.svg" alt="Glycine growing into diglycine and tetraglycine over two rounds" width="100%">
+</p>
+
+```rust
+use std::collections::BTreeSet;
+use oxidane::prelude::*;
+use oxidane::graph_algorithms::mol_canonization::canonicalize_and_sort_smiles;
+use oxidane::molecule::reaction::ReactionSmarts;
+
+let canonical = |smiles: &str| canonicalize_and_sort_smiles(smiles, false).unwrap();
+let rules = [
+    // carboxylic acid + alcohol -> ester + water
+    "[C:1](=[O:2])[OX2H1:3].[OX2H1:4][CX4:5]>>[C:1](=[O:2])[O:4][C:5].[O:3]",
+    // carboxylic acid + amine -> amide + water
+    "[C:1](=[O:2])[OX2H1:3].[NX3H2:4][CX4:5]>>[C:1](=[O:2])[N:4][C:5].[O:3]",
+]
+.map(|rule| ReactionSmarts::parse(rule).unwrap());
+
+let mut molecules: BTreeSet<String> =
+    ["CC(=O)O", "CCO", "NCC(=O)O"].into_iter().map(canonical).collect();
+
+for _ in 0..2 {
+    let current: Vec<MolecularGraph> = molecules
+        .iter()
+        .map(|smiles| MolecularGraph::from_smiles_single(smiles).unwrap())
+        .collect();
+    for rule in &rules {
+        for first in &current {
+            for second in &current {
+                for product in rule.apply_to(&[first, second]) {
+                    let written = canonical(&product.to_smiles());
+                    molecules.extend(written.split('.').map(String::from));
+                }
+            }
+        }
+    }
+}
+
+// 3 starting molecules, 5 new ones after the first round and 8 after the
+// second, among them the glycine peptides up to tetraglycine.
+assert_eq!(molecules.len(), 16);
+assert!(molecules.contains(&canonical("NCC(=O)NCC(=O)NCC(=O)NCC(=O)O")));
+assert!(molecules.contains(&canonical("CCOC(=O)C")));
+```
+
+## 3D structures
 
 ```rust
 use oxidane::prelude::*;
@@ -211,23 +246,21 @@ assert_eq!(field.name(), "MMFF94");
 assert!(energy <= field.energy(&embedded.positions) + 1e-9);
 ```
 
-## Related
+## Related projects
 
-[`chemistry_consts`](https://crates.io/crates/chemistry_consts) holds the
-periodic table this is built on: masses, isotopes, radii, valences and
-electronegativities as plain `const` arrays indexed by atomic number.
+[`chemistry_consts`](https://crates.io/crates/chemistry_consts) contains the
+periodic table data oxidane uses: masses, isotopes, radii, valences and
+electronegativities.
 
-## Logo
+## Pictures
 
-The mark is a water molecule, since oxidane is water's IUPAC name: the "o" is
-the oxygen and its hydrogens sit at the H-O-H angle `embed_3d` gives `[H]O[H]`
-(103.98 degrees, from MMFF94). Regenerate the SVGs (light, dark, square mark)
-with:
+All the pictures here are drawn by oxidane itself. The molecule, reaction and
+peptide figures come from `cargo run --example readme_figures`, which applies
+the same rules as the example above.
 
-```sh
-cargo run --example logo
-```
+The logo is a water molecule, drawn with the H-O-H angle that oxidane's own
+embedder gives. You can regenerate it with `cargo run --example logo`.
 
-## Licence
+## License
 
-MIT.
+MIT

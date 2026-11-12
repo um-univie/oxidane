@@ -7,19 +7,20 @@ newer.
 
 ## Install
 
-With the wheel file, which runs on any x86-64 Linux with glibc 2.17 or newer
-and any Python from 3.9 on:
+From PyPI, with prebuilt wheels for Linux x86-64 and ARM64 (glibc or musl),
+macOS Intel and Apple silicon, and Windows x64 and ARM64, for any Python from
+3.9 on:
 
 ```sh
 uv venv && source .venv/bin/activate
-uv pip install oxidane-0.2.0-cp39-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+uv pip install oxidane                       # or: pip install oxidane
 ```
 
-Wheels for every platform (Linux x86-64 and ARM64 with glibc or musl, macOS
-Intel and Apple silicon, Windows x64 and ARM64) are built by CI: on the
-repository's Actions tab, open "Build the Python wheels", start it on `main`
-with "Run workflow" (or open its latest run), download `oxidane-python-wheels`,
-and run `uv pip install --no-index --find-links <unpacked folder> oxidane`.
+Every `v*` tag builds these wheels and the source distribution in CI and
+uploads them to PyPI. Wheels for an untagged commit come from the same
+workflow: on the repository's Actions tab, open "Build the Python wheels",
+start it with "Run workflow", download `oxidane-python-wheels`, and run
+`uv pip install --no-index --find-links <unpacked folder> oxidane`.
 
 From the repository, on any platform, which builds the native module and so
 needs Rust (`curl https://sh.rustup.rs -sSf | sh`; compiling takes a few minutes):

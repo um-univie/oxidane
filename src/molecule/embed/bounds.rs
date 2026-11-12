@@ -288,15 +288,15 @@ pub(super) fn angle_bounds_for_triple<T: MoleculeCore>(
     let smallest = cycles
         .iter()
         .filter(|cycle| cycle.contains(i) && cycle.contains(k) && cycle.contains(j))
-        .min_by_key(|cycle| cycle.len());
+        .min_by_key(|cycle| cycle.count());
 
     match smallest {
         // Three and four: the closure fixes the angle, and this derives it
         // from the ring's own bond lengths rather than from any table.
-        Some(cycle) if cycle.len() <= 4 => ring_angle_bounds(mol, i, k, j, cycle, lengths),
+        Some(cycle) if cycle.count() <= 4 => ring_angle_bounds(mol, i, k, j, cycle, lengths),
         // Five to eight: the ring does not fix the angle, but it says more
         // than hybridisation alone does.
-        Some(cycle) if cycle.len() <= MAX_TABULATED_RING => {
+        Some(cycle) if cycle.count() <= MAX_TABULATED_RING => {
             match lengths.planar_ring_angle(i, k, j) {
                 Some(centre) => {
                     let (low, high) = estimate_hybridization_angle(mol, k);
@@ -306,7 +306,7 @@ pub(super) fn angle_bounds_for_triple<T: MoleculeCore>(
                         (centre + window).min(std::f64::consts::PI),
                     )
                 }
-                None => ring_angle_from_size(mol, k, cycle.len()),
+                None => ring_angle_from_size(mol, k, cycle.count()),
             }
         }
         // Anything the rings do not speak for: MMFF's own equilibrium
@@ -428,7 +428,7 @@ fn ring_angle_bounds<T: MoleculeCore>(
     cycle: &BitSet,
     lengths: &Geometry,
 ) -> (f64, f64) {
-    let regular = regular_polygon_angle_bounds(cycle.len());
+    let regular = regular_polygon_angle_bounds(cycle.count());
     let Some(r_ik) = lengths.nominal(mol, i, k) else {
         return regular;
     };
@@ -633,7 +633,7 @@ fn planar_ring_angles<T: MoleculeCore>(
     };
 
     for cycle in cycles {
-        let size = cycle.len();
+        let size = cycle.count();
         if !(5..=MAX_TABULATED_RING).contains(&size) {
             continue;
         }
@@ -1137,7 +1137,7 @@ fn apply_fourteen_bounds<T: MoleculeCore>(
                                 && cycle.contains(middle_b)
                                 && cycle.contains(last)
                         })
-                        .map(|cycle| cycle.len())
+                        .map(|cycle| cycle.count())
                         .min();
                     if smallest.is_some_and(|size| size <= MAX_CLOSED_RING) {
                         continue;
@@ -1460,7 +1460,7 @@ fn apply_aromatic_ring_bounds<T: MoleculeCore>(
     is_specific: &mut Array2<bool>,
 ) {
     for cycle in cycles {
-        let size = cycle.len();
+        let size = cycle.count();
         if !(3..=8).contains(&size) {
             continue;
         }
@@ -1495,7 +1495,7 @@ fn apply_aromatic_ring_bounds<T: MoleculeCore>(
 /// [`super::planarity`]'s, which needs the order for the same reason: a
 /// ring's atoms mean nothing geometrically until they are in ring order.
 fn aromatic_ring_order<T: MoleculeCore>(mol: &T, cycle: &BitSet) -> Option<Vec<usize>> {
-    let size = cycle.len();
+    let size = cycle.count();
     let start = cycle.iter().next()?;
     let mut order = Vec::with_capacity(size);
     order.push(start);

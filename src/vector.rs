@@ -2,7 +2,7 @@
 /// a torsion axis or plane is degenerate. Coordinates retain their input units.
 const MIN_DIHEDRAL_NORM_SQUARED: f64 = 1e-16;
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::fmt;
 use std::fmt::Display;
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub};

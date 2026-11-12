@@ -1185,7 +1185,7 @@ impl Factor {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
-    use rand::{Rng, SeedableRng, seq::SliceRandom};
+    use rand::{RngExt, SeedableRng, seq::SliceRandom};
 
     /// Exhaustive subsets are an independent oracle for the solver. Random
     /// multigraphs include odd cycles, impossible degrees, parallel edges and

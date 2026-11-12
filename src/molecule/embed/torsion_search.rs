@@ -630,7 +630,7 @@ fn shake(
     mismatches: usize,
     seed: u64,
 ) -> f64 {
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
     if moves.len() < 2 {
         return energy;
     }

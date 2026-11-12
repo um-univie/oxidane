@@ -193,6 +193,6 @@ impl super::search::McsplitGraph for Graph {
     }
 
     fn degree(&self, index: usize) -> usize {
-        self.adjacency[index].len()
+        self.adjacency[index].count()
     }
 }

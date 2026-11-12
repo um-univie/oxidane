@@ -17,7 +17,7 @@ const MIN_POWER_VECTOR_NORM: f64 = 1e-14;
 use super::bounds;
 use crate::vector::Vector3D;
 use ndarray::Array2;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 const POWER_ITERATION_MAX_ITERS: usize = 500;
 const POWER_ITERATION_TOL: f64 = 1e-10;

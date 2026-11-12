@@ -1326,7 +1326,7 @@ pub trait MoleculeCore {
     /// Validates if a set of atoms forms a valid cycle by checking connectivity
     /// and ensuring each atom has exactly two connections within the cycle.
     fn is_valid_cycle(&self, cycle: &BitSet) -> bool {
-        if cycle.len() < 3 {
+        if cycle.count() < 3 {
             return false;
         }
 
@@ -1361,7 +1361,7 @@ pub trait MoleculeCore {
             }
 
             // All atoms must be visited and form a single connected component
-            visited.len() == cycle.len()
+            visited.count() == cycle.count()
         } else {
             false
         }
@@ -1411,7 +1411,7 @@ pub trait MoleculeCore {
         cyclic_atoms: &mut BitSet,
         cyclic_bonds: &mut FxHashSet<(usize, usize)>,
     ) {
-        cyclic_atoms.clear();
+        cyclic_atoms.make_empty();
         cyclic_bonds.clear();
         self.walk_cyclic_bonds(|first, second| {
             cyclic_bonds.insert(order_tuple(first, second));

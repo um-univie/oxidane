@@ -2306,7 +2306,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             .filter(|&(_, &flag)| flag != AromaticityFlag::NotAromatic)
             .map(|(index, _)| index)
             .collect::<BitSet>();
-        let mut last_aromatic_atoms_length = aromatic_atoms.len();
+        let mut last_aromatic_atoms_length = aromatic_atoms.count();
 
         loop {
             let mut aromatic_atoms_to_remove = BitSet::new();
@@ -2347,10 +2347,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             for aromatic_atom in aromatic_atoms_to_remove.iter() {
                 aromatic_atoms.remove(aromatic_atom);
             }
-            if aromatic_atoms.len() == last_aromatic_atoms_length {
+            if aromatic_atoms.count() == last_aromatic_atoms_length {
                 break;
             }
-            last_aromatic_atoms_length = aromatic_atoms.len();
+            last_aromatic_atoms_length = aromatic_atoms.count();
         }
     }
 }

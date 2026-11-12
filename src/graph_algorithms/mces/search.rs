@@ -170,12 +170,12 @@ impl CliqueIterator {
             mut excluded,
         }) = self.stack.pop()
         {
-            if candidates.len() + clique.len() < state.maximum {
+            if candidates.count() + clique.count() < state.maximum {
                 continue;
             }
 
             if candidates.is_empty() && excluded.is_empty() {
-                if clique.len() < state.maximum {
+                if clique.count() < state.maximum {
                     continue;
                 }
                 // A 3-vertex clique's *actual* matched-bond count can end up
@@ -186,8 +186,8 @@ impl CliqueIterator {
                 // never affected by that ambiguity and is safe to use
                 // immediately, which is what lets pruning kick in during the
                 // same search pass instead of only on the next one.
-                if !state.enumerate_all && clique.len() > state.maximum && clique.len() != 3 {
-                    state.maximum = clique.len();
+                if !state.enumerate_all && clique.count() > state.maximum && clique.count() != 3 {
+                    state.maximum = clique.count();
                 }
                 return Some(clique.iter().map(NodeIndex::new).collect());
             }
@@ -230,7 +230,7 @@ impl CliqueIterator {
             .iter()
             .chain(excluded.iter())
             .map(NodeIndex::new)
-            .max_by_key(|&u| self.neighbors_within(candidates, u).len())
+            .max_by_key(|&u| self.neighbors_within(candidates, u).count())
     }
 
     /// Inserts a branch keeping the stack sorted by clique size (ascending),
@@ -239,7 +239,7 @@ impl CliqueIterator {
     fn push_stack(&mut self, value: Triple) {
         let pos = self
             .stack
-            .binary_search_by(|x| x.clique.len().cmp(&value.clique.len()))
+            .binary_search_by(|x| x.clique.count().cmp(&value.clique.count()))
             .unwrap_or_else(|pos| pos);
         self.stack.insert(pos, value);
     }
@@ -286,7 +286,7 @@ pub(super) fn greedy_clique_lower_bound(graph: &ModularProductGraph) -> usize {
     }
 
     let mut by_degree: Vec<usize> = (0..n).collect();
-    by_degree.sort_by_key(|&v| std::cmp::Reverse(adjacency[v].len()));
+    by_degree.sort_by_key(|&v| std::cmp::Reverse(adjacency[v].count()));
 
     let mut best = 0;
     for &start in by_degree.iter().take(n.min(8)) {
@@ -300,7 +300,7 @@ pub(super) fn greedy_clique_lower_bound(graph: &ModularProductGraph) -> usize {
             next = candidates.iter().max_by_key(|&idx| {
                 let mut degree_within = candidates.clone();
                 degree_within.intersect_with(&adjacency[idx]);
-                degree_within.len()
+                degree_within.count()
             });
         }
         best = best.max(size);

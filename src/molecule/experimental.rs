@@ -380,7 +380,7 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
             return;
         }
         // Group cycles into fused systems and filter based on aromaticity
-        cycles.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        cycles.sort_by_key(|b| std::cmp::Reverse(b.count()));
         let mut aromatic_systems: Vec<BitSet> = Vec::new();
 
         for system in cycles {
@@ -593,7 +593,7 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
         let mut fused_systems = self.group_fused_cycles(&cycles);
 
         // Order based on size in descending order
-        fused_systems.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        fused_systems.sort_by_key(|b| std::cmp::Reverse(b.count()));
 
         for system in fused_systems {
             let aromaticity_type = self.determine_aromaticity_type(&system);

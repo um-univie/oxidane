@@ -17,7 +17,7 @@ const MIN_POWER_VECTOR_NORM: f64 = 1e-14;
 use super::bounds;
 use crate::vector::Vector3D;
 use super::matrix::SquareMatrix;
-use rand::{RngExt, SeedableRng, rngs::StdRng};
+use crate::random::Rng;
 
 const POWER_ITERATION_MAX_ITERS: usize = 500;
 const POWER_ITERATION_TOL: f64 = 1e-10;
@@ -25,7 +25,7 @@ const EMBED_DIMENSIONS: usize = 4;
 
 /// Samples one trial (Euclidean-inconsistent in general) distance matrix by
 /// drawing each pairwise distance uniformly within its bounds.
-pub(super) fn sample_trial_distances(bounds_matrix: &SquareMatrix<f64>, rng: &mut StdRng) -> SquareMatrix<f64> {
+pub(super) fn sample_trial_distances(bounds_matrix: &SquareMatrix<f64>, rng: &mut Rng) -> SquareMatrix<f64> {
     let n = bounds_matrix.nrows();
     let mut trial = SquareMatrix::zeros(n);
     for i in 0..n {
@@ -40,7 +40,7 @@ pub(super) fn sample_trial_distances(bounds_matrix: &SquareMatrix<f64>, rng: &mu
             let d = if hi - lo < MIN_SAMPLING_INTERVAL {
                 lo
             } else {
-                rng.random_range(lo..=hi)
+                rng.uniform(lo, hi)
             };
             trial[[i, j]] = d;
             trial[[j, i]] = d;
@@ -132,8 +132,8 @@ fn norm(a: &[f64]) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn random_unit_vec(n: usize, rng: &mut StdRng) -> Vec<f64> {
-    let mut v: Vec<f64> = (0..n).map(|_| rng.random_range(-1.0..1.0)).collect();
+fn random_unit_vec(n: usize, rng: &mut Rng) -> Vec<f64> {
+    let mut v: Vec<f64> = (0..n).map(|_| rng.uniform(-1.0, 1.0)).collect();
     let len = norm(&v);
     if len < MIN_INITIAL_VECTOR_NORM {
         v[0] = 1.0;
@@ -166,7 +166,7 @@ fn top_k_eigenpairs(m: &SquareMatrix<f64>, k: usize) -> Vec<(f64, Vec<f64>)> {
         return Vec::new();
     }
     let shift = gershgorin_shift(m);
-    let mut rng = StdRng::seed_from_u64(0x4D53_4544);
+    let mut rng = Rng::seed_from_u64(0x4D53_4544);
     // (shifted eigenvalue, eigenvector) of already-extracted components.
     let mut found: Vec<(f64, Vec<f64>)> = Vec::with_capacity(k);
 

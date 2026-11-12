@@ -11,6 +11,7 @@ pub mod ml;
 pub mod molecular_formula;
 pub mod molecule;
 pub mod prelude;
+pub mod random;
 #[cfg(test)]
 mod tests;
 pub mod vector;

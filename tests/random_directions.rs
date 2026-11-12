@@ -1,10 +1,10 @@
 use oxidane::vector::Vector3D;
-use rand::{SeedableRng, rngs::StdRng};
+use oxidane::random::Rng;
 
 #[test]
 fn random_directions_have_uniform_area_moments() {
     let samples = 100_000;
-    let mut rng = StdRng::seed_from_u64(20261020);
+    let mut rng = Rng::seed_from_u64(20261020);
     let mut second = [0.0; 3];
     let mut mean = [0.0; 3];
     let mut bands = [0usize; 10];

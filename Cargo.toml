@@ -33,7 +33,6 @@ wide = "0.7"
 pulp = "0.22"
 nohash-hasher = "0.2.0"
 petgraph = "0.8"
-rand = "0.10.3"
 rayon = "1.12.0"
 tinyvec = "1.13.3"
 bit-set = "0.11.1"
@@ -42,6 +41,8 @@ canonaut = "1.1.0"
 rustfft = "6.4.1"
 
 [dev-dependencies]
+# Tests and examples shuffle with rand; the library has its own `random::Rng`.
+rand = "0.10.3"
 # pubchem_sweep maps the corpus rather than reading it.
 memmap2 = "0.9"
 memchr = "2"

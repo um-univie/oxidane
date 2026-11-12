@@ -2,6 +2,7 @@
 name = "oxidane"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.88"
 license = "MIT"
 description = "Cheminformatics in pure Rust: SMILES, SMARTS, SDF, stereochemistry, canonical SMILES and tautomer keys, substructure and maximum common subgraph search, reactions, fingerprints, descriptors, 3D embedding and the MMFF94 and UFF force fields"
 documentation = "https://docs.rs/oxidane"

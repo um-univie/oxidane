@@ -5,7 +5,6 @@ use crate::molecule::{
     utils::is_hueckel_satisfied,
 };
 use bit_set::BitSet;
-use bitvec::prelude::BitVec;
 use rustc_hash::FxHashSet;
 
 pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
@@ -139,51 +138,6 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
             21..=30 | 39..=48 | 57..=80 | 89..=112 => true, // Transition metals
             _ => false,
         }
-    }
-
-    fn dfs_find_aromatic_rings(
-        &self,
-        current: usize,
-        parent: usize,
-        visited: &mut BitVec<usize>,
-        path: &mut Vec<usize>,
-        path_set: &mut FxHashSet<usize>,
-        rings: &mut Vec<Vec<usize>>,
-        aromatic_atoms: &BitVec<usize>,
-    ) {
-        visited.set(current, true);
-        path.push(current);
-        path_set.insert(current);
-
-        for &bond in &self.atom_bonds()[current] {
-            let target = bond.target();
-            if !aromatic_atoms[target] {
-                continue;
-            }
-
-            if !visited[target] {
-                self.dfs_find_aromatic_rings(
-                    target,
-                    current,
-                    visited,
-                    path,
-                    path_set,
-                    rings,
-                    aromatic_atoms,
-                );
-            } else if target != parent && path_set.contains(&target) {
-                // Found aromatic cycle
-                let cycle_start = path.iter().position(|&x| x == target).unwrap();
-                let cycle = path[cycle_start..].to_vec();
-                if cycle.len() >= 5 {
-                    // Common aromatic ring sizes
-                    rings.push(cycle);
-                }
-            }
-        }
-
-        path.pop();
-        path_set.remove(&current);
     }
 
     fn dfs_find_potential_aromatic_cycles(
@@ -380,7 +334,7 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
             return;
         }
         // Group cycles into fused systems and filter based on aromaticity
-        cycles.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        cycles.sort_by_key(|b| std::cmp::Reverse(b.count()));
         let mut aromatic_systems: Vec<BitSet> = Vec::new();
 
         for system in cycles {
@@ -593,7 +547,7 @@ pub trait MoleculeExperimental: MoleculeCore + MoleculeAromaticity {
         let mut fused_systems = self.group_fused_cycles(&cycles);
 
         // Order based on size in descending order
-        fused_systems.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        fused_systems.sort_by_key(|b| std::cmp::Reverse(b.count()));
 
         for system in fused_systems {
             let aromaticity_type = self.determine_aromaticity_type(&system);

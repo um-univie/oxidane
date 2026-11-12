@@ -10,7 +10,6 @@ use crate::{
     },
 };
 use bit_set::BitSet;
-use bitvec::prelude::*;
 use chemistry_consts::ElementProperties;
 use rustc_hash::FxHashSet;
 use tinyvec::{ArrayVec, array_vec};
@@ -1005,15 +1004,6 @@ pub trait MoleculeCore {
         self.atom_bonds_mut()[atom2][bond2].bond_order = new_order;
     }
 
-    fn can_kekulize_bond(
-        &self,
-        atom1_idx: usize,
-        atom2_idx: usize,
-        aromatic_atoms: &BitVec<usize>,
-    ) -> bool {
-        aromatic_atoms[atom1_idx] && aromatic_atoms[atom2_idx]
-    }
-
     fn get_bond_order(&self, atom1: usize, atom2: usize) -> BondOrder {
         self.atom_bonds()[atom1]
             .iter()
@@ -1326,7 +1316,7 @@ pub trait MoleculeCore {
     /// Validates if a set of atoms forms a valid cycle by checking connectivity
     /// and ensuring each atom has exactly two connections within the cycle.
     fn is_valid_cycle(&self, cycle: &BitSet) -> bool {
-        if cycle.len() < 3 {
+        if cycle.count() < 3 {
             return false;
         }
 
@@ -1361,7 +1351,7 @@ pub trait MoleculeCore {
             }
 
             // All atoms must be visited and form a single connected component
-            visited.len() == cycle.len()
+            visited.count() == cycle.count()
         } else {
             false
         }
@@ -1411,7 +1401,7 @@ pub trait MoleculeCore {
         cyclic_atoms: &mut BitSet,
         cyclic_bonds: &mut FxHashSet<(usize, usize)>,
     ) {
-        cyclic_atoms.clear();
+        cyclic_atoms.make_empty();
         cyclic_bonds.clear();
         self.walk_cyclic_bonds(|first, second| {
             cyclic_bonds.insert(order_tuple(first, second));

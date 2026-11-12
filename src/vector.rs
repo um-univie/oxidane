@@ -2,7 +2,7 @@
 /// a torsion axis or plane is degenerate. Coordinates retain their input units.
 const MIN_DIHEDRAL_NORM_SQUARED: f64 = 1e-16;
 
-use rand::Rng;
+use crate::random::Rng;
 use std::fmt;
 use std::fmt::Display;
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub};
@@ -549,15 +549,15 @@ impl Vector3D {
     /// ```
     ///
     pub fn random_unit_vector() -> Self {
-        Self::random_unit_vector_with_rng(&mut rand::rng())
+        Self::random_unit_vector_with_rng(&mut Rng::from_entropy())
     }
 
     /// Generates a uniform sphere direction using a caller-supplied RNG.
     /// A seeded RNG makes sequences reproducible.
-    pub fn random_unit_vector_with_rng<R: Rng + ?Sized>(rng: &mut R) -> Self {
+    pub fn random_unit_vector_with_rng(rng: &mut Rng) -> Self {
         // Equal-height bands have equal area: cos(theta), not theta, is uniform.
-        let z: f64 = rng.random_range(-1.0..1.0);
-        let phi = rng.random_range(0.0..std::f64::consts::TAU);
+        let z = rng.uniform(-1.0, 1.0);
+        let phi = rng.uniform(0.0, std::f64::consts::TAU);
         let radius = (1.0 - z * z).sqrt();
         let (sin_phi, cos_phi) = phi.sin_cos();
         Vector3D::new(radius * cos_phi, radius * sin_phi, z)

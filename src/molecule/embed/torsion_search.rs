@@ -630,19 +630,18 @@ fn shake(
     mismatches: usize,
     seed: u64,
 ) -> f64 {
-    use rand::{Rng, SeedableRng, rngs::StdRng};
     if moves.len() < 2 {
         return energy;
     }
-    let mut rng = StdRng::seed_from_u64(seed ^ 0x5AFE_D00D);
+    let mut rng = crate::random::Rng::seed_from_u64(seed ^ 0x5AFE_D00D);
     for attempt in 0..SHAKE_ATTEMPTS {
         let count = SHAKE_MOVES[attempt % SHAKE_MOVES.len()].min(moves.len());
         let mut trial = positions.clone();
         let mut touched = 0;
         for _ in 0..count {
-            let candidate = &moves[rng.random_range(0..moves.len())];
+            let candidate = &moves[rng.below(moves.len())];
             let angles = candidate.angles();
-            let angle = angles[rng.random_range(0..angles.len())];
+            let angle = angles[rng.below(angles.len())];
             candidate.apply(&mut trial, angle);
             touched += 1;
         }

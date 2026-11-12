@@ -11,10 +11,9 @@ use crate::{
     vector::Vector3D,
 };
 use chemistry_consts::ElementProperties;
-use itertools::Itertools;
-use kiddo::{KdTree, SquaredEuclidean};
 use nohash_hasher::{IntMap, IntSet};
 use rayon::prelude::*;
+use super::neighbor_grid::NeighborGrid;
 use tinyvec::ArrayVec;
 
 use std::{
@@ -149,14 +148,6 @@ impl Molecule3D {
         Ok(molecules)
     }
 
-    pub fn build_tree(&self) -> KdTree<f64, 3> {
-        let mut tree: KdTree<f64, 3> = KdTree::with_capacity(self.atomic_numbers.len());
-        for (index, position_vector) in self.positions.iter().enumerate() {
-            tree.add(&position_vector.as_array(), index as u64);
-        }
-        tree
-    }
-
     pub fn update_atom_charge(&mut self, atom_index: usize, charge: i8) {
         if atom_index < self.charges().len() {
             self.charges_mut()[atom_index] += charge;
@@ -175,32 +166,16 @@ impl Molecule3D {
             })
             * 3.0)
             .powi(2);
-        let kdtree = self.build_tree();
-        let bonds = self
-            .positions
-            .par_iter()
-            .enumerate()
-            .map(|(index, position)| {
-                let mut bonds = kdtree
-                    .within::<SquaredEuclidean>(
-                        &[position.x, position.y, position.z],
-                        threshold_squared,
-                    )
-                    .iter()
-                    .filter_map(|neighbor| {
-                        if neighbor.item == index as u64 {
-                            return None;
-                        }
-                        let distance = neighbor.distance;
-                        let is_bonded =
-                            self.is_bonded(index, neighbor.item as usize, distance, tolerance);
-                        if is_bonded {
-                            Some(BondTarget::single(neighbor.item as usize))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<ArrayVec<[BondTarget; 10]>>();
+        let grid = NeighborGrid::new(&self.positions, threshold_squared);
+        let bonds = (0..self.positions.len())
+            .into_par_iter()
+            .map(|index| {
+                let mut bonds = ArrayVec::<[BondTarget; 10]>::new();
+                grid.for_each_neighbor(index, |neighbor, distance| {
+                    if self.is_bonded(index, neighbor, distance, tolerance) {
+                        bonds.push(BondTarget::single(neighbor));
+                    }
+                });
                 bonds.sort_by_key(|bond| bond.target());
                 bonds
             })
@@ -224,41 +199,23 @@ impl Molecule3D {
                 })
                 * 3.0)
                 .powi(2);
-        let kdtree = self.build_tree();
-        let bonds = self
-            .positions
-            .par_iter()
-            .enumerate()
-            .map(|(index, position)| {
-                let mut bonds = kdtree
-                    .within::<SquaredEuclidean>(
-                        &[position.x, position.y, position.z],
-                        threshold_squared,
-                    )
-                    .iter()
-                    .filter_map(|neighbor| {
-                        if neighbor.item == index as u64 {
-                            return None;
-                        }
-                        let distance = neighbor.distance;
-                        let atomic_number1 = self.get_atomic_number(index);
-                        let atomic_number2 = self.get_atomic_number(neighbor.item as usize);
-                        let covalent_radius1 = covalent_radii.get(atomic_number1 as usize);
-                        let covalent_radius2 = covalent_radii.get(atomic_number2 as usize);
-                        if covalent_radius1.is_none() || covalent_radius2.is_none() {
-                            return None;
-                        }
-
-                        let is_bonded = distance
-                            < ((covalent_radius1.unwrap() + covalent_radius2.unwrap()) * tolerance)
-                                .powi(2);
-                        if is_bonded {
-                            Some(BondTarget::single(neighbor.item as usize))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<ArrayVec<[BondTarget; 10]>>();
+        let grid = NeighborGrid::new(&self.positions, threshold_squared);
+        let bonds = (0..self.positions.len())
+            .into_par_iter()
+            .map(|index| {
+                let mut bonds = ArrayVec::<[BondTarget; 10]>::new();
+                let Some(&radius1) = covalent_radii.get(self.get_atomic_number(index) as usize) else {
+                    return bonds;
+                };
+                grid.for_each_neighbor(index, |neighbor, distance| {
+                    let atomic_number2 = self.get_atomic_number(neighbor);
+                    let Some(&radius2) = covalent_radii.get(atomic_number2 as usize) else {
+                        return;
+                    };
+                    if distance < ((radius1 + radius2) * tolerance).powi(2) {
+                        bonds.push(BondTarget::single(neighbor));
+                    }
+                });
                 bonds.sort_by_key(|bond| bond.target());
                 bonds
             })
@@ -334,7 +291,7 @@ impl Molecule3D {
             .enumerate()
             .flat_map(|(atom_index, bonds)| {
                 let mut local_bond_angles = Vec::with_capacity(12);
-                bonds.iter().combinations(2).for_each(|slice| {
+                pairs(bonds).for_each(|slice| {
                     let neighbor1_index = slice[0].target();
                     let neighbor2_index = slice[1].target();
                     let position_vector1 = &self.positions[neighbor1_index];
@@ -632,9 +589,8 @@ impl Molecule3D {
     /// ```
     ///
     pub fn find_shortest_path_of_set(&self, atom_set: &IntSet<usize>) -> Option<Vec<usize>> {
-        let shortest_paths: Vec<Vec<usize>> = atom_set
-            .iter()
-            .combinations(2)
+        let atoms: Vec<usize> = atom_set.iter().copied().collect();
+        let shortest_paths: Vec<Vec<usize>> = pairs(&atoms)
             .par_bridge() // This does not preserve order!
             .flat_map(|combination| self.shortest_path(*combination[0], *combination[1]))
             .collect();
@@ -643,17 +599,12 @@ impl Molecule3D {
             return None;
         }
 
-        let shortest_path = shortest_paths
-            .iter()
+        shortest_paths
+            .into_iter()
             .filter(|path| {
                 path.len() >= atom_set.len() && atom_set.iter().all(|&atom| path.contains(&atom))
             })
-            .sorted_by_key(|path| path.len())
-            .collect::<Vec<_>>();
-
-        shortest_path
-            .first()
-            .map(|shortest_path| shortest_path.to_vec())
+            .min_by_key(|path| path.len())
     }
 
     /// Finds the shortest path between two atoms
@@ -783,7 +734,7 @@ impl Molecule3D {
                 vertex_degrees[index] = *degree;
             }
 
-            let count = vertex_degrees.iter().unique().count();
+            let count = vertex_degrees.iter().copied().collect::<IntSet<usize>>().len();
             if count == last_count {
                 break;
             }
@@ -1015,4 +966,13 @@ impl MoleculeCore for Molecule3D {
         molecule.identify_bonds(BOND_TOLERANCE);
         molecule
     }
+}
+
+/// Every unordered pair of distinct elements, in the order
+/// `itertools::combinations(2)` would give them.
+fn pairs<T>(items: &[T]) -> impl Iterator<Item = [&T; 2]> + Send
+where
+    T: Sync,
+{
+    (0..items.len()).flat_map(move |i| items[i + 1..].iter().map(move |second| [&items[i], second]))
 }

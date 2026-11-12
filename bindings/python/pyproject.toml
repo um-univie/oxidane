@@ -7,21 +7,46 @@ name = "oxidane"
 version = "0.2.0"
 description = "Python bindings for the Oxidane cheminformatics library"
 readme = { content-type = "text/markdown", text = """
-# Oxidane Python bindings
+# Oxidane
 
-Molecules, SMARTS queries, reaction transformations, SVG display in Jupyter, and
-multithreaded canonical SMILES, tautomer keys and canonical tautomers.
-The bindings live in `bindings/python` inside the Oxidane Rust repository and
-build against that checkout. Legacy `from molecules import PyMolecule, MolParser`
-imports remain supported alongside `from oxidane import Molecule`.
+Python bindings for [Oxidane](https://github.com/um-univie/oxidane), a
+cheminformatics library in pure Rust: molecules, SMARTS queries, reaction
+transformations, SVG display in Jupyter, and multithreaded canonical SMILES,
+tautomer keys and canonical tautomers.
 
-From a checkout, install with `uv pip install './bindings/python[notebook]'`.
-Use `Molecule('CCO').plot()` for immediate notebook display, or `to_svg()` to
-export without IPython. Full instructions and examples are in
-`bindings/python/README.md` in the source repository.
+```sh
+pip install oxidane              # or: uv pip install oxidane
+pip install "oxidane[notebook]"  # adds IPython for Jupyter display
+```
+
+```python
+import oxidane as ox
+ox.canonical_tautomer("Oc1ccccn1")   # 'O=c1[nH]cccc1'
+ox.Molecule("CCO").plot()            # inline SVG in a notebook
+```
+
+The `oxidane-normalize` command appends canonical SMILES, tautomer key and
+canonical tautomer columns to a CSV, TSV or SMILES file on every core.
+Wheels are abi3 (one per platform for every Python from 3.9 on) for Linux
+x86-64/ARM64 (glibc and musl), macOS Intel and Apple silicon, and Windows
+x64/ARM64. Documentation and examples are in `bindings/python` in the
+source repository.
 """ }
 requires-python = ">=3.9"
 license = "MIT"
+authors = [{ name = "Manuel Uhlir" }]
+keywords = ["chemistry", "cheminformatics", "smiles", "smarts", "tautomer", "molecule"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
+
+[project.urls]
+Repository = "https://github.com/um-univie/oxidane"
+Issues = "https://github.com/um-univie/oxidane/issues"
 
 [project.scripts]
 oxidane-normalize = "oxidane.__main__:main"

@@ -49,7 +49,7 @@
 
 //! The pairs come in as a flat slice of [`bounds::Pair`], built once per
 //! molecule, rather than as the bounds matrix itself. Every iteration reads
-//! every pair, so what an `Array2` lookup costs -- an index computation and
+//! every pair, so what a `SquareMatrix` lookup costs -- an index computation and
 //! a bounds check for each of the two bounds -- is paid `n^2/2` times per
 //! energy evaluation; the squares and reciprocals the energy wants are
 //! precomputed in the same move, which turns its two divisions into

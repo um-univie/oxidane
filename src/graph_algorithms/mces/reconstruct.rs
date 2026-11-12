@@ -1,7 +1,7 @@
 use super::types::{Clique, McesGraph, ModularProductGraph, MolGraphType};
 use crate::molecule::bond::BondOrder;
 use crate::molecule::graph::AtomLabel;
-use bitvec::prelude::*;
+use bit_set::BitSet;
 use petgraph::graph::NodeIndex;
 use rustc_hash::FxHashMap;
 
@@ -66,7 +66,7 @@ pub(super) fn induced_subgraph(clique: &Clique, graph: &ModularProductGraph) -> 
     }
 
     let mut bad_triangles: Vec<Vec<NodeIndex>> = Vec::new();
-    let mut seen_triangles: Vec<BitVec> = Vec::new();
+    let mut seen_triangles: Vec<BitSet> = Vec::new();
     let max_nodes = subgraph.graph.node_count();
 
     for edge_idx in subgraph.graph.edge_indices() {
@@ -93,9 +93,9 @@ pub(super) fn induced_subgraph(clique: &Clique, graph: &ModularProductGraph) -> 
 
             if triangle1.len() != triangle2.len() {
                 let bad_triangle = vec![vertex, target, source];
-                let mut triangle_bits = bitvec![0; max_nodes];
+                let mut triangle_bits = BitSet::with_capacity(max_nodes);
                 for &v in &bad_triangle {
-                    triangle_bits.set(v.index(), true);
+                    triangle_bits.insert(v.index());
                 }
                 if seen_triangles.contains(&triangle_bits) {
                     continue;
@@ -119,10 +119,7 @@ pub(super) fn induced_subgraph(clique: &Clique, graph: &ModularProductGraph) -> 
             if i == j {
                 continue;
             }
-            if remove_vertex_sets[j]
-                .iter_ones()
-                .all(|idx| idx < remove_vertex_sets[i].len() && remove_vertex_sets[i][idx])
-            {
+            if remove_vertex_sets[j].is_subset(&remove_vertex_sets[i]) {
                 keep[j] = false;
             }
         }
@@ -161,17 +158,17 @@ fn original_atoms_of(subgraph: &ModularProductGraph, from_g1: bool, vertices: &[
 /// Cartesian product of the given vertex sets, returned as bitsets over node
 /// index (one bitset per combination), used to enumerate every way of
 /// removing one vertex from each bad triangle.
-fn cartesian(sets: &mut [Vec<NodeIndex>]) -> Vec<BitVec> {
+fn cartesian(sets: &mut [Vec<NodeIndex>]) -> Vec<BitSet> {
     let max_index = sets.iter().flatten().map(|x| x.index()).max().unwrap_or(0);
-    let bitvec_size = max_index + 1;
+    let set_size = max_index + 1;
 
-    let mut combinations: Vec<BitVec> = vec![bitvec![0; bitvec_size]];
+    let mut combinations: Vec<BitSet> = vec![BitSet::with_capacity(set_size)];
     for set in sets.iter() {
         let mut next = Vec::new();
         for combo in &combinations {
             for &element in set {
                 let mut extended = combo.clone();
-                extended.set(element.index(), true);
+                extended.insert(element.index());
                 next.push(extended);
             }
         }
@@ -180,12 +177,12 @@ fn cartesian(sets: &mut [Vec<NodeIndex>]) -> Vec<BitVec> {
     combinations
 }
 
-fn delete_set_of_vertices(graph: &ModularProductGraph, delete_vertices: &BitVec) -> ModularProductGraph {
+fn delete_set_of_vertices(graph: &ModularProductGraph, delete_vertices: &BitSet) -> ModularProductGraph {
     let mut subgraph = ModularProductGraph::new(graph.g1.clone(), graph.g2.clone());
     let mut vertex_map: FxHashMap<NodeIndex, NodeIndex> = FxHashMap::default();
 
     for vertex in graph.graph.node_indices() {
-        let deleted = vertex.index() < delete_vertices.len() && delete_vertices[vertex.index()];
+        let deleted = delete_vertices.contains(vertex.index());
         if deleted {
             continue;
         }

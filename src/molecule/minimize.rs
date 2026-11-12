@@ -80,6 +80,7 @@
 //! [`crate::molecule::forcefield`] minimise different energies over the same
 //! variables, and the part that is the same for both is all of this.
 
+use crate::molecule::forcefield::lanes::{self, LANES, Lanes, LanesOp, horizontal_sum};
 use crate::vector::{Vector3D, Vector4D};
 
 /// What the minimiser needs of a coordinate: the vector-space operations,
@@ -260,34 +261,8 @@ fn flatten_difference<C: Coordinate>(new: &[C], old: &[C], flat: &mut [f64]) {
 ///
 /// Eight chains are slower than four here (14.1 microseconds), and so is
 /// gathering each lane into a `[f64; 4]` first. A real SIMD type does
-/// better -- `wide::f64x4` reaches 7.6 and `faer`'s dispatching kernel 5.5
-/// -- which is why the two matrix-vector products now go through
-/// [`faer_gemv`] and this is left for the short dot products beside them.
-/// `out = M x` for a row-major `dimension x dimension` matrix, through
-/// faer's dispatching kernel.
-///
-/// The BFGS bookkeeping does two of these per iteration -- `H y` for the
-/// update and `-H g` for the direction -- and they are the largest single
-/// cost in an embedding after the force field itself. faer's kernel
-/// dispatches on the instruction set at run time and reaches 5.5
-/// microseconds at `dimension = 270` where four hand-rolled accumulator
-/// chains reach 9.8 and one reaches 21.2.
-///
-/// End to end it is worth about 7% on molecules of 130 to 390 atoms (99.3 s
-/// against 106.4 for thirty of them) and nothing measurable at drug size,
-/// where the force field rather than the matrix is the cost. The rank-two
-/// update below stays hand-written: it is a `saxpy` over the whole matrix,
-/// already memory-bound, and measured at 128 microseconds against faer's
-/// 129 for the same work.
-///
-/// It obliges the crate to thin LTO -- see the note in `Cargo.toml`.
-fn faer_gemv(matrix: &[f64], x: &[f64], out: &mut [f64], dimension: usize) {
-    let m = faer::MatRef::from_row_major_slice(matrix, dimension, dimension);
-    let v = faer::MatRef::from_column_major_slice(x, dimension, 1);
-    let mut o = faer::MatMut::from_column_major_slice_mut(out, dimension, 1);
-    faer::linalg::matmul::matmul(o.as_mut(), faer::Accum::Replace, m, v, 1.0, faer::Par::Seq);
-}
-
+/// better, which is why the two matrix-vector products go through [`gemv`]
+/// and this is left for the short dot products beside them.
 fn wide_dot(a: &[f64], b: &[f64]) -> f64 {
     let mut sums = [0.0f64; 4];
     let mut left = a.chunks_exact(4);
@@ -303,6 +278,65 @@ fn wide_dot(a: &[f64], b: &[f64]) -> f64 {
         total += x * y;
     }
     total
+}
+
+/// `out = M x` for a row-major `dimension x dimension` matrix, on the best
+/// lanes the CPU offers (see [`lanes::dispatch`]).
+///
+/// The BFGS bookkeeping does two of these per iteration -- `H y` for the
+/// update and `-H g` for the direction -- and they are the largest single
+/// cost in an embedding after the force field itself. Each row is summed in
+/// two four-lane accumulators, eight products per pass, so the adds of one
+/// pass do not wait on the previous one; the order of the sums is fixed, so
+/// every instruction set gives the same bits.
+fn gemv(matrix: &[f64], x: &[f64], out: &mut [f64], dimension: usize) {
+    lanes::dispatch(Gemv {
+        matrix,
+        x,
+        out,
+        dimension,
+    });
+}
+
+struct Gemv<'a> {
+    matrix: &'a [f64],
+    x: &'a [f64],
+    out: &'a mut [f64],
+    dimension: usize,
+}
+
+impl LanesOp for Gemv<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn run<L: Lanes>(self, lanes: L) {
+        const PASS: usize = 2 * LANES;
+        let Gemv {
+            matrix,
+            x,
+            out,
+            dimension,
+        } = self;
+        if dimension == 0 {
+            return;
+        }
+        let body = dimension - dimension % PASS;
+        let load = |values: &[f64]| lanes.from_array(values.try_into().unwrap());
+        for (row, slot) in matrix.chunks_exact(dimension).zip(out.iter_mut()) {
+            let mut first = lanes.splat(0.0);
+            let mut second = lanes.splat(0.0);
+            let (rows, xs) = (row[..body].as_chunks::<PASS>().0, x[..body].as_chunks::<PASS>().0);
+            for (m, v) in rows.iter().zip(xs) {
+                first += load(&m[..LANES]) * load(&v[..LANES]);
+                second += load(&m[LANES..]) * load(&v[LANES..]);
+            }
+            let mut total = horizontal_sum(lanes.to_array(first + second));
+            for (m, v) in row[body..].iter().zip(&x[body..]) {
+                total += m * v;
+            }
+            *slot = total;
+        }
+    }
 }
 
 impl DenseHessian {
@@ -345,7 +379,7 @@ impl DenseHessian {
     fn direction<C: Coordinate>(&mut self, gradient: &[C], direction: &mut [C]) {
         let dimension = self.dimension;
         flatten(gradient, &mut self.gradient_flat);
-        faer_gemv(&self.inverse, &self.gradient_flat, &mut self.direction_flat, dimension);
+        gemv(&self.inverse, &self.gradient_flat, &mut self.direction_flat, dimension);
         for (index, &value) in self.direction_flat.iter().enumerate() {
             *direction[index / C::DIMENSIONS].axis_mut(index % C::DIMENSIONS) = -value;
         }
@@ -388,7 +422,7 @@ impl DenseHessian {
         }
 
         *identity = false;
-        faer_gemv(inverse, change_flat, product, dimension);
+        gemv(inverse, change_flat, product, dimension);
         let change_product = wide_dot(change_flat, product);
 
         let inverse_curvature = 1.0 / curvature;
@@ -910,6 +944,50 @@ mod tests {
                 positions[0]
             );
             assert!(positions[0].y.abs() < 1e-5);
+        }
+    }
+
+    fn scattered(length: usize, seed: u64) -> Vec<f64> {
+        let mut state = seed | 1;
+        (0..length)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gemv_matches_a_plain_product_and_agrees_on_every_lanes() {
+        use crate::molecule::forcefield::lanes::PORTABLE;
+        for dimension in [0, 1, 3, 7, 8, 9, 30, 270] {
+            let matrix = scattered(dimension * dimension, 11);
+            let x = scattered(dimension, 23);
+            let run = |lanes: &dyn Fn(Gemv)| {
+                let mut out = vec![f64::NAN; dimension];
+                lanes(Gemv {
+                    matrix: &matrix,
+                    x: &x,
+                    out: &mut out,
+                    dimension,
+                });
+                out
+            };
+            let portable = run(&|op| op.run(PORTABLE));
+            let mut dispatched = vec![f64::NAN; dimension];
+            gemv(&matrix, &x, &mut dispatched, dimension);
+            for row in 0..dimension {
+                let plain: f64 = (0..dimension)
+                    .map(|k| matrix[row * dimension + k] * x[k])
+                    .sum();
+                assert!(
+                    (portable[row] - plain).abs() < 1e-12,
+                    "{dimension} row {row}"
+                );
+                assert_eq!(portable[row].to_bits(), dispatched[row].to_bits());
+            }
         }
     }
 }

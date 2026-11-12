@@ -50,6 +50,8 @@ mod fourd;
 mod torsion_preferences;
 mod torsion_search;
 mod refine;
+mod matrix;
+use matrix::SquareMatrix;
 
 #[cfg(test)]
 mod tests;
@@ -61,7 +63,7 @@ use crate::{
     },
     vector::Vector3D,
 };
-use rand::{SeedableRng, rngs::StdRng};
+use crate::random::Rng;
 
 /// Configuration for [`Embed3D::embed_3d_with_config`].
 #[derive(Debug, Clone)]
@@ -716,7 +718,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
     // unusable. Written as a closure because the trials are independent and
     // the loop below may run them on several threads.
     let trial_from = |attempt: usize| -> Option<(Vec<Vector3D>, usize, f64)> {
-        let mut rng = StdRng::seed_from_u64(config.seed.wrapping_add(attempt as u64));
+        let mut rng = Rng::seed_from_u64(config.seed.wrapping_add(attempt as u64));
         let trial = mds::sample_trial_distances(&bounds_matrix, &mut rng);
         let (mut positions, w) = mds::classical_mds_4d(&trial);
 
@@ -917,7 +919,7 @@ fn embed_connected(working: &Molecule3D, config: &EmbedConfig) -> Result<Vec<Vec
     Ok(positions)
 }
 
-fn has_degenerate_distances(positions: &[Vector3D], bounds_matrix: &ndarray::Array2<f64>) -> bool {
+fn has_degenerate_distances(positions: &[Vector3D], bounds_matrix: &SquareMatrix<f64>) -> bool {
     const MIN_SEPARATION: f64 = 1e-3;
     let n = positions.len();
     for i in 0..n {

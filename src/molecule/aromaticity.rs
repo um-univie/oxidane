@@ -3,7 +3,6 @@ use crate::{
     molecule::graph::MoleculeGraph, molecule::utils::order_tuple,
 };
 use bit_set::BitSet;
-use bitvec::prelude::BitVec;
 use rustc_hash::FxHashSet;
 use std::cell::Cell;
 
@@ -2247,7 +2246,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
                 let ring_atoms = rings
                     .iter()
                     .map(|&assignment| assignment == Some(counter))
-                    .collect::<BitVec>();
+                    .collect::<Vec<bool>>();
 
                 let mut number_of_atoms_in_system = 0;
                 let mut number_of_bonds_in_system = 0;
@@ -2306,7 +2305,7 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             .filter(|&(_, &flag)| flag != AromaticityFlag::NotAromatic)
             .map(|(index, _)| index)
             .collect::<BitSet>();
-        let mut last_aromatic_atoms_length = aromatic_atoms.len();
+        let mut last_aromatic_atoms_length = aromatic_atoms.count();
 
         loop {
             let mut aromatic_atoms_to_remove = BitSet::new();
@@ -2347,10 +2346,10 @@ pub trait MoleculeAromaticity: MoleculeCore + MoleculeGraph {
             for aromatic_atom in aromatic_atoms_to_remove.iter() {
                 aromatic_atoms.remove(aromatic_atom);
             }
-            if aromatic_atoms.len() == last_aromatic_atoms_length {
+            if aromatic_atoms.count() == last_aromatic_atoms_length {
                 break;
             }
-            last_aromatic_atoms_length = aromatic_atoms.len();
+            last_aromatic_atoms_length = aromatic_atoms.count();
         }
     }
 }
